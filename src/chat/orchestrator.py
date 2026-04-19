@@ -1,0 +1,48 @@
+"""
+봇별 타이밍 스케줄링 오케스트레이터.
+AI Process에서 받은 채팅 목록을 랜덤 딜레이를 두고 UI 큐에 하나씩 전달한다.
+"""
+import logging
+import random
+import time
+from multiprocessing import Queue
+
+logger = logging.getLogger("solo_stream.orchestrator")
+
+_FREQUENCY_CHANCE = {
+    "high": 1.0,
+    "medium": 0.7,
+    "low": 0.4,
+}
+
+
+def schedule_chats(
+    chats: list[dict],
+    bots: list[dict],
+    ui_queue: Queue,
+    delay_min: float = 1.0,
+    delay_max: float = 8.0,
+):
+    """
+    chats를 랜덤 딜레이로 ui_queue에 넣는다.
+    봇의 frequency에 따라 일부 메시지는 스킵될 수 있다.
+    별도 스레드에서 호출된다.
+    """
+    bot_freq = {b["name"]: b.get("frequency", "medium") for b in bots}
+
+    shuffled = chats[:]
+    random.shuffle(shuffled)
+
+    for chat in shuffled:
+        name = chat.get("name", "")
+        freq = bot_freq.get(name, "medium")
+        chance = _FREQUENCY_CHANCE.get(freq, 0.7)
+
+        if random.random() > chance:
+            logger.debug(f"[스킵] {name} (frequency={freq})")
+            continue
+
+        delay = random.uniform(delay_min, delay_max)
+        time.sleep(delay)
+        ui_queue.put(chat)
+        logger.debug(f"[채팅 전달] {name}: {chat.get('message', '')}")

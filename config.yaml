@@ -1,0 +1,46 @@
+ai:
+  vision_model: gemini-2.5-flash-lite
+  chat_model: gemini-2.5-flash-lite
+  api_key_env: GEMINI_API_KEY
+capture:
+  interval_seconds: 15
+  ssim_threshold: 0.92
+  target_window: CrossCode Min v1.4.2-4
+  resize_width: 1024
+chat:
+  bot_count: 5
+  batch_size: 5
+  context_window: 10
+  delay_min: 1.0
+  delay_max: 8.0
+  persona_dir: personas
+ui:
+  opacity: 0.85
+  max_messages: 50
+  font_size: 14
+  width: 360
+  height: 500
+  window_excludes:
+  - '%Discord%'
+  - '%NVIDIA%'
+  - '%Snipping Tool%'
+  - C:\Windows%
+  - C:\Users%
+  - '%Firefox'
+  - D:\%
+  - E:\%
+  - PowerToys%
+  - Steam%
+  - 설정
+  - 카카오톡
+  - 명령%
+  - '%파일 탐색기'
+  - '%입력 환경'
+  - '%Visual Studio Code'
+  - python
+  - Program Manager
+  - RzMonitor%
+stt:
+  enabled: false
+  mode: vad
+  vad_threshold: 0.5

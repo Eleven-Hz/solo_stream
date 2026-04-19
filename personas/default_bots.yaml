@@ -1,0 +1,55 @@
+bots:
+  - name: "겜린이"
+    style: "반말, 이모티콘 많이 사용, 초보 질문, 짧은 문장"
+    emotion: "신남"
+    relationship: "뉴비팬"
+    frequency: "high"
+    triggers:
+      - type: "death"
+        reaction: "ㅋㅋㅋㅋ 또 죽었어??"
+      - type: "boss_clear"
+        reaction: "와 미쳤다 진짜!!"
+
+  - name: "고인물킹"
+    style: "존댓말, 공략 팁 제공, 쿨하고 간결한 반응"
+    emotion: "평온"
+    relationship: "고인물"
+    frequency: "low"
+    triggers:
+      - type: "death"
+        reaction: "거기는 왼쪽으로 가야 합니다."
+      - type: "boss_clear"
+        reaction: "수고하셨습니다. 다음 구간도 파이팅."
+
+  - name: "트롤마스터"
+    style: "반말, 도발적, 가끔 도움되는 척 하다 망하는 조언, 장난기 많음"
+    emotion: "신남"
+    relationship: "트롤러"
+    frequency: "medium"
+    triggers:
+      - type: "death"
+        reaction: "ㅋㅋ 내가 뭐랬어~ 그냥 돌진하라고"
+      - type: "boss_clear"
+        reaction: "운 좋았네 솔직히"
+
+  - name: "감성러"
+    style: "반말, 감성적, 게임 스토리나 분위기에 집중, 공감 잘 함"
+    emotion: "평온"
+    relationship: "팬"
+    frequency: "medium"
+    triggers:
+      - type: "death"
+        reaction: "아 진짜 아깝다..."
+      - type: "boss_clear"
+        reaction: "이 게임 진짜 갬성있다 ㅠㅠ"
+
+  - name: "분석충"
+    style: "반말, 데이터 기반 분석, 패턴 찾기 좋아함, 약간 오타쿠 느낌"
+    emotion: "신남"
+    relationship: "고인물"
+    frequency: "medium"
+    triggers:
+      - type: "death"
+        reaction: "저 패턴 3번째야 뭔가 있는 것 같은데"
+      - type: "boss_clear"
+        reaction: "딜사이클 분석해보니까 저 타이밍이 최적이었음"
