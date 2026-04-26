@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.utils.config_loader import load_config, get_api_key
+from src.utils.config_loader import load_config, get_api_key, get_claude_api_key
 from src.utils.logger import setup_logger
 
 logger = setup_logger("solo_stream")
@@ -92,18 +92,21 @@ def ai_process(
     settings_queue: multiprocessing.Queue,
     config: dict,
     api_key: str,
+    claude_api_key: str | None = None,
 ):
     setup_logger("solo_stream")
     setup_logger("solo_stream.ai")
     log = logging.getLogger("solo_stream.ai")
 
-    from src.ai.model_client import GeminiClient
+    from src.ai.model_client import create_vision_client, GeminiClient
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
     from src.chat.game_profile_loader import load_profile, build_profile_context
     from src.utils.logger import get_chat_logger
 
-    client = GeminiClient(api_key=api_key, config=config)
+    client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+    # 게임 프로필 생성은 항상 Gemini로 (Google Search 그라운딩 필요)
+    gemini_client = GeminiClient(api_key=api_key, config=config)
     bots = load_personas(config["chat"]["persona_dir"], config["chat"]["bot_count"])
     log.info(f"봇 {len(bots)}명 로딩: {[b['name'] for b in bots]}")
 
@@ -113,7 +116,7 @@ def ai_process(
     initial_game = config["capture"].get("target_window") or ""
     # 창 타이틀에서 게임명 추출 (예: "CrossCode Min v1.4.2-4" → "CrossCode")
     game_name = _extract_game_name(initial_game)
-    game_profile = load_profile(game_name, ai_client=client)
+    game_profile = load_profile(game_name, ai_client=gemini_client, config=config)
     profile_context = build_profile_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
 
@@ -128,10 +131,15 @@ def ai_process(
         # 설정 변경 수신 (non-blocking)
         while not settings_queue.empty():
             setting = settings_queue.get_nowait()
-            if "game_name" in setting:
+            if "vision_provider" in setting:
+                new_provider = setting["vision_provider"]
+                log.info(f"vision_provider 변경: {new_provider}")
+                config.setdefault("ai", {})["vision_provider"] = new_provider
+                client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+            elif "game_name" in setting:
                 new_game = setting["game_name"]
                 log.info(f"게임 프로필 변경 요청: {new_game}")
-                game_profile = load_profile(new_game, ai_client=client)
+                game_profile = load_profile(new_game, ai_client=gemini_client, config=config)
                 profile_context = build_profile_context(game_profile)
                 chat_history.clear()
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
@@ -217,6 +225,7 @@ def ui_process(
 def main():
     config = load_config()
     api_key = get_api_key(config)
+    claude_api_key = get_claude_api_key(config)
     logger.info("Solo Stream 시작")
 
     image_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=2)
@@ -234,7 +243,7 @@ def main():
         ),
         multiprocessing.Process(
             target=ai_process,
-            args=(image_queue, ui_queue, ai_settings_queue, config, api_key),
+            args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key),
             name="AIProcess",
             daemon=True,
         ),

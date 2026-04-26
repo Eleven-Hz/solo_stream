@@ -1,7 +1,14 @@
 """
 게임 프로필 로더.
 - game_profiles/{게임명}.yaml 이 있으면 로드
-- 없으면 Gemini 3 (Google Search grounding) 으로 실제 정보를 검색해서 자동 생성 후 저장
+- 없으면 Gemini (Google Search grounding) 멀티턴으로 자동 생성 후 저장
+
+생성 파이프라인:
+  1단계: 기본 정보 (장르, 개발사, 스토리, 분위기)
+  2단계: 전투 시스템 + 주요 지역
+  3단계: 보스/몬스터 + 스킬/기술
+  4단계: 커뮤니티 밈 / 채팅 포인트 (chat_tips 전용 심화 검색)
+  5단계: 고유명사 한국어 번역 검수 (지역명, 보스명, 스킬명)
 """
 import json
 import logging
@@ -14,44 +21,155 @@ from google.genai import types
 logger = logging.getLogger("solo_stream.game_profile")
 
 _PROFILE_DIR = Path(__file__).parent.parent.parent / "game_profiles"
+_DEFAULT_PROFILE_MODEL = "gemini-2.5-flash"
 
-# 프로필 생성 전용 모델: Google Search grounding 지원 모델
-_PROFILE_MODEL = "gemini-3-flash-preview"
-
-_GENERATE_PROMPT = """인터넷에서 "{game_name}" 게임 정보를 검색하여 아래 JSON 형식으로 작성하세요.
-위키, 공식 사이트, 팬덤 등 신뢰할 수 있는 출처를 참고하세요.
-모르는 항목은 빈 배열 []로 남기세요.
-반드시 JSON만 출력하고 마크다운 코드블록이나 다른 텍스트는 포함하지 마세요.
-
-{{
-  "name": "게임 정식 명칭",
-  "description": "게임 소개: 장르, 개발사, 핵심 스토리, 분위기를 2~3문장으로",
+# ── few-shot 예시 (CrossCode) ──────────────────────────────────────────────────
+_FEW_SHOT_EXAMPLE = """예시 출력 (CrossCode 기준):
+{
+  "name": "CrossCode (크로스코드)",
+  "description": "Radical Fish Games 개발. 기억을 잃은 주인공 '레아'가 가상현실 MMO 'CrossWorlds'의 진실을 파헤치는 2D 액션 RPG. 고속 전투와 고난도 퍼즐이 특징.",
   "systems": [
-    "실제 게임 시스템 설명. 예: HP/SP 구조, 속성, 전투 방식 등 실제로 존재하는 것만"
+    "실시간 8방향 전투: 근접(칼)과 원거리(구체 투척) 전환",
+    "4속성 시스템: 무색/화염/냉기/전격을 실시간 교체",
+    "Circuit 성장 트리: SP 투자로 스탯·스킬 해금",
+    "Combat Arts: SP 소모 필살기",
+    "Break 시스템: 약점 속성으로 적 무력화"
   ],
   "locations": [
-    "실제 게임 내 주요 지역/던전명과 간단한 설명"
+    "초보자 항구 (Rookie Harbor): 시작 허브 도시",
+    "베르겐 트레일 (Bergen Trail): 눈 덮인 산악, 냉기 퍼즐",
+    "파즈로 템플 (Faj'ro Temple): 화염 테마 던전"
   ],
   "enemies": [
-    "실제 등장하는 몬스터/보스명과 특징"
+    "고슴됴치 (Hedgehag): 상징적인 기본 몬스터",
+    "아폴로 (Apollo): 라이벌 스피어맨 보스",
+    "고대 수호자 (Ancient Guardian): 튜토리얼 거대 석상 보스"
   ],
   "skills": [
-    "실제 플레이어 스킬/기술명"
+    "스피어 슬래시 (Sphere Slash): 기본 근접 콤보",
+    "가드 스피어 (Guard Sphere): 전방위 방어막",
+    "파이로 댄스 (Pyro Dance): 화염 회전 근접기"
   ],
   "chat_tips": [
-    "시청자 봇 채팅에 유용한 이 게임만의 포인트: 유명 밈, 커뮤니티 용어, 죽음 연출, 하이라이트 순간, 팬덤 문화 등"
+    "레아의 한정 대사: 'Hi!', 'Lea!' 등 몇 단어만 구사 → 새 단어 습득 시 시청자 축하 문화",
+    "아폴로 연설 밈: 장황한 정의 선언 시작되면 '또 시작됐네', 'Justice!' 채팅 폭발",
+    "퍼즐 고통 밈: 난이도 높은 퍼즐에서 '뇌절', '지능 테스트' 자주 등장"
+  ]
+}"""
+
+# ── 단계별 프롬프트 ──────────────────────────────────────────────────────────
+
+_STEP1_PROMPT = """인터넷에서 "{game_name}" 게임의 기본 정보를 검색하세요.
+공식 사이트, 스팀 페이지, 나무위키, 위키피디아 등을 참고하세요.
+
+{few_shot}
+
+위 예시와 같은 수준으로 아래 JSON만 출력하세요 (마크다운 금지):
+{{
+  "name": "게임 정식 명칭 (한국어 공식명 있으면 병기, 예: CrossCode (크로스코드))",
+  "description": "장르, 개발사, 핵심 스토리, 분위기를 2~3문장으로. 공식 소개 수준의 구체성.",
+  "genre": "장르 키워드 (예: 2D 액션 RPG, 로그라이크, 소울라이크 등)"
+}}"""
+
+_STEP2_PROMPT = """인터넷에서 "{game_name}" 게임의 전투 시스템과 주요 지역을 검색하세요.
+게임 위키, 공략 사이트, 나무위키를 참고하세요.
+
+아래 JSON만 출력 (마크다운 금지):
+{{
+  "systems": [
+    "실제 존재하는 시스템 10개 이상. 각 항목: '시스템명: 한 줄 설명' 형식.",
+    "HP/MP/스태미나 구조, 전투 메카닉, 성장 시스템, 특수 게이지 등 포함",
+    "한국어 공식/팬덤 번역명 있으면 반드시 병기. 예: Circuit (회로 성장 트리)"
+  ],
+  "locations": [
+    "실제 존재하는 주요 지역/던전 10개 이상. 각 항목: '한국어명 (영문 원어명): 한 줄 설명' 형식.",
+    "각 지역의 테마, 특징, 해금 시점 포함"
   ]
 }}"""
 
+_STEP3_PROMPT = """인터넷에서 "{game_name}" 게임의 몬스터/보스와 플레이어 스킬을 검색하세요.
+게임 위키, 보스 공략 영상, 나무위키를 참고하세요.
+
+아래 JSON만 출력 (마크다운 금지):
+{{
+  "enemies": [
+    "실제 등장하는 몬스터/보스 10개 이상. 각 항목: '한국어명 (영문 원어명): 특징 한 줄' 형식.",
+    "일반 몬스터, 미니보스, 메인 보스, 숨겨진 보스 등 구분해서 포함"
+  ],
+  "skills": [
+    "플레이어가 실제 사용 가능한 스킬/기술/무기 10개 이상. 각 항목: '한국어명 (영문 원어명): 효과 한 줄' 형식.",
+    "기본기, 특수기, 궁극기, 패시브 등 포함"
+  ]
+}}"""
+
+_STEP4_CHAT_TIPS_PROMPT = """인터넷에서 "{game_name}" 게임의 커뮤니티 문화와 스트리밍 밈을 검색하세요.
+트위치/유튜브 클립, 레딧, 디시인사이드, 나무위키 등을 참고하세요.
+
+이 게임의 스트리밍 채팅창에서 시청자들이 자주 치는 반응, 밈, 용어를 찾아야 합니다.
+
+아래 JSON만 출력 (마크다운 금지):
+{{
+  "chat_tips": [
+    "15개 이상의 항목. 각 항목: 구체적인 상황과 채팅 반응을 한 문장으로.",
+    "죽음 연출 반응 (예: 'gg', 'F', '또 죽었다')",
+    "보스 등장 반응 (예: 특정 보스 등장 시 채팅 밈)",
+    "하이라이트 순간 반응",
+    "커뮤니티만 아는 게임 내 밈 용어",
+    "팬덤에서 사용하는 별칭/줄임말",
+    "이 게임만의 독특한 채팅 문화"
+  ]
+}}"""
+
+_STEP5_TRANSLATION_PROMPT = """인터넷에서 "{game_name}" 게임의 한국어 번역을 검수하세요.
+한국 공식 번역, 나무위키, 한국어 팬 사이트를 참고하세요.
+
+아래에 현재 수집된 고유명사 목록이 있습니다:
+{terms_list}
+
+각 항목의 한국어 번역이 실제 게임 내 공식 한국어 번역 또는 한국 팬덤에서 통용되는 번역과 일치하는지 검수하고,
+틀렸거나 더 나은 번역이 있으면 수정하세요.
+
+아래 JSON만 출력 (마크다운 금지):
+{{
+  "corrections": [
+    {{
+      "original": "기존 표기",
+      "corrected": "검수된 올바른 표기",
+      "reason": "수정 이유 (공식 번역, 팬덤 통용 번역 등)"
+    }}
+  ]
+}}
+
+수정할 것이 없으면: {{"corrections": []}}"""
+
 
 def _safe_filename(game_name: str) -> str:
-    """게임 이름을 파일명으로 변환."""
     name = re.sub(r'[\\/:*?"<>|]', "", game_name)
     name = name.strip().lower().replace(" ", "_")
     return name[:64]
 
 
-def load_profile(game_name: str, ai_client=None) -> dict:
+def _search(ai_client, prompt: str, model: str) -> str:
+    """Google Search grounding으로 단일 검색 실행."""
+    response = ai_client._client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+        ),
+    )
+    return response.text.strip()
+
+
+def _parse_json(text: str) -> dict:
+    text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+    return json.loads(text)
+
+
+def load_profile(game_name: str, ai_client=None, config: dict | None = None) -> dict:
     """
     게임 프로필 로드. 없으면 ai_client로 자동 생성.
     ai_client가 None이면 default 프로필 반환.
@@ -67,15 +185,14 @@ def load_profile(game_name: str, ai_client=None) -> dict:
         logger.info(f"게임 프로필 로드: {profile_path.name}")
         return profile
 
-    # 프로필 없음 → 자동 생성
     if ai_client is None:
         logger.warning(f"프로필 없음, AI 클라이언트 없어서 default 사용: {game_name}")
         return _load_default()
 
-    logger.info(f"게임 프로필 없음. Gemini로 자동 생성 중: {game_name}")
-    profile = _generate_profile(game_name, ai_client)
+    model = (config or {}).get("ai", {}).get("profile_model", _DEFAULT_PROFILE_MODEL)
+    logger.info(f"게임 프로필 없음. 멀티턴 검색으로 자동 생성 중: {game_name} (모델: {model})")
+    profile = _generate_profile(game_name, ai_client, model)
 
-    # 저장
     with open(profile_path, "w", encoding="utf-8") as f:
         yaml.dump(profile, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
     logger.info(f"게임 프로필 저장 완료: {profile_path}")
@@ -83,41 +200,136 @@ def load_profile(game_name: str, ai_client=None) -> dict:
     return profile
 
 
-def _generate_profile(game_name: str, ai_client) -> dict:
-    """Gemini 3 + Google Search grounding으로 실제 게임 정보를 검색해 프로필 생성."""
-    prompt = _GENERATE_PROMPT.format(game_name=game_name)
+def _generate_profile(game_name: str, ai_client, model: str) -> dict:
+    profile: dict = {
+        "name": game_name,
+        "description": "",
+        "systems": [],
+        "locations": [],
+        "enemies": [],
+        "skills": [],
+        "chat_tips": [],
+    }
+
+    # ── 1단계: 기본 정보 ────────────────────────────────────────────────────
+    logger.info(f"[1/5] 기본 정보 검색 중...")
     try:
-        logger.info(f"Google Search로 '{game_name}' 정보 검색 중...")
-        response = ai_client._client.models.generate_content(
-            model=_PROFILE_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-            ),
-        )
-        text = response.text.strip()
-        logger.info(f"검색 완료. 응답 길이: {len(text)}자")
-
-        # JSON 추출 (마크다운 코드블록 제거)
-        text = re.sub(r"```(?:json)?", "", text).strip()
-        json_match = re.search(r"\{.*\}", text, re.DOTALL)
-        if json_match:
-            text = json_match.group(0)
-
-        data = json.loads(text)
-        if not data.get("name"):
-            data["name"] = game_name
-        return data
-    except json.JSONDecodeError as e:
-        logger.error(f"프로필 JSON 파싱 실패: {e}\n응답: {text[:300]}")
-        default = _load_default()
-        default["name"] = game_name
-        return default
+        prompt = _STEP1_PROMPT.format(game_name=game_name, few_shot=_FEW_SHOT_EXAMPLE)
+        text = _search(ai_client, prompt, model)
+        data = _parse_json(text)
+        profile["name"] = data.get("name", game_name)
+        profile["description"] = data.get("description", "")
+        logger.info(f"  → 이름: {profile['name']}")
     except Exception as e:
-        logger.error(f"프로필 자동 생성 실패: {e}")
-        default = _load_default()
-        default["name"] = game_name
-        return default
+        logger.error(f"  1단계 실패: {e}")
+
+    # ── 2단계: 전투 시스템 + 지역 ───────────────────────────────────────────
+    logger.info(f"[2/5] 전투 시스템 + 지역 검색 중...")
+    try:
+        prompt = _STEP2_PROMPT.format(game_name=game_name)
+        text = _search(ai_client, prompt, model)
+        data = _parse_json(text)
+        profile["systems"] = _clean_list(data.get("systems", []))
+        profile["locations"] = _clean_list(data.get("locations", []))
+        logger.info(f"  → 시스템 {len(profile['systems'])}개, 지역 {len(profile['locations'])}개")
+    except Exception as e:
+        logger.error(f"  2단계 실패: {e}")
+
+    # ── 3단계: 몬스터/보스 + 스킬 ──────────────────────────────────────────
+    logger.info(f"[3/5] 몬스터/보스 + 스킬 검색 중...")
+    try:
+        prompt = _STEP3_PROMPT.format(game_name=game_name)
+        text = _search(ai_client, prompt, model)
+        data = _parse_json(text)
+        profile["enemies"] = _clean_list(data.get("enemies", []))
+        profile["skills"] = _clean_list(data.get("skills", []))
+        logger.info(f"  → 적 {len(profile['enemies'])}개, 스킬 {len(profile['skills'])}개")
+    except Exception as e:
+        logger.error(f"  3단계 실패: {e}")
+
+    # ── 4단계: chat_tips 심화 검색 ──────────────────────────────────────────
+    logger.info(f"[4/5] 커뮤니티 밈/채팅 포인트 심화 검색 중...")
+    try:
+        prompt = _STEP4_CHAT_TIPS_PROMPT.format(game_name=game_name)
+        text = _search(ai_client, prompt, model)
+        data = _parse_json(text)
+        profile["chat_tips"] = _clean_list(data.get("chat_tips", []))
+        logger.info(f"  → chat_tips {len(profile['chat_tips'])}개")
+    except Exception as e:
+        logger.error(f"  4단계 실패: {e}")
+
+    # ── 5단계: 한국어 번역 검수 ─────────────────────────────────────────────
+    logger.info(f"[5/5] 한국어 번역 검수 중...")
+    try:
+        profile = _verify_translations(game_name, profile, ai_client, model)
+    except Exception as e:
+        logger.error(f"  5단계 실패: {e}")
+
+    return profile
+
+
+def _verify_translations(game_name: str, profile: dict, ai_client, model: str) -> dict:
+    """수집된 고유명사를 한국어로 검수하고 잘못된 번역을 교정."""
+    all_terms: list[str] = []
+    for section in ("locations", "enemies", "skills"):
+        all_terms.extend(profile.get(section, []))
+
+    if not all_terms:
+        return profile
+
+    terms_text = "\n".join(f"- {t}" for t in all_terms)
+    prompt = _STEP5_TRANSLATION_PROMPT.format(
+        game_name=game_name,
+        terms_list=terms_text,
+    )
+
+    text = _search(ai_client, prompt, model)
+    data = _parse_json(text)
+    corrections: list[dict] = data.get("corrections", [])
+
+    if not corrections:
+        logger.info("  → 번역 수정 없음")
+        return profile
+
+    # 교정 맵 생성
+    correction_map = {c["original"]: c["corrected"] for c in corrections if c.get("original") and c.get("corrected")}
+    for reason_item in corrections:
+        logger.info(f"  번역 수정: {reason_item.get('original')} → {reason_item.get('corrected')} ({reason_item.get('reason', '')})")
+
+    def _apply_correction(item: str) -> str:
+        # 완전 일치 우선
+        if item in correction_map:
+            return correction_map[item]
+        # 항목 앞부분에 original이 포함된 경우 (설명이 뒤에 붙은 경우) 교체
+        for original, corrected in correction_map.items():
+            if original and item.startswith(original):
+                return corrected + item[len(original):]
+            # 항목 중간에 포함된 경우 (예: "지역명: 설명" 형식)
+            if original and original in item:
+                return item.replace(original, corrected, 1)
+        return item
+
+    # 각 섹션에 교정 적용
+    for section in ("locations", "enemies", "skills"):
+        profile[section] = [_apply_correction(item) for item in profile.get(section, [])]
+
+    return profile
+
+
+def _clean_list(items: list) -> list[str]:
+    """JSON 배열에서 실제 내용 항목만 추출 (설명용 메타 문자열 제거)."""
+    result = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        # "예: ..." 또는 너무 짧거나 메타 설명인 항목 제거
+        stripped = item.strip()
+        if len(stripped) < 4:
+            continue
+        if stripped.startswith("예:") or stripped.startswith("각 항목"):
+            continue
+        result.append(stripped)
+    return result
 
 
 def _load_default() -> dict:
@@ -125,8 +337,15 @@ def _load_default() -> dict:
     if default_path.exists():
         with open(default_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
-    return {"name": "Unknown", "description": "", "systems": [], "locations": [],
-            "enemies": [], "skills": [], "chat_tips": []}
+    return {
+        "name": "Unknown",
+        "description": "",
+        "systems": [],
+        "locations": [],
+        "enemies": [],
+        "skills": [],
+        "chat_tips": [],
+    }
 
 
 def build_profile_context(profile: dict) -> str:

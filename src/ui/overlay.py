@@ -267,6 +267,96 @@ class SettingsPanel(QWidget):
         sep3.setStyleSheet("background: rgba(255,255,255,20);")
         layout.addWidget(sep3)
 
+        # 이미지 분석 모델 선택
+        ai_label = QLabel("이미지 분석 모델")
+        ai_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(ai_label)
+
+        _combo_style = """
+            QComboBox {
+                background: #1e1e2e;
+                color: #ddd;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background: #1e1e2e;
+                color: #ddd;
+                selection-background-color: #333;
+            }
+        """
+
+        self._provider_combo = QComboBox()
+        self._provider_combo.setStyleSheet(_combo_style)
+        self._provider_combo.addItems(["gemini", "claude"])
+        current_provider = self._config.get("ai", {}).get("vision_provider", "gemini")
+        idx = self._provider_combo.findText(current_provider)
+        if idx >= 0:
+            self._provider_combo.setCurrentIndex(idx)
+        layout.addWidget(self._provider_combo)
+
+        apply_ai_btn = QPushButton("분석 모델 적용")
+        apply_ai_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        apply_ai_btn.clicked.connect(self._apply_vision_provider)
+        layout.addWidget(apply_ai_btn)
+
+        # 구분선
+        sep4 = QLabel()
+        sep4.setFixedHeight(1)
+        sep4.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep4)
+
+        # API 키 입력
+        api_label = QLabel("API 키 설정")
+        api_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(api_label)
+
+        from PyQt6.QtWidgets import QLineEdit
+
+        gemini_row = QHBoxLayout()
+        gemini_lbl = QLabel("Gemini")
+        gemini_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        gemini_lbl.setFixedWidth(42)
+        gemini_row.addWidget(gemini_lbl)
+        self._gemini_key_input = QLineEdit()
+        self._gemini_key_input.setPlaceholderText("GEMINI_API_KEY")
+        self._gemini_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._gemini_key_input.setStyleSheet(
+            "QLineEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
+            "border-radius: 4px; padding: 3px 6px; font-size: 10px; }"
+        )
+        gemini_row.addWidget(self._gemini_key_input)
+        layout.addLayout(gemini_row)
+
+        claude_row = QHBoxLayout()
+        claude_lbl = QLabel("Claude")
+        claude_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        claude_lbl.setFixedWidth(42)
+        claude_row.addWidget(claude_lbl)
+        self._claude_key_input = QLineEdit()
+        self._claude_key_input.setPlaceholderText("CLAUDE_API_KEY")
+        self._claude_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._claude_key_input.setStyleSheet(
+            "QLineEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
+            "border-radius: 4px; padding: 3px 6px; font-size: 10px; }"
+        )
+        claude_row.addWidget(self._claude_key_input)
+        layout.addLayout(claude_row)
+
+        save_keys_btn = QPushButton("API 키 저장 (.env.local)")
+        save_keys_btn.setStyleSheet(self._btn_style("#1a3a1a", "#2d6a2d"))
+        save_keys_btn.clicked.connect(self._save_api_keys)
+        layout.addWidget(save_keys_btn)
+
+        # 구분선
+        sep5 = QLabel()
+        sep5.setFixedHeight(1)
+        sep5.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep5)
+
         # 게임 프로필
         game_label = QLabel("게임 프로필")
         game_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
@@ -362,6 +452,58 @@ class SettingsPanel(QWidget):
             logger.info(f"기존 프로필 삭제: {profile_path.name}")
         self._settings_queue.put({"game_name": game_name})
         self._profile_status.setText(f"재생성 중: {game_name}...")
+
+    def _apply_vision_provider(self):
+        provider = self._provider_combo.currentText()
+        self._settings_queue.put({"vision_provider": provider})
+        self._save_config_vision_provider(provider)
+        logger.info(f"이미지 분석 모델 변경: {provider}")
+
+    def _save_config_vision_provider(self, provider: str):
+        try:
+            from pathlib import Path
+            import yaml as _yaml
+            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f)
+            cfg.setdefault("ai", {})["vision_provider"] = provider
+            with open(config_path, "w", encoding="utf-8") as f:
+                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            logger.error(f"vision_provider 저장 실패: {e}")
+
+    def _save_api_keys(self):
+        try:
+            from pathlib import Path
+            env_path = Path(__file__).parent.parent.parent / ".env.local"
+            lines: list[str] = []
+            if env_path.exists():
+                with open(env_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+
+            def _set_key(lines: list[str], name: str, value: str) -> list[str]:
+                for i, line in enumerate(lines):
+                    if line.startswith(f"{name}="):
+                        lines[i] = f"{name}={value}\n"
+                        return lines
+                lines.append(f"{name}={value}\n")
+                return lines
+
+            gemini_key = self._gemini_key_input.text().strip()
+            claude_key = self._claude_key_input.text().strip()
+            if gemini_key:
+                lines = _set_key(lines, "GEMINI_API_KEY", gemini_key)
+                self._gemini_key_input.clear()
+            if claude_key:
+                lines = _set_key(lines, "CLAUDE_API_KEY", claude_key)
+                self._claude_key_input.clear()
+
+            if gemini_key or claude_key:
+                with open(env_path, "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+                logger.info("API 키 저장 완료")
+        except Exception as e:
+            logger.error(f"API 키 저장 실패: {e}")
 
     def set_profile_name(self, name: str):
         self._profile_status.setText(f"현재 프로필: {name}")

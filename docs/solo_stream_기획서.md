@@ -43,10 +43,34 @@
 
 ### 2.3 음성 인식 (STT) — Phase 2
 
-- 마이크 입력을 상시 수신하되, VAD(Voice Activity Detection)로 실제 발화 구간만 감지하여 API로 전송한다.
+- 마이크 입력을 상시 수신하되, VAD(Voice Activity Detection)로 실제 발화 구간만 감지하여 처리한다.
 - 스트리머의 음성 컨텍스트를 봇 채팅 생성에 반영한다.
-- Gemini Audio API 또는 로컬 Whisper 중 비용과 성능을 비교하여 선택한다.
 - **특정 봇 호출 (@봇이름)**: STT로 인식한 텍스트에서 봇 이름이 감지되면, 해당 봇이 페르소나에 맞는 우선 응답을 생성한다. 예: "고인물킹 여기 어떻게 가?" → 고인물킹 봇이 공략 팁으로 응답.
+- `config.yaml`의 `stt.backend` 설정으로 백엔드를 선택한다. 두 옵션을 모두 지원하며 전환이 가능하다.
+
+#### STT 백엔드 옵션
+
+| 항목 | 옵션 A: 로컬 Whisper | 옵션 B: Gemini Audio API |
+|---|---|---|
+| 패키지 | `faster-whisper` + `silero-vad` | `google-genai` + `silero-vad` (VAD 로컬) |
+| 모델 | `large-v3` (VRAM ~4GB) / `medium` (~2GB) | `gemini-2.5-flash-lite` |
+| GPU 사용 | RTX 30~40 시리즈 권장 (스파이크성 점유) | 없음 (CPU VAD만 사용) |
+| 월 비용 | **$0** | ~$0.50~1.00 (발화율 15% 기준) |
+| 지연시간 | 발화 후 ~1초 이내 | 발화 후 1~3초 (네트워크 포함) |
+| 한국어 품질 | large-v3 기준 매우 우수 | Gemini 기준 우수 |
+| 오프라인 동작 | 가능 | 불가 |
+| 권장 조건 | RTX 30/40 시리즈 + API 비용 절감 원할 때 | GPU 여유 없거나 설치 간소화 원할 때 |
+
+**config.yaml 설정:**
+
+```yaml
+stt:
+  enabled: false
+  backend: "whisper"        # "whisper" 또는 "gemini"
+  mode: "vad"               # "vad" 또는 "always"
+  vad_threshold: 0.5
+  whisper_model: "medium"   # "tiny" / "base" / "medium" / "large-v3" (backend=whisper 시)
+```
 
 ### 2.4 투명 오버레이 채팅창
 
@@ -183,7 +207,8 @@ ai:
 |---|---|---|---|
 | 화면 분석 (Vision) | gemini-2.5-flash-lite | in $0.10 / out $0.40 | 최저가, Vision 지원 |
 | 채팅 생성 (Text) | gemini-2.5-flash-lite | in $0.10 / out $0.40 | 배치 프롬프트로 비용 절감 |
-| 음성 인식 (STT) | gemini-2.5-flash-lite | audio in $0.30 | Phase 2에서 적용 |
+| 음성 인식 (STT) — 옵션 A | faster-whisper (로컬) | **$0** | GPU 필요 (RTX 30~40 권장) |
+| 음성 인식 (STT) — 옵션 B | gemini-2.5-flash-lite | audio in $0.30/1M tok | Phase 2, GPU 없을 때 |
 
 품질이 부족할 경우 gemini-2.5-flash(in $0.30 / out $2.50)로 업그레이드 가능하다.
 
@@ -213,8 +238,10 @@ ai:
 |---|---|---|
 | Vision | 15초 주기, 스킵 50% | ~$0.80 |
 | 채팅 생성 | 봇 10명, 배치 5명/콜 | ~$1.20 |
-| STT (Phase 2) | VAD 모드, 15% 발화 | ~$0.50 |
-| **합계** | | **~$2.50/월** |
+| STT (Phase 2) — 옵션 A Whisper | VAD 모드, 15% 발화 | **$0** |
+| STT (Phase 2) — 옵션 B Gemini | VAD 모드, 15% 발화 | ~$0.50~1.00 |
+| **합계 (STT 옵션 A Whisper)** | | **~$2.00/월** |
+| **합계 (STT 옵션 B Gemini)** | | **~$2.50~3.00/월** |
 
 비용 시뮬레이터를 통해 본인의 플레이 패턴에 맞는 정확한 비용을 계산할 수 있다.
 
@@ -251,10 +278,54 @@ ai:
 
 | 작업 | 설명 |
 |---|---|
-| STT 연동 | VAD + Gemini Audio (또는 로컬 Whisper) |
+| STT 연동 | VAD + 로컬 Whisper 또는 Gemini Audio (config로 선택) |
 | 감정 변화 시스템 | 게임 이벤트에 따른 봇 감정 상태 전이 |
 | 봇 간 상호작용 | A봇이 B봇을 멘션하는 기능 |
 | 채팅 타이밍 고도화 | 게임 이벤트 직후 반응 급증 등 |
+| Strands Agent 툴 옵션 | 페르소나별 선택적 Strands Agent 도입 |
+
+#### Strands Agent 툴 옵션 상세
+
+특정 봇에게 Strands Agents SDK(`strands-agents[gemini]`)를 통해 외부 툴 호출 능력을 부여한다. 나머지 봇은 기존 배치 프롬프트 방식을 유지하여 비용 증가를 최소화한다.
+
+**페르소나 YAML 설정 예시:**
+
+```yaml
+- name: "고인물킹"
+  style: "존댓말, 공략 팁 제공, 쿨한 반응"
+  emotion: "평온"
+  relationship: "고인물"
+  frequency: "low"
+  # 아래 agent 블록이 있으면 Strands Agent로 동작, 없으면 기존 배치 방식
+  agent:
+    enabled: true
+    tools:
+      - wiki_search      # 게임 위키 검색
+      - get_game_context # 현재 Vision 분석 결과 참조
+```
+
+**동작 방식:**
+
+```
+일반 봇 (agent 없음)          고인물킹 봇 (agent 있음)
+─────────────────────         ──────────────────────────────
+배치 프롬프트 1회 호출  →     Strands Agent 독립 실행
+게임 상황 텍스트만 참조       wiki_search("CrossCode", "Bergen Trail 공략") 호출
+                              → 실제 위키 정보 가져와서 답변 생성
+```
+
+**제공 툴 목록 (구현 예정):**
+
+| 툴 이름 | 설명 | 적합한 봇 |
+|---|---|---|
+| `wiki_search` | 게임 위키 검색 (Google Search grounding 활용) | 고인물킹, 분석충 |
+| `get_game_context` | 현재 Vision 분석 결과 조회 | 모든 agent 봇 공통 |
+| `get_chat_history` | 최근 채팅 기록 조회 | 감성러 (대화 흐름 파악용) |
+
+**비용 영향:**
+- agent 봇 1명당 툴 호출 시 API 요청 1~2회 추가
+- `wiki_search`는 게임 프로필 캐시를 우선 참조하여 불필요한 검색 최소화
+- 기본값 `enabled: false`로 설정해 명시적으로 켜야만 동작
 
 ### Phase 3 — 커스터마이징 & 배포 (예상 2~3주)
 
@@ -312,7 +383,7 @@ solo-stream/
 |---|---|---|
 | 봇 수 최적값 (10명 vs 15명) | API 비용, 채팅 밀도 | Phase 1 테스트 후 |
 | 화면 변화 감지 SSIM 임계값 | Vision 호출 빈도, 비용 | Phase 1 튜닝 시 |
-| STT를 Gemini Audio vs 로컬 Whisper | 비용, 지연시간, GPU 의존성 | Phase 2 시작 시 |
+| STT 백엔드 기본값 선택 (Whisper vs Gemini) | 비용 $0 vs 설치 간소화 trade-off | Phase 2 시작 시 |
 | 봇끼리 서로 반응하는 빈도 | 자연스러움 vs 노이즈 | Phase 2 테스트 후 |
 | 풀스크린 캡처 방식 (DXGI vs WGC) | 호환성, 성능 | Phase 1 이후 |
 | 오픈소스 라이선스 종류 | 배포 조건 | Phase 3 시작 시 |
@@ -354,8 +425,10 @@ ui:
 
 stt:                                         # Phase 2
   enabled: false
+  backend: "whisper"                         # "whisper" (로컬, 무료) 또는 "gemini" (API)
   mode: "vad"                                # "vad" 또는 "always"
   vad_threshold: 0.5                         # VAD 감도 (0~1)
+  whisper_model: "medium"                    # tiny/base/medium/large-v3 (backend=whisper 시)
 ```
 
 ---

@@ -17,10 +17,15 @@ def load_config(config_path: str | None = None) -> dict:
 
 def get_api_key(config: dict) -> str:
     env_name = config["ai"].get("api_key_env", "GEMINI_API_KEY")
-    # GEMINI_API 와 GEMINI_API_KEY 둘 다 허용
     key = os.getenv(env_name) or os.getenv("GEMINI_API") or os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError(
             f"API 키를 찾을 수 없습니다. .env.local에 {env_name}=your_key 형태로 설정하세요."
         )
     return key
+
+
+def get_claude_api_key(config: dict) -> str | None:
+    """Claude API 키 반환. 설정되지 않았으면 None 반환 (선택적 사용)."""
+    env_name = config["ai"].get("claude_api_key_env", "CLAUDE_API_KEY")
+    return os.getenv(env_name) or os.getenv("ANTHROPIC_API_KEY")
