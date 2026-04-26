@@ -349,7 +349,7 @@ def _load_default() -> dict:
 
 
 def build_profile_context(profile: dict) -> str:
-    """프로필을 프롬프트용 텍스트로 변환."""
+    """채팅 생성용 전체 프로필 컨텍스트."""
     lines = [f"[게임: {profile.get('name', '?')}]"]
     if profile.get("description"):
         lines.append(profile["description"])
@@ -368,4 +368,26 @@ def build_profile_context(profile: dict) -> str:
     if profile.get("chat_tips"):
         lines.append("\n채팅 포인트:")
         lines.extend(f"  - {s}" for s in profile["chat_tips"])
+    return "\n".join(lines)
+
+
+def build_vision_context(profile: dict) -> str:
+    """Vision 화면 분석 전용 컨텍스트. 지명·몬스터·스킬만 포함해 토큰 최소화."""
+    lines = [f"게임: {profile.get('name', '?')}"]
+    if profile.get("locations"):
+        lines.append("지역 목록 (화면의 지명과 대조):")
+        for loc in profile["locations"]:
+            # "영문명 (한국명): 설명" 형식에서 앞부분만 추출
+            short = loc.split(":")[0].strip()
+            lines.append(f"  - {short}")
+    if profile.get("enemies"):
+        lines.append("등장 몬스터/보스:")
+        for e in profile["enemies"]:
+            short = e.split(":")[0].strip()
+            lines.append(f"  - {short}")
+    if profile.get("skills"):
+        lines.append("주요 스킬:")
+        for s in profile["skills"]:
+            short = s.split(":")[0].strip()
+            lines.append(f"  - {short}")
     return "\n".join(lines)

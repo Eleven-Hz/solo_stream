@@ -101,7 +101,7 @@ def ai_process(
     from src.ai.model_client import create_vision_client, GeminiClient
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
-    from src.chat.game_profile_loader import load_profile, build_profile_context
+    from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
     from src.utils.logger import get_chat_logger
 
     client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
@@ -118,6 +118,7 @@ def ai_process(
     game_name = _extract_game_name(initial_game)
     game_profile = load_profile(game_name, ai_client=gemini_client, config=config)
     profile_context = build_profile_context(game_profile)
+    vision_context = build_vision_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
 
     batch_size = config["chat"]["batch_size"]
@@ -126,6 +127,7 @@ def ai_process(
     chat_history: list[dict] = []
     round_num = 0
     chat_active = False  # 시작/종료 버튼으로 제어
+    last_location = ""  # 직전 라운드에서 확인된 위치
 
     while True:
         # 설정 변경 수신 (non-blocking)
@@ -133,15 +135,24 @@ def ai_process(
             setting = settings_queue.get_nowait()
             if "vision_provider" in setting:
                 new_provider = setting["vision_provider"]
-                log.info(f"vision_provider 변경: {new_provider}")
-                config.setdefault("ai", {})["vision_provider"] = new_provider
+                new_model = setting.get("vision_model")
+                ai_cfg = config.setdefault("ai", {})
+                ai_cfg["vision_provider"] = new_provider
+                if new_model:
+                    if new_provider == "claude":
+                        ai_cfg["claude_vision_model"] = new_model
+                    else:
+                        ai_cfg["vision_model"] = new_model
+                log.info(f"vision 변경: {new_provider} / {new_model or '(모델 유지)'}")
                 client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
             elif "game_name" in setting:
                 new_game = setting["game_name"]
                 log.info(f"게임 프로필 변경 요청: {new_game}")
                 game_profile = load_profile(new_game, ai_client=gemini_client, config=config)
                 profile_context = build_profile_context(game_profile)
+                vision_context = build_vision_context(game_profile)
                 chat_history.clear()
+                last_location = ""
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
             elif "chat_active" in setting:
                 chat_active = setting["chat_active"]
@@ -156,8 +167,20 @@ def ai_process(
             round_num += 1
             log.info(f"=== 라운드 #{round_num} Vision 분석 시작 ===")
 
-            game_context = client.analyze_screenshot(image_bytes)
+            game_context = client.analyze_screenshot(
+                image_bytes,
+                game_profile_context=vision_context,
+                previous_location=last_location,
+            )
             log.info(f"[게임 상황] {game_context}")
+
+            # 위치 추출해서 다음 라운드에 전달
+            for line in game_context.splitlines():
+                if line.startswith("위치:"):
+                    loc = line[len("위치:"):].strip()
+                    if loc and loc != "알 수 없음":
+                        last_location = loc
+                    break
             chat_log.info(f"=== 라운드 #{round_num} [{game_profile.get('name','?')}] ===")
             chat_log.info(f"[게임 상황] {game_context}")
 

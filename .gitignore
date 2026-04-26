@@ -7,3 +7,6 @@ __pycache__/*
 logs/*
 */__init__.py
 */*/__init__.py
+tests/vision/*.txt
+dev_history/*
+dev_history

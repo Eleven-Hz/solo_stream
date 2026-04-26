@@ -12,13 +12,24 @@ import time
 
 logger = logging.getLogger("solo_stream.ai")
 
-_VISION_PROMPT = """당신은 게임 화면을 분석하는 AI입니다.
-현재 게임 화면을 보고 아래 항목을 간결하게 한국어로 요약하세요 (2~3문장):
-- 현재 위치 / 장소
-- 진행 중인 상황 (전투, 탐험, 대화, 퀘스트 등)
-- 눈에 띄는 이벤트나 변화 (HP 위기, 보스 등장, 레벨업 등)
+_VISION_SYSTEM = "당신은 게임 방송 전문 해설 AI입니다. 주어진 게임 정보를 활용해 화면을 정확하고 간결하게 한국어로 분석합니다."
 
-없는 정보는 언급하지 마세요. 짧고 핵심만."""
+_VISION_PROMPT_TEMPLATE = """{game_profile_section}{prev_location_section}스크린샷을 분석해 아래 형식으로만 답하세요.
+
+위치: <게임 내 지명 — 게임 정보의 지명을 우선 사용. 화면에 지명 UI가 없으면 이전 위치를 유지. 정말 모르면 "알 수 없음">
+상황: <지금 하고 있는 행동 — 전투/탐험/대화/퀘스트/이동 등 한 줄>
+이벤트: <주목할 변화 (HP 위기·보스 등장·레벨업·중요 아이템 획득 등) — 없으면 이 줄 생략>
+
+규칙: 각 항목은 1~2줄. 항목 레이블("위치:", "상황:", "이벤트:") 유지. 추가 설명 금지."""
+
+
+def _build_vision_prompt(game_profile_context: str = "", previous_location: str = "") -> str:
+    profile_section = f"[게임 정보]\n{game_profile_context}\n\n" if game_profile_context else ""
+    prev_section = f"[이전 위치] {previous_location}\n\n" if previous_location else ""
+    return _VISION_PROMPT_TEMPLATE.format(
+        game_profile_section=profile_section,
+        prev_location_section=prev_section,
+    )
 
 _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇들입니다.
 아래 게임 정보와 현재 상황을 바탕으로 각 봇이 채팅을 칩니다.
@@ -88,16 +99,20 @@ class GeminiClient:
                     raise
         raise RuntimeError("최대 재시도 횟수 초과")
 
-    def analyze_screenshot(self, image_bytes: bytes) -> str:
+    def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
         from google.genai import types
+        prompt = _build_vision_prompt(game_profile_context, previous_location)
         try:
             def _call():
                 return self._client.models.generate_content(
                     model=self._vision_model,
                     contents=[
-                        _VISION_PROMPT,
                         types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                        prompt,
                     ],
+                    config=types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    ),
                 )
             response = self._call_with_retry(_call)
             return response.text.strip()
@@ -150,12 +165,14 @@ class ClaudeClient:
         self._vision_model = config["ai"].get("claude_vision_model", "claude-opus-4-7")
         self._chat_model = config["ai"].get("claude_chat_model", "claude-sonnet-4-6")
 
-    def analyze_screenshot(self, image_bytes: bytes) -> str:
+    def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
+        prompt = _build_vision_prompt(game_profile_context, previous_location)
         try:
             image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
             response = self._client.messages.create(
                 model=self._vision_model,
                 max_tokens=512,
+                system=_VISION_SYSTEM,
                 messages=[
                     {
                         "role": "user",
@@ -168,7 +185,7 @@ class ClaudeClient:
                                     "data": image_b64,
                                 },
                             },
-                            {"type": "text", "text": _VISION_PROMPT},
+                            {"type": "text", "text": prompt},
                         ],
                     }
                 ],

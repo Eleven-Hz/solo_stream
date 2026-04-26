@@ -1,14 +1,14 @@
 ai:
   # 이미지 분석 제공자: "gemini" 또는 "claude"
   vision_provider: gemini
-  vision_model: gemini-2.5-flash-lite
+  vision_model: gemini-2.5-flash
   chat_model: gemini-2.5-flash-lite
   api_key_env: GEMINI_API_KEY
   # 게임 프로필 자동 생성 모델 (Google Search grounding 지원 Gemini만 가능)
   profile_model: gemini-2.5-flash
   # Claude 설정 (vision_provider: claude 일 때 사용)
   claude_api_key_env: CLAUDE_API_KEY
-  claude_vision_model: claude-opus-4-7
+  claude_vision_model: claude-sonnet-4-6
   claude_chat_model: claude-sonnet-4-6
 capture:
   interval_seconds: 15

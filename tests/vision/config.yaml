@@ -1,0 +1,25 @@
+# Vision 모델 비교 테스트 설정
+# 실행: python tests/vision/run.py
+
+game: "CrossCode"          # 게임명 (프로필 캐시 키)
+rounds: 5                  # 라운드 수
+interval: 3.0              # 라운드 간 대기 시간 (초)
+image: null                # 이미지 파일 경로 (null이면 게임 창 캡처)
+
+gemini:
+  model: gemini-2.5-flash  
+  #model: gemini-2.5-flash-lite 
+  #model: gemini-2.5-pro 
+  #model: gemini-2.0-flash
+
+claude:
+  #model: claude-sonnet-4-6 
+  #model: claude-sonnet-4-6
+  #model: claude-opus-4-7 
+  model: claude-haiku-4-5-20251001
+
+output:
+  file: tests/vision/result_g25f_ch45.txt   # 결과 저장 경로 (프로젝트 루트 기준)
+  encoding: utf-8
+  append: true                              # true: 기존 파일에 추가 / false: 덮어쓰기
+  description: "gemini-2.5-flash vs claude-haiku-4-5, vision_context 적용 테스트"

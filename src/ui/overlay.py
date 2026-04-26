@@ -289,6 +289,25 @@ class SettingsPanel(QWidget):
             }
         """
 
+        _GEMINI_VISION_MODELS = [
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash",
+        ]
+        _CLAUDE_VISION_MODELS = [
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+            "claude-haiku-4-5-20251001",
+        ]
+
+        # provider 행
+        provider_row = QHBoxLayout()
+        provider_lbl = QLabel("Provider")
+        provider_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        provider_lbl.setFixedWidth(52)
+        provider_row.addWidget(provider_lbl)
+
         self._provider_combo = QComboBox()
         self._provider_combo.setStyleSheet(_combo_style)
         self._provider_combo.addItems(["gemini", "claude"])
@@ -296,7 +315,35 @@ class SettingsPanel(QWidget):
         idx = self._provider_combo.findText(current_provider)
         if idx >= 0:
             self._provider_combo.setCurrentIndex(idx)
-        layout.addWidget(self._provider_combo)
+        provider_row.addWidget(self._provider_combo)
+        layout.addLayout(provider_row)
+
+        # model 행
+        model_row = QHBoxLayout()
+        model_lbl = QLabel("Model")
+        model_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        model_lbl.setFixedWidth(52)
+        model_row.addWidget(model_lbl)
+
+        self._vision_model_combo = QComboBox()
+        self._vision_model_combo.setStyleSheet(_combo_style)
+        model_row.addWidget(self._vision_model_combo)
+        layout.addLayout(model_row)
+
+        # provider 변경 시 모델 목록 교체
+        def _on_provider_changed(provider: str):
+            self._vision_model_combo.clear()
+            if provider == "claude":
+                self._vision_model_combo.addItems(_CLAUDE_VISION_MODELS)
+                cur = self._config.get("ai", {}).get("claude_vision_model", _CLAUDE_VISION_MODELS[0])
+            else:
+                self._vision_model_combo.addItems(_GEMINI_VISION_MODELS)
+                cur = self._config.get("ai", {}).get("vision_model", _GEMINI_VISION_MODELS[0])
+            idx = self._vision_model_combo.findText(cur)
+            self._vision_model_combo.setCurrentIndex(max(idx, 0))
+
+        self._provider_combo.currentTextChanged.connect(_on_provider_changed)
+        _on_provider_changed(current_provider)  # 초기 목록 채우기
 
         apply_ai_btn = QPushButton("분석 모델 적용")
         apply_ai_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
@@ -455,18 +502,24 @@ class SettingsPanel(QWidget):
 
     def _apply_vision_provider(self):
         provider = self._provider_combo.currentText()
-        self._settings_queue.put({"vision_provider": provider})
-        self._save_config_vision_provider(provider)
-        logger.info(f"이미지 분석 모델 변경: {provider}")
+        model = self._vision_model_combo.currentText()
+        self._settings_queue.put({"vision_provider": provider, "vision_model": model})
+        self._save_config_vision_provider(provider, model)
+        logger.info(f"이미지 분석 모델 변경: {provider} / {model}")
 
-    def _save_config_vision_provider(self, provider: str):
+    def _save_config_vision_provider(self, provider: str, model: str):
         try:
             from pathlib import Path
             import yaml as _yaml
             config_path = Path(__file__).parent.parent.parent / "config.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = _yaml.safe_load(f)
-            cfg.setdefault("ai", {})["vision_provider"] = provider
+            ai = cfg.setdefault("ai", {})
+            ai["vision_provider"] = provider
+            if provider == "claude":
+                ai["claude_vision_model"] = model
+            else:
+                ai["vision_model"] = model
             with open(config_path, "w", encoding="utf-8") as f:
                 _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         except Exception as e:
