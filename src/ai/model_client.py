@@ -50,15 +50,45 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 - 메시지는 15자 이내. 실제 채팅처럼 짧게.
 - 봇 중 일부(1~2명)는 이번엔 침묵해도 됨. 그러면 해당 봇은 결과에서 제외.
 - 게임 정보를 아는 시청자처럼: 게임 용어, 캐릭터명, 스킬명을 자연스럽게 사용.
-- 이전 채팅에 직접 반응하거나 다른 봇 닉네임을 언급해도 됨.
 - HP/SP 수치는 직접 읽지 말고 "피 빵빵하네", "기력 다 썼다" 처럼 표현.
 - 봇마다 말투가 확실히 달라야 함. 같은 내용 다르게 말하기 금지.
+- 봇별 [자기 기억] 범위만큼만 자기 과거 발언을 참고한다. 범위 밖 발언은 기억 못 함.
+- 봇별 [타인 반응] 설정이 false이면 다른 봇 발언에 직접 반응하거나 닉네임 언급 금지.
+- 봇별 [타인 반응 빈도]가 있으면 그 확률로만 타인 발언에 반응한다 (예: 0.3 → 30% 확률).
 
 반드시 아래 JSON 배열 형식으로만 응답하세요:
 [
   {{"name": "봇이름", "message": "채팅내용"}},
   ...
 ]"""
+
+
+def _build_bots_info(bots: list[dict], chat_history: list[dict]) -> str:
+    lines = []
+    for b in bots:
+        name = b["name"]
+        memory_depth = b.get("memory_depth", 0)
+        react = b.get("react_to_others", True)
+        react_chance = b.get("react_chance", 1.0)
+
+        line = f"- {name}: {b['style']} / 감정: {b['emotion']} / 관계: {b['relationship']}"
+        line += f" / [자기 기억] 최근 자기 발언 {memory_depth}개"
+
+        if not react:
+            line += " / [타인 반응] false"
+        else:
+            pct = int(react_chance * 100)
+            line += f" / [타인 반응] true / [타인 반응 빈도] {pct}%"
+
+        if memory_depth > 0:
+            own = [c["message"] for c in chat_history if c.get("name") == name]
+            recent_own = own[-memory_depth:] if own else []
+            if recent_own:
+                quoted = ", ".join(f'"{m}"' for m in recent_own)
+                line += f" / 내 최근 발언: {quoted}"
+
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _parse_chats(text: str) -> list[dict]:
@@ -127,10 +157,7 @@ class GeminiClient:
         chat_history: list[dict],
         game_profile_context: str = "",
     ) -> list[dict]:
-        bots_info = "\n".join(
-            f"- {b['name']}: {b['style']} / 감정: {b['emotion']} / 관계: {b['relationship']}"
-            for b in bots
-        )
+        bots_info = _build_bots_info(bots, chat_history)
         history_text = (
             "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
             if chat_history else "(아직 채팅 없음)"
@@ -202,10 +229,7 @@ class ClaudeClient:
         chat_history: list[dict],
         game_profile_context: str = "",
     ) -> list[dict]:
-        bots_info = "\n".join(
-            f"- {b['name']}: {b['style']} / 감정: {b['emotion']} / 관계: {b['relationship']}"
-            for b in bots
-        )
+        bots_info = _build_bots_info(bots, chat_history)
         history_text = (
             "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
             if chat_history else "(아직 채팅 없음)"
