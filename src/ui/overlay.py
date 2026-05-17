@@ -409,6 +409,38 @@ class SettingsPanel(QWidget):
         game_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
         layout.addWidget(game_label)
 
+        self._profile_combo = QComboBox()
+        self._profile_combo.setStyleSheet("""
+            QComboBox {
+                background: #1e1e2e;
+                color: #ddd;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background: #1e1e2e;
+                color: #ddd;
+                selection-background-color: #333;
+            }
+        """)
+        layout.addWidget(self._profile_combo)
+        self._refresh_profiles()
+
+        profile_btns = QHBoxLayout()
+        refresh_profile_btn = QPushButton("새로고침")
+        refresh_profile_btn.setStyleSheet(self._btn_style("#333", "#555"))
+        refresh_profile_btn.clicked.connect(self._refresh_profiles)
+        profile_btns.addWidget(refresh_profile_btn)
+
+        apply_profile_btn = QPushButton("프로필 적용")
+        apply_profile_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        apply_profile_btn.clicked.connect(self._apply_profile)
+        profile_btns.addWidget(apply_profile_btn)
+        layout.addLayout(profile_btns)
+
         self._profile_status = QLabel("현재: 로딩 중...")
         self._profile_status.setStyleSheet("color: #888; font-size: 10px;")
         self._profile_status.setWordWrap(True)
@@ -474,13 +506,51 @@ class SettingsPanel(QWidget):
         if idx >= 0:
             self._window_combo.setCurrentIndex(idx)
 
+    def _refresh_profiles(self):
+        from pathlib import Path
+        import re
+        current = self._profile_combo.currentText()
+        self._profile_combo.clear()
+        self._profile_combo.addItem("자동 (창 타이틀에서 감지)")
+        profile_dir = Path(__file__).parent.parent.parent / "game_profiles"
+        if profile_dir.exists():
+            for p in sorted(profile_dir.glob("*.yaml")):
+                if p.stem == "default":
+                    continue
+                # yaml에서 name 필드 읽기 시도
+                try:
+                    import yaml as _yaml
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = _yaml.safe_load(f)
+                    display = data.get("name") or p.stem
+                except Exception:
+                    display = p.stem
+                self._profile_combo.addItem(display, userData=p.stem)
+        idx = self._profile_combo.findText(current)
+        if idx >= 0:
+            self._profile_combo.setCurrentIndex(idx)
+
+    def _apply_profile(self):
+        idx = self._profile_combo.currentIndex()
+        if idx == 0:
+            # 자동: 현재 선택된 창 타이틀에서 감지
+            window_title = self._window_combo.currentText()
+            game_name = _extract_game_name(window_title) if window_title else "Unknown Game"
+        else:
+            game_name = self._profile_combo.currentData() or self._profile_combo.currentText()
+        self._settings_queue.put({"game_name": game_name})
+        self._profile_status.setText(f"적용 중: {game_name}...")
+        logger.info(f"게임 프로필 적용: {game_name}")
+
     def _apply_window(self):
         window_title = self._window_combo.currentText()
         if not window_title:
             return
         self._settings_queue.put({"target_window": window_title})
-        self._settings_queue.put({"game_name": _extract_game_name(window_title)})
-        self._profile_status.setText(f"적용 중: {window_title}\n게임 프로필 생성 중...")
+        # 프로필 콤보가 "자동"이면 창 타이틀에서 게임명 추출해서 적용
+        if self._profile_combo.currentIndex() == 0:
+            self._settings_queue.put({"game_name": _extract_game_name(window_title)})
+            self._profile_status.setText(f"적용 중: {window_title}\n게임 프로필 자동 감지 중...")
         logger.info(f"창 변경 적용: {window_title}")
 
     def _regenerate_profile(self):
@@ -560,6 +630,11 @@ class SettingsPanel(QWidget):
 
     def set_profile_name(self, name: str):
         self._profile_status.setText(f"현재 프로필: {name}")
+        # 콤보박스에서 해당 프로필 선택 (있으면)
+        for i in range(self._profile_combo.count()):
+            if self._profile_combo.itemText(i) == name or self._profile_combo.itemData(i) == name:
+                self._profile_combo.setCurrentIndex(i)
+                return
 
 
 def _extract_game_name(window_title: str) -> str:

@@ -10,6 +10,7 @@ settings_queue를 통해 AI/Capture Process에 전달한다.
 import logging
 import multiprocessing
 import multiprocessing.queues
+import random
 import sys
 import time
 import threading
@@ -107,8 +108,8 @@ def ai_process(
     client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
     # 게임 프로필 생성은 항상 Gemini로 (Google Search 그라운딩 필요)
     gemini_client = GeminiClient(api_key=api_key, config=config)
-    bots = load_personas(config["chat"]["persona_dir"], config["chat"]["bot_count"])
-    log.info(f"봇 {len(bots)}명 로딩: {[b['name'] for b in bots]}")
+    bot_pool = load_personas(config["chat"]["persona_dir"])
+    log.info(f"봇 풀 {len(bot_pool)}명 로딩: {[b['name'] for b in bot_pool]}")
 
     chat_log = get_chat_logger()
 
@@ -184,31 +185,33 @@ def ai_process(
             chat_log.info(f"=== 라운드 #{round_num} [{game_profile.get('name','?')}] ===")
             chat_log.info(f"[게임 상황] {game_context}")
 
-            for i in range(0, len(bots), batch_size):
-                batch = bots[i:i + batch_size]
-                chats = client.generate_chats(
-                    game_context=game_context,
-                    bots=batch,
-                    chat_history=chat_history,
-                    game_profile_context=profile_context,
+            # 라운드마다 풀에서 batch_size만큼 랜덤 샘플링
+            sample_size = min(batch_size, len(bot_pool))
+            batch = random.sample(bot_pool, sample_size)
+            log.info(f"이번 라운드 발언자 {sample_size}명: {[b['name'] for b in batch]}")
+            chats = client.generate_chats(
+                game_context=game_context,
+                bots=batch,
+                chat_history=chat_history,
+                game_profile_context=profile_context,
+            )
+
+            if chats:
+                log.info(f"채팅 생성 {len(chats)}개")
+                for c in chats:
+                    chat_log.info(f"  {c['name']}: {c['message']}")
+
+                chat_history.extend(chats)
+                context_window = config["chat"]["context_window"]
+                if len(chat_history) > context_window:
+                    chat_history = chat_history[-context_window:]
+
+                t = threading.Thread(
+                    target=schedule_chats,
+                    args=(chats, batch, ui_queue, delay_min, delay_max),
+                    daemon=True,
                 )
-
-                if chats:
-                    log.info(f"채팅 생성 {len(chats)}개")
-                    for c in chats:
-                        chat_log.info(f"  {c['name']}: {c['message']}")
-
-                    chat_history.extend(chats)
-                    context_window = config["chat"]["context_window"]
-                    if len(chat_history) > context_window:
-                        chat_history = chat_history[-context_window:]
-
-                    t = threading.Thread(
-                        target=schedule_chats,
-                        args=(chats, batch, ui_queue, delay_min, delay_max),
-                        daemon=True,
-                    )
-                    t.start()
+                t.start()
 
         except multiprocessing.queues.Empty:
             pass  # 타임아웃은 정상 — 다음 루프 계속

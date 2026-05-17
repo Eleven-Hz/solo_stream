@@ -16,8 +16,8 @@ capture:
   target_window: CrossCode Min v1.4.2-4
   resize_width: 1024
 chat:
-  bot_count: 5
-  batch_size: 5
+  batch_size: 5     # 라운드당 풀에서 무작위로 뽑아 발언시킬 봇 수
+
   context_window: 10
   delay_min: 1.0
   delay_max: 8.0

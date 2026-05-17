@@ -7,10 +7,10 @@ import yaml
 logger = logging.getLogger("solo_stream.persona")
 
 
-def load_personas(persona_dir: str, bot_count: int) -> list[dict]:
+def load_personas(persona_dir: str) -> list[dict]:
     """
-    persona_dir 안의 모든 YAML 파일에서 봇을 로딩.
-    bot_count만큼만 잘라서 반환.
+    persona_dir 안의 모든 YAML 파일에서 봇을 로딩해 전체 풀을 반환.
+    매 채팅 배치마다 main에서 이 풀에서 랜덤 샘플링한다.
     """
     base_path = Path(persona_dir)
     if not base_path.is_absolute():
@@ -28,4 +28,4 @@ def load_personas(persona_dir: str, bot_count: int) -> list[dict]:
     if not all_bots:
         raise ValueError(f"페르소나 파일을 찾을 수 없습니다: {base_path}")
 
-    return all_bots[:bot_count]
+    return all_bots

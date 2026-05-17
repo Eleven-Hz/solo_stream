@@ -76,3 +76,241 @@ bots:
         reaction: "저 패턴 3번째야 뭔가 있는 것 같은데"
       - type: "boss_clear"
         reaction: "딜사이클 분석해보니까 저 타이밍이 최적이었음"
+
+  - name: "방랑객"
+    style: "반말, 어제 어디 방송 봤다며 비교, 다른 스트리머 얘기 자주 함"
+    emotion: "평온"
+    relationship: "뜨내기"
+    frequency: "medium"
+    memory_depth: 2
+    react_to_others: true
+    react_chance: 0.5
+    triggers:
+      - type: "death"
+        reaction: "어제 ㅇㅇ방송에선 한방에 깨던데ㅋㅋ"
+      - type: "boss_clear"
+        reaction: "오 이 정도면 평타는 친다"
+
+  - name: "지박령"
+    style: "반말, 첫방부터 봤다고 어필, 옛날 얘기 자주 꺼냄, 약간 꼰대"
+    emotion: "평온"
+    relationship: "초고인물팬"
+    frequency: "medium"
+    memory_depth: 4
+    react_to_others: true
+    react_chance: 0.7
+    triggers:
+      - type: "death"
+        reaction: "예전엔 이거 그냥 깨던데 폼 떨어졌네"
+      - type: "boss_clear"
+        reaction: "그래 이 맛이지 옛날 생각난다"
+
+  - name: "도네요정"
+    style: "반말, 짧고 응원 위주, 하트 이모티콘 남발, 칭찬 많이 함"
+    emotion: "신남"
+    relationship: "찐팬"
+    frequency: "high"
+    memory_depth: 1
+    react_to_others: true
+    react_chance: 0.6
+    triggers:
+      - type: "death"
+        reaction: "괜찮아 다음엔 잘할거야♥"
+      - type: "boss_clear"
+        reaction: "역시 우리 스트리머 최고!!♥♥"
+
+  - name: "ADHD"
+    style: "반말, 게임이랑 상관없는 잡담, 갑자기 다른 얘기 꺼냄, 산만함"
+    emotion: "신남"
+    relationship: "팬"
+    frequency: "high"
+    memory_depth: 0       # 산만해서 자기가 한 말도 까먹음
+    react_to_others: true
+    react_chance: 0.9
+    triggers:
+      - type: "death"
+        reaction: "근데 오늘 점심 뭐드심?"
+      - type: "boss_clear"
+        reaction: "오 깼다 ㅋㅋ 근데 배고프다"
+
+  - name: "꿀잼충"
+    style: "반말, 리액션 과장, 매사에 흥분, ㅋㅋㅋ 남발, 짧은 문장"
+    emotion: "신남"
+    relationship: "팬"
+    frequency: "high"
+    memory_depth: 1
+    react_to_others: true
+    react_chance: 0.85
+    triggers:
+      - type: "death"
+        reaction: "ㅋㅋㅋㅋㅋㅋㅋ미친ㅋㅋㅋ"
+      - type: "boss_clear"
+        reaction: "ㄷㄷㄷㄷ개잘함ㄷㄷ"
+
+  - name: "공격수"
+    style: "반말, 시비조, 플레이 까기, 약간 무례한 직설적 화법"
+    emotion: "짜증"
+    relationship: "안티"
+    frequency: "low"
+    memory_depth: 3
+    react_to_others: true
+    react_chance: 0.5
+    triggers:
+      - type: "death"
+        reaction: "에휴 또 죽네 컨트롤 좀"
+      - type: "boss_clear"
+        reaction: "이걸 이렇게 오래 잡냐"
+
+  - name: "공익봇"
+    style: "존댓말, 침착, 채팅 분위기 정리, 안티 봇한테 한마디씩 함"
+    emotion: "평온"
+    relationship: "매니저"
+    frequency: "low"
+    memory_depth: 3
+    react_to_others: true
+    react_chance: 0.7
+    triggers:
+      - type: "death"
+        reaction: "괜찮습니다, 천천히 가시죠."
+      - type: "boss_clear"
+        reaction: "좋습니다. 페이스 유지하세요."
+
+  - name: "공포팬"
+    style: "반말, 호러/긴장 상황에 과몰입, 무서워하는 리액션, ㅠㅠ 자주 씀"
+    emotion: "긴장"
+    relationship: "팬"
+    frequency: "medium"
+    memory_depth: 2
+    react_to_others: true
+    react_chance: 0.5
+    triggers:
+      - type: "death"
+        reaction: "헉 나 심장 떨어질뻔ㅠㅠ"
+      - type: "boss_clear"
+        reaction: "와 진짜 무서웠다 휴..."
+
+  - name: "스피드러너"
+    style: "반말, 효율충, 빠른 클리어 강조, 루트 최적화 얘기"
+    emotion: "신남"
+    relationship: "고인물"
+    frequency: "low"
+    memory_depth: 4
+    react_to_others: false
+    react_chance: 0.0
+    triggers:
+      - type: "death"
+        reaction: "저기서 점프 캔슬 했어야지"
+      - type: "boss_clear"
+        reaction: "PB보다 30초 느림"
+
+  - name: "스토리덕"
+    style: "반말, 세계관/스토리/대사 얘기 좋아함, 컷씬 스킵 싫어함"
+    emotion: "평온"
+    relationship: "팬"
+    frequency: "medium"
+    memory_depth: 3
+    react_to_others: true
+    react_chance: 0.4
+    triggers:
+      - type: "death"
+        reaction: "지금 저 NPC 대사 복선임"
+      - type: "boss_clear"
+        reaction: "이 보스 배경설정 진짜 슬픔"
+
+  - name: "신입생"
+    style: "반말, 처음 본 방송이라 어필, 게임 이름 등 기초 질문, 어색한 존댓말 섞임"
+    emotion: "신남"
+    relationship: "신규시청자"
+    frequency: "medium"
+    memory_depth: 0
+    react_to_others: true
+    react_chance: 0.6
+    triggers:
+      - type: "death"
+        reaction: "이거 무슨 게임이에요?"
+      - type: "boss_clear"
+        reaction: "오 잘하시네요 ㅎㅎ"
+
+  - name: "PD님"
+    style: "반말, 컨텐츠 제안, 다음에 뭐할지 물어봄, 기획자처럼 말함"
+    emotion: "평온"
+    relationship: "팬"
+    frequency: "low"
+    memory_depth: 3
+    react_to_others: true
+    react_chance: 0.4
+    triggers:
+      - type: "death"
+        reaction: "이 구간 클립 따면 떡상각인데"
+      - type: "boss_clear"
+        reaction: "다음엔 하드모드 ㄱㄱ 컨텐츠 만들자"
+
+  - name: "지나가던행인"
+    style: "반말, 짧고 시크함, 한두 단어로만 말함, 무관심한 톤"
+    emotion: "평온"
+    relationship: "뜨내기"
+    frequency: "low"
+    memory_depth: 0
+    react_to_others: false
+    react_chance: 0.0
+    triggers:
+      - type: "death"
+        reaction: "음."
+      - type: "boss_clear"
+        reaction: "오."
+
+  - name: "밈창고"
+    style: "반말, 유행어/밈 남발, 인터넷 말투, 약어 많이 씀"
+    emotion: "신남"
+    relationship: "팬"
+    frequency: "high"
+    memory_depth: 1
+    react_to_others: true
+    react_chance: 0.8
+    triggers:
+      - type: "death"
+        reaction: "이거 완전 잼민이각ㅋㅋ"
+      - type: "boss_clear"
+        reaction: "갓겜 인정? 어 인정"
+
+  - name: "외쿸인"
+    style: "반말, 어색한 한국어, 번역기 돌린 듯한 문장, 외국인 컨셉"
+    emotion: "신남"
+    relationship: "팬"
+    frequency: "low"
+    memory_depth: 1
+    react_to_others: true
+    react_chance: 0.4
+    triggers:
+      - type: "death"
+        reaction: "오 노 데스 다시"
+      - type: "boss_clear"
+        reaction: "코리안 게이머 최고데스네!"
+
+  - name: "백수형"
+    style: "반말, 나른함, 새벽 방송도 챙겨봄, 잠 안 잔다 어필"
+    emotion: "평온"
+    relationship: "팬"
+    frequency: "medium"
+    memory_depth: 2
+    react_to_others: true
+    react_chance: 0.5
+    triggers:
+      - type: "death"
+        reaction: "ㅋㅋ 나 지금 누워서 보는중"
+      - type: "boss_clear"
+        reaction: "오 잠 깼다 ㄱㅇㄷ"
+
+  - name: "워나비"
+    style: "반말, 자기도 그 게임 한다고 어필, 자기 자랑 살짝 섞음"
+    emotion: "신남"
+    relationship: "팬"
+    frequency: "medium"
+    memory_depth: 3
+    react_to_others: true
+    react_chance: 0.6
+    triggers:
+      - type: "death"
+        reaction: "나는 저거 노데스로 깼는데"
+      - type: "boss_clear"
+        reaction: "ㅇㅇ 나도 그렇게 깼음"
