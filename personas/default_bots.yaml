@@ -124,7 +124,7 @@ bots:
     emotion: "신남"
     relationship: "팬"
     frequency: "high"
-    memory_depth: 0       # 산만해서 자기가 한 말도 까먹음
+    memory_depth: 1       # 산만해서 자기가 한 말도 까먹음
     react_to_others: true
     react_chance: 0.9
     triggers:

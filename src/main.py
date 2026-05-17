@@ -68,16 +68,16 @@ def capture_process(
             continue
 
         try:
-            frame = capture_screen(target_window=target, resize_width=resize_w)
+            frame, captured_from = capture_screen(target_window=target, resize_width=resize_w)
             total_count += 1
 
             if prev_frame is None or has_significant_change(prev_frame, frame, threshold):
                 image_queue.put(frame)
                 prev_frame = frame
-                log.info(f"[캡처 #{total_count}] 변화 감지 → AI 큐 (스킵율={skip_count/max(total_count,1)*100:.0f}%)")
+                log.info(f"[캡처 #{total_count}] [{captured_from}] 변화 감지 → AI 큐 (스킵율={skip_count/max(total_count,1)*100:.0f}%)")
             else:
                 skip_count += 1
-                log.debug(f"[캡처 #{total_count}] 유사 프레임 스킵")
+                log.debug(f"[캡처 #{total_count}] [{captured_from}] 유사 프레임 스킵")
 
             time.sleep(interval)
         except Exception as e:
@@ -99,13 +99,14 @@ def ai_process(
     setup_logger("solo_stream.ai")
     log = logging.getLogger("solo_stream.ai")
 
-    from src.ai.model_client import create_vision_client, GeminiClient
+    from src.ai.model_client import create_vision_client, create_chat_client, GeminiClient
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
     from src.utils.logger import get_chat_logger
 
     client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+    chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
     # 게임 프로필 생성은 항상 Gemini로 (Google Search 그라운딩 필요)
     gemini_client = GeminiClient(api_key=api_key, config=config)
     bot_pool = load_personas(config["chat"]["persona_dir"])
@@ -146,6 +147,18 @@ def ai_process(
                         ai_cfg["vision_model"] = new_model
                 log.info(f"vision 변경: {new_provider} / {new_model or '(모델 유지)'}")
                 client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+            elif "chat_provider" in setting:
+                new_provider = setting["chat_provider"]
+                new_model = setting.get("chat_model")
+                ai_cfg = config.setdefault("ai", {})
+                ai_cfg["chat_provider"] = new_provider
+                if new_model:
+                    if new_provider == "claude":
+                        ai_cfg["claude_chat_model"] = new_model
+                    else:
+                        ai_cfg["chat_model"] = new_model
+                log.info(f"chat 모델 변경: {new_provider} / {new_model or '(모델 유지)'}")
+                chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
             elif "game_name" in setting:
                 new_game = setting["game_name"]
                 log.info(f"게임 프로필 변경 요청: {new_game}")
@@ -189,7 +202,7 @@ def ai_process(
             sample_size = min(batch_size, len(bot_pool))
             batch = random.sample(bot_pool, sample_size)
             log.info(f"이번 라운드 발언자 {sample_size}명: {[b['name'] for b in batch]}")
-            chats = client.generate_chats(
+            chats = chat_client.generate_chats(
                 game_context=game_context,
                 bots=batch,
                 chat_history=chat_history,
@@ -283,13 +296,17 @@ def main():
     broadcast_queue: multiprocessing.Queue = multiprocessing.Queue()
 
     def _broadcast_settings():
+        import queue
         while True:
             try:
                 setting = broadcast_queue.get(timeout=1)
                 capture_settings_queue.put(setting)
                 ai_settings_queue.put(setting)
-            except Exception:
+                logger.debug(f"[브로드캐스트] {setting}")
+            except queue.Empty:
                 pass
+            except Exception as e:
+                logger.error(f"[브로드캐스트 오류] {e}")
 
     broadcast_thread = threading.Thread(target=_broadcast_settings, daemon=True)
     broadcast_thread.start()

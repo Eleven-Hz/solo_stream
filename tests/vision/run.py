@@ -31,7 +31,7 @@ def _divider(char: str = "-", width: int = 60) -> str:
     return char * width
 
 
-def _capture_game_window(app_config: dict) -> bytes:
+def _capture_game_window(app_config: dict) -> tuple[bytes, str]:
     from src.capture.screen import capture_screen
     target = app_config["capture"].get("target_window")
     resize_w = app_config["capture"].get("resize_width", 1024)
@@ -188,8 +188,8 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper, html_path: Path
             w(f"이미지 파일 로드: {image_path}")
         else:
             w("게임 창 캡처 중...")
-            image_bytes = _capture_game_window(app_config)
-            w(f"캡처 완료 ({len(image_bytes):,} bytes)")
+            image_bytes, captured_from = _capture_game_window(app_config)
+            w(f"캡처 완료: {captured_from} ({len(image_bytes):,} bytes)")
 
         results: dict = {}
 

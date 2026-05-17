@@ -26,8 +26,8 @@ ui:
   opacity: 0.85
   max_messages: 50
   font_size: 14
-  width: 380
-  height: 700
+  width: 392
+  height: 875
   window_excludes:
   - '%Discord%'
   - '%NVIDIA%'

@@ -356,6 +356,75 @@ class SettingsPanel(QWidget):
         sep4.setStyleSheet("background: rgba(255,255,255,20);")
         layout.addWidget(sep4)
 
+        # 채팅 생성 모델 선택
+        chat_model_label = QLabel("채팅 생성 모델")
+        chat_model_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(chat_model_label)
+
+        _GEMINI_CHAT_MODELS = [
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash",
+        ]
+        _CLAUDE_CHAT_MODELS = [
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+        ]
+
+        chat_provider_row = QHBoxLayout()
+        chat_provider_lbl = QLabel("Provider")
+        chat_provider_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        chat_provider_lbl.setFixedWidth(52)
+        chat_provider_row.addWidget(chat_provider_lbl)
+
+        self._chat_provider_combo = QComboBox()
+        self._chat_provider_combo.setStyleSheet(_combo_style)
+        self._chat_provider_combo.addItems(["gemini", "claude"])
+        current_chat_provider = self._config.get("ai", {}).get("chat_provider", "gemini")
+        chat_prov_idx = self._chat_provider_combo.findText(current_chat_provider)
+        if chat_prov_idx >= 0:
+            self._chat_provider_combo.setCurrentIndex(chat_prov_idx)
+        chat_provider_row.addWidget(self._chat_provider_combo)
+        layout.addLayout(chat_provider_row)
+
+        chat_model_row = QHBoxLayout()
+        chat_model_lbl = QLabel("Model")
+        chat_model_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        chat_model_lbl.setFixedWidth(52)
+        chat_model_row.addWidget(chat_model_lbl)
+
+        self._chat_model_combo = QComboBox()
+        self._chat_model_combo.setStyleSheet(_combo_style)
+        chat_model_row.addWidget(self._chat_model_combo)
+        layout.addLayout(chat_model_row)
+
+        def _on_chat_provider_changed(provider: str):
+            self._chat_model_combo.clear()
+            if provider == "claude":
+                self._chat_model_combo.addItems(_CLAUDE_CHAT_MODELS)
+                cur = self._config.get("ai", {}).get("claude_chat_model", _CLAUDE_CHAT_MODELS[0])
+            else:
+                self._chat_model_combo.addItems(_GEMINI_CHAT_MODELS)
+                cur = self._config.get("ai", {}).get("chat_model", _GEMINI_CHAT_MODELS[0])
+            idx = self._chat_model_combo.findText(cur)
+            self._chat_model_combo.setCurrentIndex(max(idx, 0))
+
+        self._chat_provider_combo.currentTextChanged.connect(_on_chat_provider_changed)
+        _on_chat_provider_changed(current_chat_provider)
+
+        apply_chat_btn = QPushButton("채팅 모델 적용")
+        apply_chat_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        apply_chat_btn.clicked.connect(self._apply_chat_model)
+        layout.addWidget(apply_chat_btn)
+
+        # 구분선
+        sep4b = QLabel()
+        sep4b.setFixedHeight(1)
+        sep4b.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep4b)
+
         # API 키 입력
         api_label = QLabel("API 키 설정")
         api_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
@@ -577,6 +646,13 @@ class SettingsPanel(QWidget):
         self._save_config_vision_provider(provider, model)
         logger.info(f"이미지 분석 모델 변경: {provider} / {model}")
 
+    def _apply_chat_model(self):
+        provider = self._chat_provider_combo.currentText()
+        model = self._chat_model_combo.currentText()
+        self._settings_queue.put({"chat_provider": provider, "chat_model": model})
+        self._save_config_chat_model(provider, model)
+        logger.info(f"채팅 생성 모델 변경: {provider} / {model}")
+
     def _save_config_vision_provider(self, provider: str, model: str):
         try:
             from pathlib import Path
@@ -594,6 +670,24 @@ class SettingsPanel(QWidget):
                 _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         except Exception as e:
             logger.error(f"vision_provider 저장 실패: {e}")
+
+    def _save_config_chat_model(self, provider: str, model: str):
+        try:
+            from pathlib import Path
+            import yaml as _yaml
+            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f)
+            ai = cfg.setdefault("ai", {})
+            ai["chat_provider"] = provider
+            if provider == "claude":
+                ai["claude_chat_model"] = model
+            else:
+                ai["chat_model"] = model
+            with open(config_path, "w", encoding="utf-8") as f:
+                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            logger.error(f"chat_model 저장 실패: {e}")
 
     def _save_api_keys(self):
         try:
@@ -674,7 +768,7 @@ class ChatOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMinimumSize(220, 180)
+        self.setMinimumSize(220, 875)
         self.resize(self._config["width"], self._config["height"])
 
     def _setup_ui(self):

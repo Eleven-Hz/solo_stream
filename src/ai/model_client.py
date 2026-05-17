@@ -288,3 +288,16 @@ def create_vision_client(config: dict, gemini_api_key: str, claude_api_key: str 
             raise ValueError("Claude vision을 사용하려면 CLAUDE_API_KEY가 필요합니다.")
         return ClaudeClient(api_key=claude_api_key, config=config)
     return GeminiClient(api_key=gemini_api_key, config=config)
+
+
+def create_chat_client(config: dict, gemini_api_key: str, claude_api_key: str | None = None):
+    """
+    config["ai"]["chat_provider"] 에 따라 채팅 전용 클라이언트 반환.
+    "gemini" (기본값) 또는 "claude".
+    """
+    provider = config["ai"].get("chat_provider", "gemini").lower()
+    if provider == "claude":
+        if not claude_api_key:
+            raise ValueError("Claude chat을 사용하려면 CLAUDE_API_KEY가 필요합니다.")
+        return ClaudeClient(api_key=claude_api_key, config=config)
+    return GeminiClient(api_key=gemini_api_key, config=config)
