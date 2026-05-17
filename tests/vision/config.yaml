@@ -2,9 +2,17 @@
 # 실행: python tests/vision/run.py
 
 game: "CrossCode"          # 게임명 (프로필 캐시 키)
-rounds: 5                  # 라운드 수
-interval: 3.0              # 라운드 간 대기 시간 (초)
-image: null                # 이미지 파일 경로 (null이면 게임 창 캡처)
+rounds: 5                  # 라운드 수 (video 모드에서는 추출 프레임 수로 자동 대체)
+interval: 3.0              # 라운드 간 대기 시간 (초, video 모드에서는 무시)
+image: null                # 이미지 파일 경로 (null이면 게임 창 캡처, video 설정 시 무시)
+
+# 영상 모드 설정 (주석 해제 시 video 파일에서 프레임을 추출해 테스트)
+video:
+  file: tests/video/crosscode_video_01.mkv   # 프로젝트 루트 기준 경로
+  frame_interval: 10.0                       # 프레임 추출 간격 (초)
+  start: 0.0                                 # 시작 시각 (초)
+  end: null                                  # 종료 시각 (초, null이면 영상 끝까지)
+  resize_width: 1024                         # 프레임 리사이즈 너비
 
 gemini:
   model: gemini-2.5-flash  

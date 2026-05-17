@@ -1,3 +1,9 @@
+vision_focus:
+- 지역 분위기 (배경 색상·지형 — 설원/사막/정글/항구/던전 등)
+- 현재 속성 모드 (화면 속성 아이콘 — 무색/열기/냉기/전기/파동)
+- HP·SP 게이지 상태 (여유/위기 등)
+- 주변 몬스터 종류와 수
+- NPC 또는 대화창 유무
 name: CrossCode (크로스코드)
 description: Radical Fish Games가 개발한 2D 액션 RPG로, 먼 미래를 배경으로 합니다. 기억을 잃고 말을 할 수 없게
   된 주인공 '레아'가 가상현실 MMORPG 'CrossWorlds'에 접속하여 자신의 기억을 되찾고 CrossWorlds를 둘러싼 미스터리를 파헤치는

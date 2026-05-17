@@ -102,6 +102,21 @@ _STEP3_PROMPT = """인터넷에서 "{game_name}" 게임의 몬스터/보스와 �
   ]
 }}"""
 
+_STEP3B_VISION_FOCUS_PROMPT = """"{game_name}" 게임의 스크린샷을 AI가 분석할 때 주목해야 할 시각적 요소를 정리하세요.
+인터넷 검색 없이 게임 장르와 UI/시스템 특성을 바탕으로 답하세요.
+
+아래 JSON만 출력 (마크다운 금지):
+{{
+  "vision_focus": [
+    "5~8개 항목. 각 항목은 '무엇을 어떻게 읽어야 하는지' 한 줄.",
+    "예시: 지역 분위기 (배경 색상·지형 — 설원/사막/정글 등)",
+    "예시: 현재 속성 모드 (화면 속성 아이콘 — 무색/열기/냉기/전기/파동)",
+    "예시: 화면에 보이는 자원 (철광석/구리/석탄 등 광물 색상으로 구분)",
+    "게임 장르에 맞는 UI 요소 (체력바, 미니맵, 인벤토리 상태 등) 포함",
+    "전투형이면 적 종류·수·상태, 건설형이면 설비 종류·밀도 등 장르 특화 항목 포함"
+  ]
+}}"""
+
 _STEP4_CHAT_TIPS_PROMPT = """인터넷에서 "{game_name}" 게임의 커뮤니티 문화와 스트리밍 밈을 검색하세요.
 트위치/유튜브 클립, 레딧, 디시인사이드, 나무위키 등을 참고하세요.
 
@@ -204,6 +219,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
     profile: dict = {
         "name": game_name,
         "description": "",
+        "vision_focus": [],
         "systems": [],
         "locations": [],
         "enemies": [],
@@ -246,6 +262,17 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         logger.info(f"  → 적 {len(profile['enemies'])}개, 스킬 {len(profile['skills'])}개")
     except Exception as e:
         logger.error(f"  3단계 실패: {e}")
+
+    # ── 3b단계: vision_focus 생성 ────────────────────────────────────────────
+    logger.info(f"[3b/5] Vision 묘사 포커스 생성 중...")
+    try:
+        prompt = _STEP3B_VISION_FOCUS_PROMPT.format(game_name=game_name)
+        text = _search(ai_client, prompt, model)
+        data = _parse_json(text)
+        profile["vision_focus"] = _clean_list(data.get("vision_focus", []))
+        logger.info(f"  → vision_focus {len(profile['vision_focus'])}개")
+    except Exception as e:
+        logger.error(f"  3b단계 실패: {e}")
 
     # ── 4단계: chat_tips 심화 검색 ──────────────────────────────────────────
     logger.info(f"[4/5] 커뮤니티 밈/채팅 포인트 심화 검색 중...")
@@ -374,10 +401,13 @@ def build_profile_context(profile: dict) -> str:
 def build_vision_context(profile: dict) -> str:
     """Vision 화면 분석 전용 컨텍스트. 지명·몬스터·스킬만 포함해 토큰 최소화."""
     lines = [f"게임: {profile.get('name', '?')}"]
+    if profile.get("vision_focus"):
+        lines.append("화면 묘사 시 주목할 항목:")
+        for f in profile["vision_focus"]:
+            lines.append(f"  - {f}")
     if profile.get("locations"):
         lines.append("지역 목록 (화면의 지명과 대조):")
         for loc in profile["locations"]:
-            # "영문명 (한국명): 설명" 형식에서 앞부분만 추출
             short = loc.split(":")[0].strip()
             lines.append(f"  - {short}")
     if profile.get("enemies"):

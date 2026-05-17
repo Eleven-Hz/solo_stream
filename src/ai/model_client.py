@@ -16,19 +16,40 @@ _VISION_SYSTEM = "당신은 게임 방송 전문 해설 AI입니다. 주어진 �
 
 _VISION_PROMPT_TEMPLATE = """{game_profile_section}{prev_location_section}스크린샷을 분석해 아래 형식으로만 답하세요.
 
+묘사: <화면에 보이는 것을 2~3줄로 서술{vision_focus_hint}>
 위치: <게임 내 지명 — 게임 정보의 지명을 우선 사용. 화면에 지명 UI가 없으면 이전 위치를 유지. 정말 모르면 "알 수 없음">
 상황: <지금 하고 있는 행동 — 전투/탐험/대화/퀘스트/이동 등 한 줄>
 이벤트: <주목할 변화 (HP 위기·보스 등장·레벨업·중요 아이템 획득 등) — 없으면 이 줄 생략>
 
-규칙: 각 항목은 1~2줄. 항목 레이블("위치:", "상황:", "이벤트:") 유지. 추가 설명 금지."""
+규칙: 각 항목은 1~2줄. 항목 레이블("묘사:", "위치:", "상황:", "이벤트:") 유지. 추가 설명 금지."""
 
 
 def _build_vision_prompt(game_profile_context: str = "", previous_location: str = "") -> str:
     profile_section = f"[게임 정보]\n{game_profile_context}\n\n" if game_profile_context else ""
     prev_section = f"[이전 위치] {previous_location}\n\n" if previous_location else ""
+
+    # vision_focus 항목이 게임 정보에 있으면 묘사 힌트로 추출
+    focus_hint = ""
+    if game_profile_context:
+        lines = game_profile_context.splitlines()
+        focus_items = []
+        in_focus = False
+        for line in lines:
+            if "화면 묘사 시 주목할 항목:" in line:
+                in_focus = True
+                continue
+            if in_focus:
+                if line.startswith("  - "):
+                    focus_items.append(line.strip("- ").strip())
+                else:
+                    break
+        if focus_items:
+            focus_hint = " — 특히: " + " / ".join(focus_items)
+
     return _VISION_PROMPT_TEMPLATE.format(
         game_profile_section=profile_section,
         prev_location_section=prev_section,
+        vision_focus_hint=focus_hint,
     )
 
 _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇들입니다.
@@ -198,7 +219,7 @@ class ClaudeClient:
             image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
             response = self._client.messages.create(
                 model=self._vision_model,
-                max_tokens=512,
+                max_tokens=768,
                 system=_VISION_SYSTEM,
                 messages=[
                     {

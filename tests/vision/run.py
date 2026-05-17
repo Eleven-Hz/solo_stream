@@ -23,6 +23,8 @@ import yaml
 from src.utils.config_loader import load_config, get_api_key, get_claude_api_key
 from src.ai.model_client import GeminiClient, ClaudeClient
 from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
+from tests.vision.db import init_db, save_session, save_round, save_result
+from tests.vision.report import build_html
 
 
 def _divider(char: str = "-", width: int = 60) -> str:
@@ -44,6 +46,51 @@ def _load_image_file(path: str) -> bytes:
     return buf.getvalue()
 
 
+def _extract_video_frames(video_path: str, video_cfg: dict) -> list[tuple[float, bytes]]:
+    """영상에서 프레임을 추출해 (타임스탬프_초, jpeg_bytes) 리스트로 반환."""
+    import cv2
+    from PIL import Image
+
+    interval = video_cfg.get("frame_interval", 5.0)
+    start_sec = video_cfg.get("start", 0.0)
+    end_sec = video_cfg.get("end", None)
+    resize_w = video_cfg.get("resize_width", 1024)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"영상 파일을 열 수 없습니다: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps
+
+    end_sec = min(end_sec, duration) if end_sec is not None else duration
+
+    frames: list[tuple[float, bytes]] = []
+    ts = start_sec
+    while ts <= end_sec + 1e-6:
+        cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000)
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        h, w = frame.shape[:2]
+        if w > resize_w:
+            scale = resize_w / w
+            frame = cv2.resize(frame, (resize_w, int(h * scale)), interpolation=cv2.INTER_AREA)
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        frames.append((ts, buf.getvalue()))
+
+        ts += interval
+
+    cap.release()
+    return frames
+
+
 def _extract_game_name(raw: str) -> str:
     name = raw or ""
     name = re.sub(r"\s*[-]\s*Steam.*", "", name)
@@ -52,7 +99,7 @@ def _extract_game_name(raw: str) -> str:
     return re.sub(r"\s+", " ", name).strip() or "Unknown Game"
 
 
-def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
+def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper, html_path: Path | None = None):
     def w(line: str = ""):
         out.write(line + "\n")
         out.flush()
@@ -77,9 +124,36 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
     rounds = test_cfg.get("rounds", 1)
     interval = test_cfg.get("interval", 3.0)
     image_path = test_cfg.get("image")
+    video_cfg = test_cfg.get("video")  # video 섹션 (있으면 영상 모드)
 
     description = test_cfg.get("output", {}).get("description", "")
     started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 영상 모드: 프레임 미리 추출
+    video_frames: list[tuple[float, bytes]] = []
+    if video_cfg and video_cfg.get("file"):
+        video_path = str(ROOT / video_cfg["file"])
+        w(f"영상 파일 프레임 추출 중: {video_path}")
+        video_frames = _extract_video_frames(video_path, video_cfg)
+        rounds = len(video_frames)
+        w(f"추출된 프레임: {rounds}개")
+
+    # DB 세션 생성
+    init_db()
+    if video_frames:
+        source = f"video:{video_cfg['file']}"
+    elif image_path:
+        source = f"image:{image_path}"
+    else:
+        source = "capture"
+    session_id = save_session(
+        started_at=started_at,
+        description=description,
+        game=game_profile.get("name", game_name),
+        gemini_model=app_config["ai"]["vision_model"],
+        claude_model=app_config["ai"]["claude_vision_model"],
+        source=source,
+    )
 
     w(_divider("="))
     w(f"  시작 시각    : {started_at}")
@@ -91,7 +165,10 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
     w(f"  Claude 키    : {'있음' if claude_key else '없음'}")
     w(f"  게임 프로필  : {game_profile.get('name', game_name)}")
     w(f"  라운드       : {rounds}회")
-    w(f"  이미지       : {image_path or '게임 창 캡처'}")
+    if video_frames:
+        w(f"  소스         : 영상 ({video_cfg['file']})")
+    else:
+        w(f"  이미지       : {image_path or '게임 창 캡처'}")
     w(_divider("="))
 
     all_results: list[dict] = []
@@ -102,7 +179,11 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
         w(f"\n[라운드 {round_num} / {rounds}]")
         w(_divider())
 
-        if image_path:
+        if video_frames:
+            ts, image_bytes = video_frames[round_num - 1]
+            m, s = divmod(int(ts), 60)
+            w(f"영상 프레임 로드: {ts:.1f}s ({m:02d}:{s:02d})  ({len(image_bytes):,} bytes)")
+        elif image_path:
             image_bytes = _load_image_file(image_path)
             w(f"이미지 파일 로드: {image_path}")
         else:
@@ -111,6 +192,10 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
             w(f"캡처 완료 ({len(image_bytes):,} bytes)")
 
         results: dict = {}
+
+        # DB: 라운드 + 이미지 저장
+        ts_sec = video_frames[round_num - 1][0] if video_frames else None
+        round_id = save_round(session_id, round_num, image_bytes, ts_sec)
 
         w("\n[Gemini]")
         t0 = time.perf_counter()
@@ -121,6 +206,7 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
         )
         gemini_elapsed = time.perf_counter() - t0
         results["gemini"] = {"text": gemini_result, "elapsed": gemini_elapsed}
+        save_result(round_id, "gemini", gemini_result, gemini_elapsed)
         w(gemini_result)
         w(f"  ({gemini_elapsed:.2f}s)")
         for line in gemini_result.splitlines():
@@ -140,6 +226,7 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
             )
             claude_elapsed = time.perf_counter() - t0
             results["claude"] = {"text": claude_result, "elapsed": claude_elapsed}
+            save_result(round_id, "claude", claude_result, claude_elapsed)
             w(claude_result)
             w(f"  ({claude_elapsed:.2f}s)")
             for line in claude_result.splitlines():
@@ -153,9 +240,11 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
             results["claude"] = None
 
         results["round"] = round_num
+        if video_frames:
+            results["timestamp"] = video_frames[round_num - 1][0]
         all_results.append(results)
 
-        if round_num < rounds:
+        if round_num < rounds and not video_frames:
             w(f"\n{interval:.0f}초 후 다음 라운드...")
             time.sleep(interval)
 
@@ -171,6 +260,13 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper):
             if claude_times:
                 w(f"  Claude  평균 응답시간: {sum(claude_times)/len(claude_times):.2f}s")
         w(_divider("="))
+
+    # HTML 리포트 생성
+    if html_path:
+        html_content = build_html([session_id])
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text(html_content, encoding="utf-8")
+        w(f"\n리포트: {html_path}")
 
 
 def main():
@@ -194,12 +290,15 @@ def main():
     append = out_cfg.get("append", False)
     mode = "a" if append else "w"
 
+    txt_file = out_cfg.get("file", "tests/vision/result.txt")
+    html_path = ROOT / Path(txt_file).with_suffix(".html")
+
     print(f"결과 저장: {output_path}  ({'추가' if append else '덮어쓰기'})")
 
     with open(output_path, mode, encoding=encoding) as out:
         if append and output_path.stat().st_size > 0:
             out.write("\n" + "=" * 60 + "\n")
-        run(test_cfg, app_config, out)
+        run(test_cfg, app_config, out, html_path=html_path)
 
     print("완료.")
 
