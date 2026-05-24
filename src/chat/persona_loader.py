@@ -6,6 +6,20 @@ import yaml
 
 logger = logging.getLogger("solo_stream.persona")
 
+_VALID_WEIGHTS = {"off", "low", "medium", "high"}
+
+
+def normalize_user_speech_weight(value, default: str = "medium") -> str:
+    """YAML이 off를 False로 파싱하는 함정 대비 + 검증."""
+    if value is False:
+        return "off"
+    if value is True:
+        return "on" if "on" in _VALID_WEIGHTS else default
+    if value is None:
+        return default
+    s = str(value).lower().strip()
+    return s if s in _VALID_WEIGHTS else default
+
 
 def load_personas(persona_dir: str) -> list[dict]:
     """

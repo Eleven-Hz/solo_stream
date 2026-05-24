@@ -1,21 +1,29 @@
+# Python
 venv/*
 venv/
 __pycache__/
 __pycache__/*
 *.pyc
-.env.local
-logs/*
 */__init__.py
 */*/__init__.py
+
+# Environment
+.env.local
+
+# Logs
+logs/*
+
+# Test results
 tests/vision/video/*
 tests/*/*.txt
 tests/*/*.html
 tests/*/results.db
+tests/stt/audio/*.wav
 
+# Development history
 dev_history/*
 dev_history
 
+# Claude
 .claude
 .claude/*
-
-tests/stt/audio/*.wav

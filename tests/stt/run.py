@@ -53,20 +53,61 @@ def _resample(pcm: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
     return np.interp(x, xp, pcm).astype(np.float32)
 
 
-def _record_mic(duration_seconds: float, sample_rate: int) -> np.ndarray:
-    """마이크에서 duration_seconds 동안 녹음."""
+def _record_mic(duration_seconds: float, sample_rate: int, device: str | int | None = None) -> np.ndarray:
+    """마이크에서 duration_seconds 동안 녹음. 카운트다운 + 입력 레벨 표시."""
     import sounddevice as sd
+    import time
 
-    print(f"  ▶ 마이크 녹음 시작 ({duration_seconds:.0f}s)...")
-    pcm = sd.rec(
-        int(duration_seconds * sample_rate),
+    sd_device = None if (device is None or device == "default") else device
+    if sd_device is not None:
+        try:
+            info = sd.query_devices(sd_device, "input")
+            print(f"  ▶ 입력 장치: [{sd_device}] {info['name']}")
+        except Exception as e:
+            print(f"  ▶ device='{device}' 조회 실패, 시스템 기본값 사용 ({e})")
+            sd_device = None
+    else:
+        default_idx = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
+        try:
+            info = sd.query_devices(default_idx, "input")
+            print(f"  ▶ 입력 장치: [기본 {default_idx}] {info['name']}")
+        except Exception:
+            print(f"  ▶ 입력 장치: 시스템 기본")
+
+    total_frames = int(duration_seconds * sample_rate)
+    print(f"  ▶ 마이크 녹음 시작 ({duration_seconds:.0f}s) — 지금 말하세요...")
+
+    stream = sd.InputStream(
         samplerate=sample_rate,
         channels=1,
         dtype="float32",
+        device=sd_device,
     )
-    sd.wait()
-    print(f"  ▶ 마이크 녹음 완료")
-    return pcm.reshape(-1)
+    chunks: list[np.ndarray] = []
+    captured = 0
+    chunk_frames = sample_rate // 5  # 200ms 단위로 표시
+
+    with stream:
+        t0 = time.perf_counter()
+        while captured < total_frames:
+            want = min(chunk_frames, total_frames - captured)
+            data, overflowed = stream.read(want)
+            if overflowed:
+                print("  (overflow)")
+            chunks.append(data.reshape(-1).copy())
+            captured += want
+
+            elapsed = time.perf_counter() - t0
+            remaining = max(0.0, duration_seconds - elapsed)
+            peak = float(np.max(np.abs(data))) if data.size else 0.0
+            bar_len = int(min(peak, 1.0) * 30)
+            bar = "█" * bar_len + "·" * (30 - bar_len)
+            print(f"\r  [{bar}] peak={peak:.2f}  남은 {remaining:4.1f}s", end="", flush=True)
+
+    print()  # 줄바꿈
+    pcm = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+    print(f"  ▶ 녹음 완료 ({len(pcm)/sample_rate:.1f}s, {len(pcm):,} samples)")
+    return pcm
 
 
 def _extract_audio_from_video(video_path: Path, target_sr: int) -> np.ndarray:
@@ -116,7 +157,11 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper, html_path: Path
         pcm, sr = _load_file_audio(path, sample_rate)
         source = f"file:{input_cfg['file']}"
     elif mode == "mic":
-        pcm = _record_mic(input_cfg["duration_seconds"], sample_rate)
+        pcm = _record_mic(
+            input_cfg["duration_seconds"],
+            sample_rate,
+            device=input_cfg.get("device"),
+        )
         sr = sample_rate
         source = "mic"
     elif mode == "video_audio":

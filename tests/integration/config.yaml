@@ -1,0 +1,55 @@
+# Vision + STT 통합 테스트 설정
+# 실행: python tests/integration/run.py
+
+game: "CrossCode"          # 게임 프로필 캐시 키
+
+video:
+  file: tests/vision/video/crosscode_video_01.mkv   # 프로젝트 루트 기준
+  frame_interval: 15.0                       # 프레임 추출 간격(초) — 본 코드 capture.interval_seconds 와 동일 의미
+  start: 0.0                                 # 시작 시각(초)
+  end: 120.0                                 # 종료 시각(초). null이면 영상 끝까지
+  resize_width: 1024
+
+audio:
+  file: tests/stt/audio/crosscode_audio_01.wav
+  offset_seconds: 0.0                        # 비디오 0초 = 오디오 offset_seconds. 양수면 오디오를 뒤로 미룸, 음수면 앞으로 당김
+
+vad:
+  threshold: 0.5
+  min_speech_ms: 250
+  min_silence_ms: 500
+  sample_rate: 16000
+  speech_pad_ms: 100
+
+stt:
+  model: gemini-2.5-flash
+  language: ko
+  prompt: |
+    사용자가 CrossCode 게임을 플레이하며 한국어로 혼잣말/감상을 말합니다.
+    짧은 감탄사도 그대로 옮겨 적으세요.
+
+vision:
+  model: gemini-2.5-flash                    # vision 분석 모델 — vision은 화면만 본다 (사용자 발화 미주입)
+
+chat:
+  model: gemini-2.5-flash-lite               # chat 모델
+  batch_size: 5                              # 라운드당 풀에서 무작위로 뽑을 봇 수
+  persona_dir: personas
+  # 가중치 실험 리스트. 같은 vision/발화 결과를 재사용하여 가중치만 바꿔 chat 호출
+  # 가능한 값: off | low | medium | high
+  weights: ["off", "low", "medium", "high"]
+  # 가중치 실험을 봇 샘플도 동일하게 두려면 true (같은 봇이 가중치별로 어떻게 다른지 비교)
+  share_bots_across_weights: true
+
+# 발화 컨텍스트 정책
+context:
+  # 라운드 시점 t에서 [t - lookback_seconds, t] 구간 발화만 컨텍스트로 사용
+  lookback_seconds: 20.0
+  # 최소 길이 (너무 짧은 발화는 노이즈로 간주하고 제외)
+  min_transcript_chars: 2
+
+output:
+  file: tests/integration/result.txt
+  encoding: utf-8
+  append: false
+  description: "Vision + STT + Chat 가중치 비교 (CrossCode)"

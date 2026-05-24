@@ -59,7 +59,7 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 
 [현재 게임 상황]
 {game_context}
-
+{user_speech_section}
 [최근 채팅 기록]
 {chat_history}
 
@@ -76,21 +76,35 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 - 봇별 [자기 기억] 범위만큼만 자기 과거 발언을 참고한다. 범위 밖 발언은 기억 못 함.
 - 봇별 [타인 반응] 설정이 false이면 다른 봇 발언에 직접 반응하거나 닉네임 언급 금지.
 - 봇별 [타인 반응 빈도]가 있으면 그 확률로만 타인 발언에 반응한다 (예: 0.3 → 30% 확률).
+- 봇별 [스트리머 발화 반응]에 따라 스트리머가 한 말에 대한 반응 강도를 다르게 한다.
+  · off    — 스트리머 발화를 무시. 화면 상황만 보고 채팅.
+  · low    — 들었다는 정도. 가벼운 동조/리액션만 (예: "ㅇㅈ", "ㄹㅇ"). 직접 답하지 않음.
+  · medium — 한 번 정도 받아치거나 동조. 봇 말투로 변형해서.
+  · high   — 적극 받아치고 맞장구. 단, 스트리머 말을 그대로 옮기지 말고 봇 말투로.
 
-반드시 아래 JSON 배열 형식으로만 응답하세요:
+반드시 아래 JSON 배열 형식으로만 응답하세요.
+- 마크다운 코드펜스(```)를 사용하지 말 것.
+- 마지막 항목 뒤에 trailing comma를 넣지 말 것.
+- JSON 외의 설명 문장은 절대 추가하지 말 것.
+
 [
   {{"name": "봇이름", "message": "채팅내용"}},
   ...
 ]"""
 
 
-def _build_bots_info(bots: list[dict], chat_history: list[dict]) -> str:
+def _build_bots_info(bots: list[dict], chat_history: list[dict], default_speech_weight: str = "medium") -> str:
+    from src.chat.persona_loader import normalize_user_speech_weight
+
     lines = []
     for b in bots:
         name = b["name"]
         memory_depth = b.get("memory_depth", 0)
         react = b.get("react_to_others", True)
         react_chance = b.get("react_chance", 1.0)
+        speech_weight = normalize_user_speech_weight(
+            b.get("user_speech_weight"), default=default_speech_weight,
+        )
 
         line = f"- {name}: {b['style']} / 감정: {b['emotion']} / 관계: {b['relationship']}"
         line += f" / [자기 기억] 최근 자기 발언 {memory_depth}개"
@@ -100,6 +114,8 @@ def _build_bots_info(bots: list[dict], chat_history: list[dict]) -> str:
         else:
             pct = int(react_chance * 100)
             line += f" / [타인 반응] true / [타인 반응 빈도] {pct}%"
+
+        line += f" / [스트리머 발화 반응] {speech_weight}"
 
         if memory_depth > 0:
             own = [c["message"] for c in chat_history if c.get("name") == name]
@@ -112,16 +128,66 @@ def _build_bots_info(bots: list[dict], chat_history: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_user_speech_section(user_speech: list[dict] | None) -> str:
+    """프롬프트의 [최근 사용자 발화] 섹션. user_speech 항목은
+    {"text": str, "seconds_ago": float} 형식. 없으면 빈 문자열 반환."""
+    if not user_speech:
+        return ""
+    lines = ["", "[최근 스트리머 발화 (음성)]"]
+    for u in user_speech:
+        sec = u.get("seconds_ago")
+        text = u.get("text", "").strip()
+        if not text:
+            continue
+        prefix = f"({sec:.1f}s 전) " if sec is not None else ""
+        lines.append(f'- {prefix}"{text}"')
+    if len(lines) == 2:  # 헤더만 있고 발화 없음
+        return ""
+    return "\n".join(lines) + "\n"
+
+
+class ChatCallDebug:
+    """generate_chats 가 마지막 호출 정보를 보관해 호출자가 라운드 로그에 합쳐쓸 수 있게 함."""
+    __slots__ = ("provider", "model", "prompt", "raw_response", "elapsed_s")
+
+    def __init__(self):
+        self.provider: str = ""
+        self.model: str = ""
+        self.prompt: str = ""
+        self.raw_response: str = ""
+        self.elapsed_s: float = 0.0
+
+
 def _parse_chats(text: str) -> list[dict]:
-    """JSON 채팅 배열 파싱 + 봇당 1개 중복 제거."""
+    """JSON 채팅 배열 파싱 + 봇당 1개 중복 제거.
+
+    LLM 응답은 종종 다음과 같은 형태로 와서 보수적 cleanup이 필요:
+    - 마크다운 코드펜스(```json ... ```)로 감싸짐
+    - 배열 마지막 항목에 trailing comma
+    - 항목 사이에 설명 문장 섞임 (앞뒤 텍스트는 정규식으로 잘라냄)
+    """
+    # 1) 가장 바깥 [ ... ] 배열만 추출 (코드펜스/앞뒤 설명 제거)
     json_match = re.search(r"\[.*\]", text, re.DOTALL)
     if json_match:
         text = json_match.group(0)
-    chats = json.loads(text)
+    # 2) trailing comma 제거:  }  ,  ]   /   ]  ,  ]   (개행 사이도 처리)
+    cleaned = re.sub(r",(\s*[\]}])", r"\1", text)
+    try:
+        chats = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # 3) fallback: 항목별로 직접 추출
+        chats = []
+        for m in re.finditer(
+            r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"message"\s*:\s*"([^"]*)"\s*\}',
+            cleaned,
+        ):
+            chats.append({"name": m.group(1), "message": m.group(2)})
+        if not chats:
+            raise
     seen = set()
     result = []
     for c in chats:
-        if "name" in c and "message" in c and c["name"] not in seen:
+        if isinstance(c, dict) and "name" in c and "message" in c and c["name"] not in seen:
             seen.add(c["name"])
             result.append(c)
     return result
@@ -134,6 +200,8 @@ class GeminiClient:
         self._client = genai.Client(api_key=api_key)
         self._vision_model = config["ai"]["vision_model"]
         self._chat_model = config["ai"]["chat_model"]
+        # 마지막 chat 호출의 prompt/원본응답/소요시간 — ai_process 가 라운드 블록에 합쳐 찍는 용도
+        self.last_chat_call = ChatCallDebug()
 
     def _call_with_retry(self, fn, max_retries: int = 3):
         for attempt in range(max_retries):
@@ -177,8 +245,10 @@ class GeminiClient:
         bots: list[dict],
         chat_history: list[dict],
         game_profile_context: str = "",
+        user_speech: list[dict] | None = None,
+        default_speech_weight: str = "medium",
     ) -> list[dict]:
-        bots_info = _build_bots_info(bots, chat_history)
+        bots_info = _build_bots_info(bots, chat_history, default_speech_weight)
         history_text = (
             "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
             if chat_history else "(아직 채팅 없음)"
@@ -186,10 +256,14 @@ class GeminiClient:
         prompt = _CHAT_PROMPT_TEMPLATE.format(
             game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
             game_context=game_context,
+            user_speech_section=_build_user_speech_section(user_speech),
             chat_history=history_text,
             bots_info=bots_info,
             bot_count=len(bots),
         )
+        raw = ""
+        parsed: list[dict] = []
+        t0 = time.perf_counter()
         try:
             def _call():
                 return self._client.models.generate_content(
@@ -197,13 +271,19 @@ class GeminiClient:
                     contents=prompt,
                 )
             response = self._call_with_retry(_call)
-            return _parse_chats(response.text.strip())
+            raw = (response.text or "").strip()
+            parsed = _parse_chats(raw)
         except json.JSONDecodeError as e:
             logger.error(f"채팅 JSON 파싱 실패: {e}")
-            return []
         except Exception as e:
             logger.error(f"채팅 생성 실패: {e}")
-            return []
+        finally:
+            self.last_chat_call.provider = "gemini"
+            self.last_chat_call.model = self._chat_model
+            self.last_chat_call.prompt = prompt
+            self.last_chat_call.raw_response = raw
+            self.last_chat_call.elapsed_s = time.perf_counter() - t0
+        return parsed
 
 
 class ClaudeClient:
@@ -212,6 +292,7 @@ class ClaudeClient:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._vision_model = config["ai"].get("claude_vision_model", "claude-opus-4-7")
         self._chat_model = config["ai"].get("claude_chat_model", "claude-sonnet-4-6")
+        self.last_chat_call = ChatCallDebug()
 
     def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
         prompt = _build_vision_prompt(game_profile_context, previous_location)
@@ -249,8 +330,10 @@ class ClaudeClient:
         bots: list[dict],
         chat_history: list[dict],
         game_profile_context: str = "",
+        user_speech: list[dict] | None = None,
+        default_speech_weight: str = "medium",
     ) -> list[dict]:
-        bots_info = _build_bots_info(bots, chat_history)
+        bots_info = _build_bots_info(bots, chat_history, default_speech_weight)
         history_text = (
             "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
             if chat_history else "(아직 채팅 없음)"
@@ -258,23 +341,33 @@ class ClaudeClient:
         prompt = _CHAT_PROMPT_TEMPLATE.format(
             game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
             game_context=game_context,
+            user_speech_section=_build_user_speech_section(user_speech),
             chat_history=history_text,
             bots_info=bots_info,
             bot_count=len(bots),
         )
+        raw = ""
+        parsed: list[dict] = []
+        t0 = time.perf_counter()
         try:
             response = self._client.messages.create(
                 model=self._chat_model,
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return _parse_chats(response.content[0].text.strip())
+            raw = response.content[0].text.strip()
+            parsed = _parse_chats(raw)
         except json.JSONDecodeError as e:
             logger.error(f"Claude 채팅 JSON 파싱 실패: {e}")
-            return []
         except Exception as e:
             logger.error(f"Claude 채팅 생성 실패: {e}")
-            return []
+        finally:
+            self.last_chat_call.provider = "claude"
+            self.last_chat_call.model = self._chat_model
+            self.last_chat_call.prompt = prompt
+            self.last_chat_call.raw_response = raw
+            self.last_chat_call.elapsed_s = time.perf_counter() - t0
+        return parsed
 
 
 def create_vision_client(config: dict, gemini_api_key: str, claude_api_key: str | None = None):

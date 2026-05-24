@@ -11,14 +11,21 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, QSize
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QAction
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSpinBox,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -151,6 +158,46 @@ class TitleBar(QWidget):
 
 
 class SettingsPanel(QWidget):
+    _COMBO_STYLE = """
+        QComboBox {
+            background: #1e1e2e;
+            color: #ddd;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 11px;
+        }
+        QComboBox::drop-down { border: none; }
+        QComboBox QAbstractItemView {
+            background: #1e1e2e;
+            color: #ddd;
+            selection-background-color: #333;
+        }
+    """
+
+    _GEMINI_VISION_MODELS = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+    ]
+    _CLAUDE_VISION_MODELS = [
+        "claude-sonnet-4-6",
+        "claude-opus-4-7",
+        "claude-haiku-4-5-20251001",
+    ]
+    _GEMINI_CHAT_MODELS = [
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+    ]
+    _CLAUDE_CHAT_MODELS = [
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+        "claude-opus-4-7",
+    ]
+
     def __init__(self, settings_queue: Queue, config: dict, parent=None):
         super().__init__(parent)
         self._settings_queue = settings_queue
@@ -159,16 +206,88 @@ class SettingsPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 6, 10, 10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 4, 6, 6)
+        outer.setSpacing(4)
+
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #333;
+                border-radius: 4px;
+                background: transparent;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #1a1a25;
+                color: #888;
+                padding: 6px 12px;
+                border: 1px solid #333;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-size: 11px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background: #2a2a40;
+                color: #ddd;
+                font-weight: bold;
+            }
+            QTabBar::tab:hover:!selected { background: #222232; color: #bbb; }
+        """)
+        outer.addWidget(self._tabs)
+
+        # 각 탭의 내용은 별도 메서드로 빌드
+        self._tabs.addTab(self._build_tab_game(), "게임")
+        self._tabs.addTab(self._build_tab_ai(), "AI 모델")
+        self._tabs.addTab(self._build_tab_stt(), "음성")
+
+        # 모든 위젯 초기화 후 캡처 창 목록 새로고침
+        self._refresh_windows()
+
+    def _make_scroll_tab(self, content_layout_fn):
+        """탭 내용은 길어질 수 있어 스크롤 영역에 담는다. content_layout_fn(layout) 콜백으로 위젯 추가."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 8, 10, 10)
         layout.setSpacing(8)
+        content_layout_fn(layout)
+        layout.addStretch()
 
-        # 구분선
-        sep = QLabel()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet("background: rgba(255,255,255,30);")
-        layout.addWidget(sep)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(container)
+        scroll.setStyleSheet("""
+            QScrollArea { border: none; background: transparent; }
+            QScrollBar:vertical { background: #1a1a25; width: 8px; }
+            QScrollBar::handle:vertical { background: #444; border-radius: 4px; min-height: 20px; }
+            QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+        """)
+        return scroll
 
+    def _build_tab_game(self) -> QWidget:
+        def _body(layout: QVBoxLayout):
+            self._build_section_window(layout)
+            self._build_section_excludes(layout)
+            self._build_section_game_profile(layout)
+        return self._make_scroll_tab(_body)
+
+    def _build_tab_ai(self) -> QWidget:
+        def _body(layout: QVBoxLayout):
+            self._build_section_vision_model(layout)
+            self._build_section_chat_model(layout)
+            self._build_section_api_keys(layout)
+        return self._make_scroll_tab(_body)
+
+    def _build_tab_stt(self) -> QWidget:
+        def _body(layout: QVBoxLayout):
+            self._build_section_stt(layout)
+        return self._make_scroll_tab(_body)
+
+    # ── 게임 탭 섹션 ─────────────────────────────────────────────────────
+
+    def _build_section_window(self, layout: QVBoxLayout):
         # 창 선택
         win_label = QLabel("캡처 창 선택")
         win_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
@@ -205,6 +324,7 @@ class SettingsPanel(QWidget):
         win_btns.addWidget(apply_win_btn)
         layout.addLayout(win_btns)
 
+    def _build_section_excludes(self, layout: QVBoxLayout):
         # 구분선
         sep2 = QLabel()
         sep2.setFixedHeight(1)
@@ -237,7 +357,6 @@ class SettingsPanel(QWidget):
             self._exclude_list.addItem(pat)
         layout.addWidget(self._exclude_list)
 
-        from PyQt6.QtWidgets import QLineEdit
         excl_input_row = QHBoxLayout()
         self._excl_input = QLineEdit()
         self._excl_input.setPlaceholderText("%Discord%  또는  C:\\Users%")
@@ -261,45 +380,13 @@ class SettingsPanel(QWidget):
         excl_input_row.addWidget(del_btn)
         layout.addLayout(excl_input_row)
 
-        # 구분선
-        sep3 = QLabel()
-        sep3.setFixedHeight(1)
-        sep3.setStyleSheet("background: rgba(255,255,255,20);")
-        layout.addWidget(sep3)
+    # ── AI 탭 섹션 ───────────────────────────────────────────────────────
 
+    def _build_section_vision_model(self, layout: QVBoxLayout):
         # 이미지 분석 모델 선택
         ai_label = QLabel("이미지 분석 모델")
         ai_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
         layout.addWidget(ai_label)
-
-        _combo_style = """
-            QComboBox {
-                background: #1e1e2e;
-                color: #ddd;
-                border: 1px solid #444;
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 11px;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background: #1e1e2e;
-                color: #ddd;
-                selection-background-color: #333;
-            }
-        """
-
-        _GEMINI_VISION_MODELS = [
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-2.5-pro",
-            "gemini-2.0-flash",
-        ]
-        _CLAUDE_VISION_MODELS = [
-            "claude-sonnet-4-6",
-            "claude-opus-4-7",
-            "claude-haiku-4-5-20251001",
-        ]
 
         # provider 행
         provider_row = QHBoxLayout()
@@ -309,7 +396,7 @@ class SettingsPanel(QWidget):
         provider_row.addWidget(provider_lbl)
 
         self._provider_combo = QComboBox()
-        self._provider_combo.setStyleSheet(_combo_style)
+        self._provider_combo.setStyleSheet(self._COMBO_STYLE)
         self._provider_combo.addItems(["gemini", "claude"])
         current_provider = self._config.get("ai", {}).get("vision_provider", "gemini")
         idx = self._provider_combo.findText(current_provider)
@@ -326,7 +413,7 @@ class SettingsPanel(QWidget):
         model_row.addWidget(model_lbl)
 
         self._vision_model_combo = QComboBox()
-        self._vision_model_combo.setStyleSheet(_combo_style)
+        self._vision_model_combo.setStyleSheet(self._COMBO_STYLE)
         model_row.addWidget(self._vision_model_combo)
         layout.addLayout(model_row)
 
@@ -334,11 +421,11 @@ class SettingsPanel(QWidget):
         def _on_provider_changed(provider: str):
             self._vision_model_combo.clear()
             if provider == "claude":
-                self._vision_model_combo.addItems(_CLAUDE_VISION_MODELS)
-                cur = self._config.get("ai", {}).get("claude_vision_model", _CLAUDE_VISION_MODELS[0])
+                self._vision_model_combo.addItems(self._CLAUDE_VISION_MODELS)
+                cur = self._config.get("ai", {}).get("claude_vision_model", self._CLAUDE_VISION_MODELS[0])
             else:
-                self._vision_model_combo.addItems(_GEMINI_VISION_MODELS)
-                cur = self._config.get("ai", {}).get("vision_model", _GEMINI_VISION_MODELS[0])
+                self._vision_model_combo.addItems(self._GEMINI_VISION_MODELS)
+                cur = self._config.get("ai", {}).get("vision_model", self._GEMINI_VISION_MODELS[0])
             idx = self._vision_model_combo.findText(cur)
             self._vision_model_combo.setCurrentIndex(max(idx, 0))
 
@@ -350,6 +437,7 @@ class SettingsPanel(QWidget):
         apply_ai_btn.clicked.connect(self._apply_vision_provider)
         layout.addWidget(apply_ai_btn)
 
+    def _build_section_chat_model(self, layout: QVBoxLayout):
         # 구분선
         sep4 = QLabel()
         sep4.setFixedHeight(1)
@@ -361,18 +449,6 @@ class SettingsPanel(QWidget):
         chat_model_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
         layout.addWidget(chat_model_label)
 
-        _GEMINI_CHAT_MODELS = [
-            "gemini-2.5-flash-lite",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-2.0-flash",
-        ]
-        _CLAUDE_CHAT_MODELS = [
-            "claude-haiku-4-5-20251001",
-            "claude-sonnet-4-6",
-            "claude-opus-4-7",
-        ]
-
         chat_provider_row = QHBoxLayout()
         chat_provider_lbl = QLabel("Provider")
         chat_provider_lbl.setStyleSheet("color: #888; font-size: 10px;")
@@ -380,7 +456,7 @@ class SettingsPanel(QWidget):
         chat_provider_row.addWidget(chat_provider_lbl)
 
         self._chat_provider_combo = QComboBox()
-        self._chat_provider_combo.setStyleSheet(_combo_style)
+        self._chat_provider_combo.setStyleSheet(self._COMBO_STYLE)
         self._chat_provider_combo.addItems(["gemini", "claude"])
         current_chat_provider = self._config.get("ai", {}).get("chat_provider", "gemini")
         chat_prov_idx = self._chat_provider_combo.findText(current_chat_provider)
@@ -396,18 +472,18 @@ class SettingsPanel(QWidget):
         chat_model_row.addWidget(chat_model_lbl)
 
         self._chat_model_combo = QComboBox()
-        self._chat_model_combo.setStyleSheet(_combo_style)
+        self._chat_model_combo.setStyleSheet(self._COMBO_STYLE)
         chat_model_row.addWidget(self._chat_model_combo)
         layout.addLayout(chat_model_row)
 
         def _on_chat_provider_changed(provider: str):
             self._chat_model_combo.clear()
             if provider == "claude":
-                self._chat_model_combo.addItems(_CLAUDE_CHAT_MODELS)
-                cur = self._config.get("ai", {}).get("claude_chat_model", _CLAUDE_CHAT_MODELS[0])
+                self._chat_model_combo.addItems(self._CLAUDE_CHAT_MODELS)
+                cur = self._config.get("ai", {}).get("claude_chat_model", self._CLAUDE_CHAT_MODELS[0])
             else:
-                self._chat_model_combo.addItems(_GEMINI_CHAT_MODELS)
-                cur = self._config.get("ai", {}).get("chat_model", _GEMINI_CHAT_MODELS[0])
+                self._chat_model_combo.addItems(self._GEMINI_CHAT_MODELS)
+                cur = self._config.get("ai", {}).get("chat_model", self._GEMINI_CHAT_MODELS[0])
             idx = self._chat_model_combo.findText(cur)
             self._chat_model_combo.setCurrentIndex(max(idx, 0))
 
@@ -419,6 +495,7 @@ class SettingsPanel(QWidget):
         apply_chat_btn.clicked.connect(self._apply_chat_model)
         layout.addWidget(apply_chat_btn)
 
+    def _build_section_api_keys(self, layout: QVBoxLayout):
         # 구분선
         sep4b = QLabel()
         sep4b.setFixedHeight(1)
@@ -429,8 +506,6 @@ class SettingsPanel(QWidget):
         api_label = QLabel("API 키 설정")
         api_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
         layout.addWidget(api_label)
-
-        from PyQt6.QtWidgets import QLineEdit
 
         gemini_row = QHBoxLayout()
         gemini_lbl = QLabel("Gemini")
@@ -467,6 +542,7 @@ class SettingsPanel(QWidget):
         save_keys_btn.clicked.connect(self._save_api_keys)
         layout.addWidget(save_keys_btn)
 
+    def _build_section_game_profile(self, layout: QVBoxLayout):
         # 구분선
         sep5 = QLabel()
         sep5.setFixedHeight(1)
@@ -520,9 +596,234 @@ class SettingsPanel(QWidget):
         regen_btn.clicked.connect(self._regenerate_profile)
         layout.addWidget(regen_btn)
 
-        layout.addStretch()
+    # ── 음성(STT) 탭 섹션 ───────────────────────────────────────────────
 
-        self._refresh_windows()
+    def _build_section_stt(self, layout: QVBoxLayout):
+        stt_cfg = self._config.get("stt", {}) or {}
+
+        _input_style = (
+            "QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit { "
+            "background: #1e1e2e; color: #ddd; border: 1px solid #444; "
+            "border-radius: 4px; padding: 3px 6px; font-size: 11px; }"
+        )
+        _combo_style = self._COMBO_STYLE
+
+        # enabled 토글
+        title = QLabel("음성 인식 (STT)")
+        title.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(title)
+
+        self._stt_enabled_chk = QCheckBox("마이크 음성을 채팅 컨텍스트로 사용")
+        self._stt_enabled_chk.setStyleSheet(
+            "QCheckBox { color: #ddd; font-size: 11px; spacing: 6px; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; }"
+            "QCheckBox::indicator:unchecked { background: #1e1e2e; border: 1px solid #555; border-radius: 3px; }"
+            "QCheckBox::indicator:checked { background: #2d6a4f; border: 1px solid #4f8a6f; border-radius: 3px; }"
+        )
+        self._stt_enabled_chk.setChecked(bool(stt_cfg.get("enabled", False)))
+        layout.addWidget(self._stt_enabled_chk)
+
+        hint = QLabel("변경 후 'STT 설정 저장'을 누르면 config.yaml에 기록됩니다.\n"
+                      "enabled 변경은 다음 실행부터 적용됩니다.")
+        hint.setStyleSheet("color: #666; font-size: 9px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        # 구분선
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+        # default_weight
+        weight_row = QHBoxLayout()
+        weight_lbl = QLabel("기본 반응 강도")
+        weight_lbl.setStyleSheet("color: #bbb; font-size: 11px;")
+        weight_lbl.setFixedWidth(110)
+        weight_row.addWidget(weight_lbl)
+        self._stt_weight_combo = QComboBox()
+        self._stt_weight_combo.setStyleSheet(_combo_style)
+        self._stt_weight_combo.addItems(["off", "low", "medium", "high"])
+        cur_w = str(stt_cfg.get("default_weight", "high")).lower()
+        idx = self._stt_weight_combo.findText(cur_w)
+        self._stt_weight_combo.setCurrentIndex(idx if idx >= 0 else 3)
+        weight_row.addWidget(self._stt_weight_combo)
+        layout.addLayout(weight_row)
+
+        w_hint = QLabel("페르소나에 user_speech_weight가 없는 봇이 사용하는 기본값")
+        w_hint.setStyleSheet("color: #666; font-size: 9px;")
+        w_hint.setWordWrap(True)
+        layout.addWidget(w_hint)
+
+        # lookback_seconds
+        lb_row = QHBoxLayout()
+        lb_lbl = QLabel("lookback (초)")
+        lb_lbl.setStyleSheet("color: #bbb; font-size: 11px;")
+        lb_lbl.setFixedWidth(110)
+        lb_row.addWidget(lb_lbl)
+        self._stt_lookback_spin = QDoubleSpinBox()
+        self._stt_lookback_spin.setStyleSheet(_input_style)
+        self._stt_lookback_spin.setRange(1.0, 120.0)
+        self._stt_lookback_spin.setSingleStep(1.0)
+        self._stt_lookback_spin.setDecimals(1)
+        self._stt_lookback_spin.setValue(float(stt_cfg.get("lookback_seconds", 20.0)))
+        lb_row.addWidget(self._stt_lookback_spin)
+        layout.addLayout(lb_row)
+
+        lb_hint = QLabel("vision 라운드 직전 N초 안의 발화만 채팅 컨텍스트로 사용")
+        lb_hint.setStyleSheet("color: #666; font-size: 9px;")
+        lb_hint.setWordWrap(True)
+        layout.addWidget(lb_hint)
+
+        # min_transcript_chars
+        mc_row = QHBoxLayout()
+        mc_lbl = QLabel("최소 글자 수")
+        mc_lbl.setStyleSheet("color: #bbb; font-size: 11px;")
+        mc_lbl.setFixedWidth(110)
+        mc_row.addWidget(mc_lbl)
+        self._stt_min_chars_spin = QSpinBox()
+        self._stt_min_chars_spin.setStyleSheet(_input_style)
+        self._stt_min_chars_spin.setRange(0, 50)
+        self._stt_min_chars_spin.setValue(int(stt_cfg.get("min_transcript_chars", 2)))
+        mc_row.addWidget(self._stt_min_chars_spin)
+        layout.addLayout(mc_row)
+
+        # 구분선
+        sep2 = QLabel(); sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep2)
+
+        # VAD 파라미터
+        vad_label = QLabel("VAD 파라미터")
+        vad_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(vad_label)
+
+        # threshold
+        th_row = QHBoxLayout()
+        th_lbl = QLabel("threshold")
+        th_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        th_lbl.setFixedWidth(110)
+        th_row.addWidget(th_lbl)
+        self._stt_threshold_spin = QDoubleSpinBox()
+        self._stt_threshold_spin.setStyleSheet(_input_style)
+        self._stt_threshold_spin.setRange(0.1, 0.9)
+        self._stt_threshold_spin.setSingleStep(0.05)
+        self._stt_threshold_spin.setDecimals(2)
+        self._stt_threshold_spin.setValue(float(stt_cfg.get("vad_threshold", 0.5)))
+        th_row.addWidget(self._stt_threshold_spin)
+        layout.addLayout(th_row)
+
+        # min_speech_ms / min_silence_ms
+        for label_text, key, default in [
+            ("min_speech (ms)", "min_speech_ms", 250),
+            ("min_silence (ms)", "min_silence_ms", 500),
+            ("speech_pad (ms)", "speech_pad_ms", 100),
+        ]:
+            row = QHBoxLayout()
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #888; font-size: 10px;")
+            lbl.setFixedWidth(110)
+            row.addWidget(lbl)
+            spin = QSpinBox()
+            spin.setStyleSheet(_input_style)
+            spin.setRange(0, 5000)
+            spin.setSingleStep(50)
+            spin.setValue(int(stt_cfg.get(key, default)))
+            row.addWidget(spin)
+            layout.addLayout(row)
+            # 동적 속성으로 보관 (apply 시 일괄 수집)
+            setattr(self, f"_stt_{key}_spin", spin)
+
+        # max_utterance_seconds
+        mu_row = QHBoxLayout()
+        mu_lbl = QLabel("max 발화 (초)")
+        mu_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        mu_lbl.setFixedWidth(110)
+        mu_row.addWidget(mu_lbl)
+        self._stt_max_utt_spin = QDoubleSpinBox()
+        self._stt_max_utt_spin.setStyleSheet(_input_style)
+        self._stt_max_utt_spin.setRange(5.0, 120.0)
+        self._stt_max_utt_spin.setSingleStep(5.0)
+        self._stt_max_utt_spin.setDecimals(1)
+        self._stt_max_utt_spin.setValue(float(stt_cfg.get("max_utterance_seconds", 30.0)))
+        mu_row.addWidget(self._stt_max_utt_spin)
+        layout.addLayout(mu_row)
+
+        # 구분선
+        sep3 = QLabel(); sep3.setFixedHeight(1)
+        sep3.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep3)
+
+        # 모델 + 언어
+        stt_model_label = QLabel("Transcribe 모델")
+        stt_model_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(stt_model_label)
+
+        model_row = QHBoxLayout()
+        model_lbl = QLabel("model")
+        model_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        model_lbl.setFixedWidth(110)
+        model_row.addWidget(model_lbl)
+        self._stt_model_combo = QComboBox()
+        self._stt_model_combo.setStyleSheet(_combo_style)
+        self._stt_model_combo.addItems([
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro",
+        ])
+        self._stt_model_combo.setEditable(True)
+        cur_model = str(stt_cfg.get("model", "gemini-2.5-flash"))
+        idx_m = self._stt_model_combo.findText(cur_model)
+        if idx_m >= 0:
+            self._stt_model_combo.setCurrentIndex(idx_m)
+        else:
+            self._stt_model_combo.setEditText(cur_model)
+        model_row.addWidget(self._stt_model_combo)
+        layout.addLayout(model_row)
+
+        lang_row = QHBoxLayout()
+        lang_lbl = QLabel("language")
+        lang_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        lang_lbl.setFixedWidth(110)
+        lang_row.addWidget(lang_lbl)
+        self._stt_language_input = QLineEdit()
+        self._stt_language_input.setStyleSheet(_input_style)
+        self._stt_language_input.setText(str(stt_cfg.get("language", "ko")))
+        lang_row.addWidget(self._stt_language_input)
+        layout.addLayout(lang_row)
+
+        device_row = QHBoxLayout()
+        device_lbl = QLabel("device")
+        device_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        device_lbl.setFixedWidth(110)
+        device_row.addWidget(device_lbl)
+        self._stt_device_input = QLineEdit()
+        self._stt_device_input.setStyleSheet(_input_style)
+        self._stt_device_input.setPlaceholderText("default 또는 장치 인덱스/이름")
+        self._stt_device_input.setText(str(stt_cfg.get("device", "default")))
+        device_row.addWidget(self._stt_device_input)
+        layout.addLayout(device_row)
+
+        # transcribe_prompt
+        prompt_label = QLabel("Transcribe 프롬프트")
+        prompt_label.setStyleSheet("color: #bbb; font-size: 11px;")
+        layout.addWidget(prompt_label)
+
+        self._stt_prompt_text = QPlainTextEdit()
+        self._stt_prompt_text.setStyleSheet(_input_style)
+        self._stt_prompt_text.setFixedHeight(70)
+        self._stt_prompt_text.setPlainText(str(stt_cfg.get("transcribe_prompt", "")))
+        layout.addWidget(self._stt_prompt_text)
+
+        # 저장 버튼
+        save_stt_btn = QPushButton("STT 설정 저장 (config.yaml)")
+        save_stt_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        save_stt_btn.clicked.connect(self._save_stt_settings)
+        layout.addWidget(save_stt_btn)
+
+        self._stt_status = QLabel("")
+        self._stt_status.setStyleSheet("color: #888; font-size: 10px;")
+        self._stt_status.setWordWrap(True)
+        layout.addWidget(self._stt_status)
 
     def _btn_style(self, bg: str, hover: str) -> str:
         return (
@@ -721,6 +1022,65 @@ class SettingsPanel(QWidget):
                 logger.info("API 키 저장 완료")
         except Exception as e:
             logger.error(f"API 키 저장 실패: {e}")
+
+    def _save_stt_settings(self):
+        """UI에서 변경한 STT 설정을 config.yaml에 저장 + 가능한 항목은 ai_process에 브로드캐스트."""
+        try:
+            from pathlib import Path
+            import yaml as _yaml
+
+            new_stt = {
+                "enabled": self._stt_enabled_chk.isChecked(),
+                "sample_rate": int(self._config.get("stt", {}).get("sample_rate", 16000)),
+                "device": self._stt_device_input.text().strip() or "default",
+                "vad_threshold": float(self._stt_threshold_spin.value()),
+                "min_speech_ms": int(self._stt_min_speech_ms_spin.value()),
+                "min_silence_ms": int(self._stt_min_silence_ms_spin.value()),
+                "speech_pad_ms": int(self._stt_speech_pad_ms_spin.value()),
+                "max_utterance_seconds": float(self._stt_max_utt_spin.value()),
+                "model": self._stt_model_combo.currentText().strip(),
+                "language": self._stt_language_input.text().strip() or "ko",
+                "transcribe_prompt": self._stt_prompt_text.toPlainText().strip(),
+                "lookback_seconds": float(self._stt_lookback_spin.value()),
+                "min_transcript_chars": int(self._stt_min_chars_spin.value()),
+                "default_weight": self._stt_weight_combo.currentText(),
+            }
+
+            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f)
+            old_enabled = bool((cfg.get("stt") or {}).get("enabled", False))
+            cfg["stt"] = new_stt
+            with open(config_path, "w", encoding="utf-8") as f:
+                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+            # 인-메모리 config도 동기화 (다음 패널 오픈 시 일관성)
+            self._config["stt"] = new_stt
+
+            # 즉시 적용 가능한 항목: ai_process의 lookback/min_chars/default_weight
+            # (브로드캐스트 큐로 전달 — main.py 의 broadcast_queue가 모든 프로세스에 분배)
+            self._settings_queue.put({
+                "stt_runtime": {
+                    "lookback_seconds": new_stt["lookback_seconds"],
+                    "min_transcript_chars": new_stt["min_transcript_chars"],
+                    "default_weight": new_stt["default_weight"],
+                },
+            })
+
+            new_enabled = new_stt["enabled"]
+            if old_enabled != new_enabled:
+                self._stt_status.setText(
+                    f"저장 완료. enabled {old_enabled} → {new_enabled} 변경은 재시작 후 적용됩니다."
+                )
+                self._stt_status.setStyleSheet("color: #f4b400; font-size: 10px;")
+            else:
+                self._stt_status.setText("저장 완료. 런타임 항목은 즉시 적용됩니다.")
+                self._stt_status.setStyleSheet("color: #6BCB77; font-size: 10px;")
+            logger.info(f"STT 설정 저장: {new_stt}")
+        except Exception as e:
+            logger.error(f"STT 설정 저장 실패: {e}", exc_info=True)
+            self._stt_status.setText(f"저장 실패: {e}")
+            self._stt_status.setStyleSheet("color: #ff6b6b; font-size: 10px;")
 
     def set_profile_name(self, name: str):
         self._profile_status.setText(f"현재 프로필: {name}")

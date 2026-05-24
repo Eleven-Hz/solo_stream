@@ -85,6 +85,83 @@ def capture_process(
             time.sleep(interval)
 
 
+# ── 라운드 로그 포맷 ─────────────────────────────────────────────────────────
+
+def _write_round_block(
+    chat_log: logging.Logger,
+    *,
+    round_num: int,
+    game_name: str,
+    game_context: str,
+    vision_elapsed: float,
+    user_speech: list[dict],
+    batch: list[dict],
+    default_weight: str,
+    chats: list[dict],
+    chat_debug,
+    profile_context: str = "",
+) -> None:
+    """한 라운드의 vision / STT / 프롬프트 / 응답을 한 블록으로 chat_log 에 출력.
+
+    줄마다 timestamp 가 찍히면 시각적으로 분절되므로,
+    `\\n` 으로 합친 단일 멀티라인 메시지를 한 번에 info 호출한다.
+    (`_BlockFormatter` 가 첫 줄에만 timestamp 를 찍는다.)
+    """
+    from src.chat.persona_loader import normalize_user_speech_weight  # noqa: PLC0415
+
+    lines: list[str] = []
+    lines.append(f"========== 라운드 #{round_num} [{game_name}] ==========")
+    lines.append(f"[VISION] ({vision_elapsed:.2f}s)")
+    for gl in (game_context or "").splitlines():
+        lines.append(f"  {gl}")
+
+    if user_speech:
+        lines.append("")
+        lines.append(f"[STT 발화 {len(user_speech)}개]")
+        for u in user_speech:
+            lines.append(f"  ({u['seconds_ago']:5.1f}s 전) {u['text']}")
+    else:
+        lines.append("")
+        lines.append("[STT 발화 없음]")
+
+    bot_summary = ", ".join(
+        f"{b['name']}({normalize_user_speech_weight(b.get('user_speech_weight'), default=default_weight)})"
+        for b in batch
+    )
+    lines.append("")
+    lines.append(f"[봇 {len(batch)}명] {bot_summary}")
+
+    if chat_debug is not None:
+        lines.append("")
+        lines.append(
+            f"[CHAT 호출] {chat_debug.provider}/{chat_debug.model}"
+            f"  ({chat_debug.elapsed_s:.2f}s)"
+        )
+        if chat_debug.prompt:
+            prompt_for_log = chat_debug.prompt
+            # 게임 프로필 컨텍스트는 세션 헤더에서 한 번만 출력하고 라운드별 프롬프트에선 생략
+            if profile_context and profile_context in prompt_for_log:
+                prompt_for_log = prompt_for_log.replace(
+                    profile_context,
+                    "(...게임 프로필 컨텍스트 — 세션 헤더 참조...)",
+                )
+            lines.append("[CHAT 프롬프트]")
+            for pl in prompt_for_log.splitlines():
+                lines.append(f"  | {pl}")
+        if chat_debug.raw_response:
+            lines.append("[CHAT 원본 응답]")
+            for rl in chat_debug.raw_response.splitlines():
+                lines.append(f"  > {rl}")
+
+    lines.append("")
+    lines.append(f"[CHAT 결과] {len(chats)}개")
+    for c in chats:
+        lines.append(f"  {c.get('name','?')}: {c.get('message','')}")
+    lines.append("")
+
+    chat_log.info("\n".join(lines))
+
+
 # ── AI 프로세스 ──────────────────────────────────────────────────────────────
 
 def ai_process(
@@ -94,6 +171,7 @@ def ai_process(
     config: dict,
     api_key: str,
     claude_api_key: str | None = None,
+    stt_queue: "multiprocessing.Queue | None" = None,
 ):
     setup_logger("solo_stream")
     setup_logger("solo_stream.ai")
@@ -113,6 +191,8 @@ def ai_process(
     log.info(f"봇 풀 {len(bot_pool)}명 로딩: {[b['name'] for b in bot_pool]}")
 
     chat_log = get_chat_logger()
+    # 세션 시작 시 게임 프로필을 chat_log 에 한 번 박아두고, 라운드 로그에서는 생략한다.
+    # (게임 프로필 변경 시 settings_queue 핸들러에서 다시 호출됨)
 
     # 초기 게임 프로필 로드
     initial_game = config["capture"].get("target_window") or ""
@@ -123,6 +203,24 @@ def ai_process(
     vision_context = build_vision_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
 
+    # 같은 게임 프로필이 짧은 시간에 여러 번 재로드되어도 헤더는 한 번만 찍는다.
+    _last_logged_profile = {"key": None}
+
+    def _log_profile_header(profile_ctx: str, game_label: str):
+        key = (game_label, profile_ctx)
+        if _last_logged_profile["key"] == key:
+            return
+        _last_logged_profile["key"] = key
+        header = ["########## 세션 시작 — 게임 프로필 ##########",
+                  f"# 게임: {game_label}", "#"]
+        for ln in profile_ctx.splitlines():
+            header.append(f"# {ln}")
+        header.append("########## (이하 라운드 프롬프트에서는 위 프로필 컨텍스트를 생략) ##########")
+        chat_log_local = get_chat_logger()
+        chat_log_local.info("\n".join(header))
+
+    _log_profile_header(profile_context, game_profile.get("name", "?"))
+
     batch_size = config["chat"]["batch_size"]
     delay_min = config["chat"]["delay_min"]
     delay_max = config["chat"]["delay_max"]
@@ -130,6 +228,15 @@ def ai_process(
     round_num = 0
     chat_active = False  # 시작/종료 버튼으로 제어
     last_location = ""  # 직전 라운드에서 확인된 위치
+
+    # STT 설정
+    stt_cfg = config.get("stt", {}) or {}
+    stt_enabled = bool(stt_cfg.get("enabled", False)) and stt_queue is not None
+    lookback_s = float(stt_cfg.get("lookback_seconds", 20.0))
+    min_tx_chars = int(stt_cfg.get("min_transcript_chars", 1))
+    default_weight = str(stt_cfg.get("default_weight", "medium")).lower()
+    # 누적 발화 버퍼: {"timestamp": float, "text": str, "duration": float}
+    user_speech_buffer: list[dict] = []
 
     while True:
         # 설정 변경 수신 (non-blocking)
@@ -168,24 +275,56 @@ def ai_process(
                 chat_history.clear()
                 last_location = ""
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
+                _log_profile_header(profile_context, game_profile.get("name", "?"))
             elif "chat_active" in setting:
                 chat_active = setting["chat_active"]
                 log.info(f"채팅 {'시작' if chat_active else '일시정지'}")
+            elif "stt_runtime" in setting:
+                rt = setting["stt_runtime"] or {}
+                if "lookback_seconds" in rt:
+                    lookback_s = float(rt["lookback_seconds"])
+                if "min_transcript_chars" in rt:
+                    min_tx_chars = int(rt["min_transcript_chars"])
+                if "default_weight" in rt:
+                    default_weight = str(rt["default_weight"]).lower()
+                log.info(
+                    f"STT 런타임 설정 갱신: lookback={lookback_s:.1f}s "
+                    f"min_chars={min_tx_chars} default_weight={default_weight}"
+                )
 
         if not chat_active:
             time.sleep(0.5)
             continue
+
+        def _drain_stt_queue():
+            """stt_queue 의 모든 발화를 user_speech_buffer 에 누적."""
+            if not stt_enabled:
+                return
+            while True:
+                try:
+                    ev = stt_queue.get_nowait()
+                except multiprocessing.queues.Empty:
+                    break
+                except Exception:
+                    break
+                if ev.get("text") and len(ev["text"]) >= min_tx_chars:
+                    user_speech_buffer.append(ev)
+
+        # 1차 drain: 라운드 시작 전에 큐를 비워둠
+        _drain_stt_queue()
 
         try:
             image_bytes = image_queue.get(timeout=5)
             round_num += 1
             log.info(f"=== 라운드 #{round_num} Vision 분석 시작 ===")
 
+            vision_t0 = time.perf_counter()
             game_context = client.analyze_screenshot(
                 image_bytes,
                 game_profile_context=vision_context,
                 previous_location=last_location,
             )
+            vision_elapsed = time.perf_counter() - vision_t0
             log.info(f"[게임 상황] {game_context}")
 
             # 위치 추출해서 다음 라운드에 전달
@@ -195,8 +334,25 @@ def ai_process(
                     if loc and loc != "알 수 없음":
                         last_location = loc
                     break
-            chat_log.info(f"=== 라운드 #{round_num} [{game_profile.get('name','?')}] ===")
-            chat_log.info(f"[게임 상황] {game_context}")
+
+            # 2차 drain: vision 분석이 도는 동안(수 초~십수 초) 도착한 발화까지 수거
+            _drain_stt_queue()
+            # 버퍼 정리: lookback_s 보다 오래된 발화는 제거
+            now = time.time()
+            user_speech_buffer = [
+                e for e in user_speech_buffer if now - e["timestamp"] <= lookback_s
+            ]
+
+            # 사용자 발화: 현재 시점 기준 lookback 내 발화만 사용
+            user_speech_payload: list[dict] = []
+            if stt_enabled and user_speech_buffer:
+                for e in user_speech_buffer:
+                    sec_ago = now - e["timestamp"]
+                    if sec_ago <= lookback_s:
+                        user_speech_payload.append({
+                            "text": e["text"],
+                            "seconds_ago": sec_ago,
+                        })
 
             # 라운드마다 풀에서 batch_size만큼 랜덤 샘플링
             sample_size = min(batch_size, len(bot_pool))
@@ -207,7 +363,31 @@ def ai_process(
                 bots=batch,
                 chat_history=chat_history,
                 game_profile_context=profile_context,
+                user_speech=user_speech_payload or None,
+                default_speech_weight=default_weight,
             )
+
+            # 한 라운드의 전체 흐름을 chat_log 에 단일 블록으로 출력
+            _write_round_block(
+                chat_log,
+                round_num=round_num,
+                game_name=game_profile.get("name", "?"),
+                game_context=game_context,
+                vision_elapsed=vision_elapsed,
+                user_speech=user_speech_payload,
+                batch=batch,
+                default_weight=default_weight,
+                chats=chats,
+                chat_debug=getattr(chat_client, "last_chat_call", None),
+                profile_context=profile_context,
+            )
+
+            # 채팅 생성에 쓰인 발화는 버퍼에서 제거 (같은 발화가 다음 라운드에 또 들어가지 않게)
+            if stt_enabled and user_speech_payload:
+                used_texts = {u["text"] for u in user_speech_payload}
+                user_speech_buffer = [
+                    e for e in user_speech_buffer if e["text"] not in used_texts
+                ]
 
             if chats:
                 log.info(f"채팅 생성 {len(chats)}개")
@@ -248,6 +428,74 @@ def _extract_game_name(window_title: str) -> str:
     return name or "Unknown Game"
 
 
+# ── STT 프로세스 ─────────────────────────────────────────────────────────────
+
+def stt_process(
+    stt_queue: multiprocessing.Queue,
+    settings_queue: multiprocessing.Queue,
+    config: dict,
+    api_key: str,
+):
+    setup_logger("solo_stream")
+    setup_logger("solo_stream.stt")
+    log = logging.getLogger("solo_stream.stt")
+
+    from src.stt import STTPipeline, UtteranceEvent
+    from src.stt.transcriber import GeminiTranscriber
+
+    stt_cfg = config.get("stt", {}) or {}
+    sample_rate = int(stt_cfg.get("sample_rate", 16000))
+
+    transcriber = GeminiTranscriber(
+        api_key=api_key,
+        model=stt_cfg.get("model", "gemini-2.5-flash"),
+        language=stt_cfg.get("language", "ko"),
+        prompt=stt_cfg.get("transcribe_prompt"),
+    )
+
+    pipeline = STTPipeline(
+        transcriber=transcriber,
+        sample_rate=sample_rate,
+        device=stt_cfg.get("device", "default"),
+        threshold=float(stt_cfg.get("vad_threshold", 0.5)),
+        min_speech_ms=int(stt_cfg.get("min_speech_ms", 250)),
+        min_silence_ms=int(stt_cfg.get("min_silence_ms", 500)),
+        speech_pad_ms=int(stt_cfg.get("speech_pad_ms", 100)),
+        max_utterance_s=float(stt_cfg.get("max_utterance_seconds", 30.0)),
+        min_transcript_chars=int(stt_cfg.get("min_transcript_chars", 1)),
+    )
+
+    def _push(ev: "UtteranceEvent") -> None:
+        try:
+            stt_queue.put({
+                "timestamp": ev.timestamp,
+                "text": ev.text,
+                "duration": ev.duration_s,
+            }, timeout=0.5)
+        except Exception as e:
+            log.warning(f"stt_queue.put 실패: {e}")
+
+    chat_active = False
+    started = False
+
+    while True:
+        # 설정 변경 수신
+        while not settings_queue.empty():
+            setting = settings_queue.get_nowait()
+            if "chat_active" in setting:
+                chat_active = setting["chat_active"]
+                log.info(f"STT {'시작' if chat_active else '일시정지'}")
+
+        if chat_active and not started:
+            pipeline.start(_push)
+            started = True
+        elif not chat_active and started:
+            pipeline.stop()
+            started = False
+
+        time.sleep(0.3)
+
+
 # ── UI 프로세스 ──────────────────────────────────────────────────────────────
 
 def ui_process(
@@ -269,9 +517,15 @@ def main():
 
     image_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=2)
     ui_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=100)
-    # 설정 변경을 브로드캐스트하는 큐 (UI → Capture, UI → AI)
+    # 설정 변경을 브로드캐스트하는 큐 (UI → Capture, UI → AI, UI → STT)
     capture_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
     ai_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
+    stt_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
+
+    stt_enabled = bool((config.get("stt") or {}).get("enabled", False))
+    stt_queue: multiprocessing.Queue | None = (
+        multiprocessing.Queue(maxsize=200) if stt_enabled else None
+    )
 
     processes = [
         multiprocessing.Process(
@@ -282,17 +536,27 @@ def main():
         ),
         multiprocessing.Process(
             target=ai_process,
-            args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key),
+            args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key, stt_queue),
             name="AIProcess",
             daemon=True,
         ),
     ]
+    if stt_enabled:
+        processes.append(multiprocessing.Process(
+            target=stt_process,
+            args=(stt_queue, stt_settings_queue, config, api_key),
+            name="STTProcess",
+            daemon=True,
+        ))
+        logger.info("STT enabled — STTProcess 추가")
+    else:
+        logger.info("STT disabled (config.stt.enabled=false) — STTProcess 미시작")
 
     for p in processes:
         p.start()
         logger.info(f"{p.name} 시작 (PID={p.pid})")
 
-    # UI에서 설정 변경 시 두 큐에 모두 전달하는 브로드캐스트 큐
+    # UI에서 설정 변경 시 모든 큐에 전달하는 브로드캐스트 큐
     broadcast_queue: multiprocessing.Queue = multiprocessing.Queue()
 
     def _broadcast_settings():
@@ -302,6 +566,8 @@ def main():
                 setting = broadcast_queue.get(timeout=1)
                 capture_settings_queue.put(setting)
                 ai_settings_queue.put(setting)
+                if stt_enabled:
+                    stt_settings_queue.put(setting)
                 logger.debug(f"[브로드캐스트] {setting}")
             except queue.Empty:
                 pass

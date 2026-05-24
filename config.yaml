@@ -1,12 +1,9 @@
 ai:
-  # 이미지 분석 제공자: "gemini" 또는 "claude"
   vision_provider: gemini
   vision_model: gemini-2.5-flash
   chat_model: gemini-2.5-flash-lite
   api_key_env: GEMINI_API_KEY
-  # 게임 프로필 자동 생성 모델 (Google Search grounding 지원 Gemini만 가능)
   profile_model: gemini-2.5-flash
-  # Claude 설정 (vision_provider: claude 일 때 사용)
   claude_api_key_env: CLAUDE_API_KEY
   claude_vision_model: claude-sonnet-4-6
   claude_chat_model: claude-sonnet-4-6
@@ -16,8 +13,7 @@ capture:
   target_window: CrossCode Min v1.4.2-4
   resize_width: 1024
 chat:
-  batch_size: 5     # 라운드당 풀에서 무작위로 뽑아 발언시킬 봇 수
-
+  batch_size: 5
   context_window: 10
   delay_min: 1.0
   delay_max: 8.0
@@ -49,6 +45,17 @@ ui:
   - Program Manager
   - RzMonitor%
 stt:
-  enabled: false
-  mode: vad
+  enabled: true
+  sample_rate: 16000
+  device: default
   vad_threshold: 0.5
+  min_speech_ms: 250
+  min_silence_ms: 500
+  speech_pad_ms: 100
+  max_utterance_seconds: 30.0
+  model: gemini-2.5-flash
+  language: ko
+  transcribe_prompt: 사용자가 게임을 플레이하며 한국어로 혼잣말/감상을 말합니다. 짧은 감탄사도 그대로 옮겨 적으세요.
+  lookback_seconds: 20.0
+  min_transcript_chars: 2
+  default_weight: high
