@@ -7,13 +7,15 @@ __pycache__/*
 logs/*
 */__init__.py
 */*/__init__.py
-tests/video/*
-tests/vision/*.txt
-tests/vision/*.html
-tests/vision/results.db
+tests/vision/video/*
+tests/*/*.txt
+tests/*/*.html
+tests/*/results.db
 
 dev_history/*
 dev_history
 
 .claude
 .claude/*
+
+tests/stt/audio/*.wav

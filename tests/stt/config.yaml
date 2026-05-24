@@ -1,0 +1,28 @@
+input:
+  # file | mic | video_audio
+  mode: file
+  # mode: file 일 때 사용 (WAV 권장, MP3는 soundfile 환경에 따라 동작 안 할 수 있음)
+  file: tests/stt/audio/sample01.wav
+  # mode: mic 일 때 최대 녹음 시간
+  duration_seconds: 30
+  # mode: video_audio 일 때 (ffmpeg 필요)
+  video: tests/video/crosscode_video_01.mkv
+
+vad:
+  threshold: 0.5
+  min_speech_ms: 250
+  min_silence_ms: 500
+  sample_rate: 16000
+  # 발화 segment 좌우로 추가할 패딩(ms) — 발화 시작/끝 잘림 방지
+  speech_pad_ms: 100
+
+stt:
+  provider: gemini
+  model: gemini-2.5-flash
+  language: ko
+  prompt: "사용자가 게임을 플레이하며 한국어로 혼잣말/감상을 말합니다. 짧은 감탄사도 그대로 옮겨 적으세요."
+
+output:
+  file: tests/stt/result.txt
+  description: "STT 1차 정확도 테스트 (WAV 파일 입력)"
+  append: false

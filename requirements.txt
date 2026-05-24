@@ -8,3 +8,7 @@ python-dotenv>=1.0.0
 Pillow>=10.0.0
 numpy>=1.26.0
 pywin32>=306
+# STT (음성 인식)
+silero-vad>=5.1
+sounddevice>=0.4.6
+soundfile>=0.12.1
