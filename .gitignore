@@ -19,6 +19,7 @@ tests/*/*.txt
 tests/*/*.html
 tests/*/results.db
 tests/stt/audio/*.wav
+tests/*.txt
 
 # Development history
 dev_history/*
@@ -27,3 +28,7 @@ dev_history
 # Claude
 .claude
 .claude/*
+
+# oh my claude
+.omc
+.omc/*
