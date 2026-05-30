@@ -24,6 +24,6 @@ stt:
   prompt: "사용자가 게임을 플레이하며 한국어로 혼잣말/감상을 말합니다. 짧은 감탄사도 그대로 옮겨 적으세요."
 
 output:
-  file: tests/stt/result.txt
+  file: tests/stt/output/result.txt
   description: "STT M2 — 마이크 실시간 입력 검증"
   append: false

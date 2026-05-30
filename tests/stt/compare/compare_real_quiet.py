@@ -4,10 +4,10 @@ result.html(작게 들리는 실제 mic 세션)의 저장 오디오로 정규화
 DB에 저장된 mic 세션 segment(진짜 작은 음성)를 꺼내:
   - raw(원본) vs normalize(피크 정규화) 오디오를 둘 다 들을 수 있게 HTML에 임베드
   - 각각 Gemini 로 transcribe 해 텍스트 비교
-결과: tests/stt/result_real_compare.html
+결과: tests/stt/output/result_real_compare.html
 
 실행:
-  python tests/stt/compare_real_quiet.py [--session N]
+  python tests/stt/compare/compare_real_quiet.py [--session N]
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import io
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent.parent
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 import numpy as np
@@ -128,7 +128,8 @@ audio{{width:100%;height:34px;}} .txt{{margin-top:10px;line-height:1.5;font-size
 {''.join(body)}
 </body></html>"""
 
-    out_path = ROOT / "tests" / "stt" / "result_real_compare.html"
+    out_path = ROOT / "tests" / "stt" / "output" / "result_real_compare.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(out, encoding="utf-8")
     print(f"리포트: {out_path}")
 

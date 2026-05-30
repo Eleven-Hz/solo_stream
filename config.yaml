@@ -49,29 +49,23 @@ stt:
   sample_rate: 16000
   device: default
   vad_threshold: 0.5
-  # 캡처 단계 입력 게인 (1.0=변경 없음). 마이크가 작게 잡히면 1.5~3.0 으로 올려
-  # VAD 감지율과 transcribe 신호 레벨을 함께 높인다. 너무 키우면 노이즈도 발화로 오인.
   input_gain: 1.0
-  # Gemini 전송 직전 퍼센타일 기반 정규화 (0=비활성화).
-  # |pcm|의 normalize_percentile 값을 normalize_target_level 로 끌어올린다.
-  # peak가 아니라 퍼센타일 기준이라 게임 효과음 같은 한 번의 큰 소리에 흔들리지 않고,
-  # 정상 음량(기준≥target)은 건드리지 않는다(boost-only).
   normalize_target_level: 0.1
   normalize_percentile: 95
-  # 정규화 게인 상한. 무음/노이즈가 과증폭되는 것을 막는다.
   normalize_max_gain: 20.0
   min_speech_ms: 250
   min_silence_ms: 500
   speech_pad_ms: 100
   max_utterance_seconds: 30.0
-  # STT 제공자: gemini | openai
   provider: gemini
-  # provider=openai 일 때 사용할 API 키 환경변수명 (.env.local)
   openai_api_key_env: OPENAI_API_KEY
-  # provider=gemini: gemini-2.5-flash 등 / provider=openai: gpt-4o-mini-transcribe 등
   model: gemini-2.5-flash
   language: ko
   transcribe_prompt: 사용자가 게임을 플레이하며 한국어로 혼잣말/감상을 말합니다. 짧은 감탄사도 그대로 옮겨 적으세요.
   lookback_seconds: 20.0
   min_transcript_chars: 2
   default_weight: high
+logging:
+  # true면 logs/session_날짜.log·chat_날짜.log 에 하루 1개씩 append, false면 콘솔만.
+  # 7일 지난 로그는 실행 시 자동 삭제. 변경은 다음 실행부터 적용.
+  save_to_file: true

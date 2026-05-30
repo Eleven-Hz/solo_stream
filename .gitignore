@@ -20,6 +20,8 @@ tests/*/*.html
 tests/*/results.db
 tests/stt/audio/*.wav
 tests/*.txt
+# STT 평가 산출물 (html/txt/db)
+tests/stt/output/
 
 # Development history
 dev_history/*

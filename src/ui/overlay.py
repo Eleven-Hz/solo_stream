@@ -260,6 +260,8 @@ class SettingsPanel(QWidget):
         self._tabs.addTab(self._build_tab_game(), "게임")
         self._tabs.addTab(self._build_tab_ai(), "AI 모델")
         self._tabs.addTab(self._build_tab_stt(), "음성")
+        # 비용 탭은 위 탭들의 모델 콤보를 참조하므로 마지막에 빌드한다.
+        self._tabs.addTab(self._build_tab_cost(), "비용")
 
         # 모든 위젯 초기화 후 캡처 창 목록 새로고침
         self._refresh_windows()
@@ -289,6 +291,7 @@ class SettingsPanel(QWidget):
             self._build_section_window(layout)
             self._build_section_excludes(layout)
             self._build_section_game_profile(layout)
+            self._build_section_logging(layout)
         return self._make_scroll_tab(_body)
 
     def _build_tab_ai(self) -> QWidget:
@@ -301,6 +304,11 @@ class SettingsPanel(QWidget):
     def _build_tab_stt(self) -> QWidget:
         def _body(layout: QVBoxLayout):
             self._build_section_stt(layout)
+        return self._make_scroll_tab(_body)
+
+    def _build_tab_cost(self) -> QWidget:
+        def _body(layout: QVBoxLayout):
+            self._build_section_cost(layout)
         return self._make_scroll_tab(_body)
 
     # ── 게임 탭 섹션 ─────────────────────────────────────────────────────
@@ -629,6 +637,59 @@ class SettingsPanel(QWidget):
         regen_btn.clicked.connect(self._regenerate_profile)
         layout.addWidget(regen_btn)
 
+    def _build_section_logging(self, layout: QVBoxLayout):
+        # 구분선
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+        log_label = QLabel("로그")
+        log_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(log_label)
+
+        self._log_save_chk = QCheckBox("로그 파일 저장 (logs/session_날짜.log · chat_날짜.log)")
+        self._log_save_chk.setStyleSheet(
+            "QCheckBox { color: #ddd; font-size: 11px; spacing: 6px; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; }"
+            "QCheckBox::indicator:unchecked { background: #1e1e2e; border: 1px solid #555; border-radius: 3px; }"
+            "QCheckBox::indicator:checked { background: #2d6a4f; border: 1px solid #4f8a6f; border-radius: 3px; }"
+        )
+        cur = bool((self._config.get("logging") or {}).get("save_to_file", True))
+        self._log_save_chk.setChecked(cur)
+        self._log_save_chk.toggled.connect(self._save_logging_setting)
+        layout.addWidget(self._log_save_chk)
+
+        hint = QLabel("하루 1개 파일에 append, 7일 지난 로그는 실행 시 자동 삭제. 끄면 콘솔에만 출력.\n"
+                      "변경은 다음 실행부터 적용됩니다.")
+        hint.setStyleSheet("color: #666; font-size: 9px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self._log_status = QLabel("")
+        self._log_status.setStyleSheet("color: #888; font-size: 10px;")
+        self._log_status.setWordWrap(True)
+        layout.addWidget(self._log_status)
+
+    def _save_logging_setting(self, checked: bool):
+        try:
+            from pathlib import Path
+            import yaml as _yaml
+            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+            cfg.setdefault("logging", {})["save_to_file"] = bool(checked)
+            with open(config_path, "w", encoding="utf-8") as f:
+                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            self._config.setdefault("logging", {})["save_to_file"] = bool(checked)
+            state = "저장 ON" if checked else "저장 OFF"
+            self._log_status.setText(f"로그 파일 {state} — 다음 실행부터 적용됩니다.")
+            self._log_status.setStyleSheet("color: #f4b400; font-size: 10px;")
+            logger.info(f"로그 파일 저장 설정 변경: save_to_file={checked}")
+        except Exception as e:
+            logger.error(f"로그 설정 저장 실패: {e}")
+            self._log_status.setText(f"저장 실패: {e}")
+            self._log_status.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+
     # ── 음성(STT) 탭 섹션 ───────────────────────────────────────────────
 
     def _build_section_stt(self, layout: QVBoxLayout):
@@ -879,6 +940,170 @@ class SettingsPanel(QWidget):
         self._stt_status.setStyleSheet("color: #888; font-size: 10px;")
         self._stt_status.setWordWrap(True)
         layout.addWidget(self._stt_status)
+
+    # ── 비용 탭 섹션 ─────────────────────────────────────────────────────
+
+    def _build_section_cost(self, layout: QVBoxLayout):
+        from src.utils import pricing
+
+        _input_style = (
+            "QSpinBox, QDoubleSpinBox { background: #1e1e2e; color: #ddd; "
+            "border: 1px solid #444; border-radius: 4px; padding: 3px 6px; font-size: 11px; }"
+        )
+
+        title = QLabel("예상 비용 (현재 선택 모델 기준)")
+        title.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(title)
+
+        note = QLabel(
+            f"AI/음성 탭에서 고른 모델 기준으로 대략 비용을 추정합니다(저장 안 해도 반영). "
+            f"단가 {pricing.PRICING_AS_OF} 공개가, 토큰량은 추정치라 실제 청구액과 다를 수 있습니다."
+        )
+        note.setStyleSheet("color: #666; font-size: 9px;")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        # 사용량 가정 입력
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+        usage_lbl = QLabel("사용량 가정")
+        usage_lbl.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        layout.addWidget(usage_lbl)
+
+        d = pricing.USAGE_DEFAULTS
+
+        def _spin(label_text, default, lo, hi, step, decimals, hint):
+            row = QHBoxLayout()
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #888; font-size: 10px;")
+            lbl.setFixedWidth(130)
+            row.addWidget(lbl)
+            spin = QDoubleSpinBox()
+            spin.setStyleSheet(_input_style)
+            spin.setRange(lo, hi)
+            spin.setSingleStep(step)
+            spin.setDecimals(decimals)
+            spin.setValue(default)
+            spin.valueChanged.connect(self._recompute_cost)
+            row.addWidget(spin)
+            layout.addLayout(row)
+            if hint:
+                h = QLabel(hint)
+                h.setStyleSheet("color: #666; font-size: 9px;")
+                h.setWordWrap(True)
+                layout.addWidget(h)
+            return spin
+
+        self._cost_hours_spin = _spin(
+            "세션 길이 (시간)", float(d["hours"]), 0.5, 24.0, 0.5, 1, None)
+        self._cost_speech_spin = _spin(
+            "발화량 (분/시간)", float(d["speech_min_per_hour"]), 0.0, 60.0, 5.0, 0,
+            "시간당 실제 마이크 발화 분량 → STT 비용")
+        self._cost_change_spin = _spin(
+            "화면 변화율 (%)", float(d["screen_change_pct"]), 0.0, 100.0, 5.0, 0,
+            "캡처 주기 중 화면이 바뀌어 이미지 분석이 실제로 호출되는 비율")
+        self._cost_chat_spin = _spin(
+            "채팅 생성 (회/시간)", float(d["chat_calls_per_hour"]), 0.0, 1000.0, 10.0, 0,
+            "시간당 봇 채팅 생성 횟수")
+
+        # 결과 출력
+        sep2 = QLabel(); sep2.setFixedHeight(1)
+        sep2.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep2)
+
+        self._cost_output = QLabel()
+        self._cost_output.setTextFormat(Qt.TextFormat.RichText)
+        self._cost_output.setWordWrap(True)
+        self._cost_output.setStyleSheet("color: #ddd; font-size: 11px;")
+        layout.addWidget(self._cost_output)
+
+        # 모델 콤보가 바뀌면 비용도 갱신 (AI/음성 탭에서 선택만 바꿔도 반영)
+        for combo in (self._vision_model_combo, self._chat_model_combo,
+                      self._stt_model_combo, self._provider_combo,
+                      self._chat_provider_combo, self._stt_provider_combo):
+            combo.currentTextChanged.connect(self._recompute_cost)
+
+        self._recompute_cost()
+
+    def _recompute_cost(self, *args):
+        """현재 선택 모델 + 사용량 가정으로 비용 분해를 다시 그린다."""
+        if not hasattr(self, "_cost_output"):
+            return
+        from src.utils import pricing
+
+        vision_model = self._vision_model_combo.currentText()
+        chat_model = self._chat_model_combo.currentText()
+        stt_model = self._stt_model_combo.currentText()
+        interval = float(self._config.get("capture", {}).get("interval_seconds", 15) or 15)
+
+        est = pricing.estimate_costs(
+            vision_model=vision_model,
+            chat_model=chat_model,
+            stt_model=stt_model,
+            capture_interval_s=interval,
+            hours=self._cost_hours_spin.value(),
+            speech_min_per_hour=self._cost_speech_spin.value(),
+            screen_change_pct=self._cost_change_spin.value(),
+            chat_calls_per_hour=self._cost_chat_spin.value(),
+        )
+
+        f = pricing.format_usd
+
+        def _row(name, block, rate_text):
+            model = block["model"] or "—"
+            if block["known"]:
+                per_hr = f(block["per_hour"])
+                per_sess = f(block["per_session"])
+            else:
+                per_hr = per_sess = "<span style='color:#f4b400;'>?</span>"
+            return (
+                f"<tr>"
+                f"<td style='padding:3px 8px 3px 0;color:#bbb;'>{name}</td>"
+                f"<td style='padding:3px 8px;color:#9aa;'>{model}</td>"
+                f"<td style='padding:3px 8px;color:#888;'>{rate_text}</td>"
+                f"<td style='padding:3px 8px;text-align:right;color:#6BCB77;'>{per_hr}</td>"
+                f"<td style='padding:3px 0 3px 8px;text-align:right;color:#9aa;'>{per_sess}</td>"
+                f"</tr>"
+            )
+
+        v, c, s = est["vision"], est["chat"], est["stt"]
+        rows = (
+            _row("이미지 분석", v, f"{v['calls_per_hour']:.0f}회/시간")
+            + _row("채팅 생성", c, f"{c['calls_per_hour']:.0f}회/시간")
+            + _row("음성 STT", s, f"{s['min_per_hour']:.0f}분/시간")
+        )
+
+        total = (
+            f"<tr style='border-top:1px solid #444;'>"
+            f"<td colspan='3' style='padding:6px 8px 3px 0;color:#ddd;font-weight:bold;'>합계</td>"
+            f"<td style='padding:6px 8px 3px 8px;text-align:right;color:#FFD93D;font-weight:bold;'>"
+            f"{f(est['total_per_hour'])}</td>"
+            f"<td style='padding:6px 0 3px 8px;text-align:right;color:#FFD93D;font-weight:bold;'>"
+            f"{f(est['total_session'])}</td></tr>"
+        )
+
+        warn = ""
+        if est["unknown"]:
+            models = ", ".join(sorted(set(est["unknown"])))
+            warn = (
+                f"<p style='color:#f4b400;font-size:10px;margin-top:8px;'>"
+                f"⚠ 공개 단가가 없는 모델: {models} — 합계에서 제외됨</p>"
+            )
+
+        html = (
+            "<table style='border-collapse:collapse;width:100%;'>"
+            "<tr style='color:#777;font-size:10px;'>"
+            "<td style='padding:0 8px 4px 0;'>항목</td>"
+            "<td style='padding:0 8px 4px;'>모델</td>"
+            "<td style='padding:0 8px 4px;'>사용량</td>"
+            "<td style='padding:0 8px 4px;text-align:right;'>시간당</td>"
+            "<td style='padding:0 0 4px 8px;text-align:right;'>"
+            f"세션({est['hours']:.1f}h)</td></tr>"
+            f"{rows}{total}</table>{warn}"
+        )
+        self._cost_output.setText(html)
 
     def _btn_style(self, bg: str, hover: str) -> str:
         return (

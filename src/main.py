@@ -525,6 +525,12 @@ def main():
     openai_api_key = get_openai_api_key(config)
     logger.info("Solo Stream 시작")
 
+    # 오래된 로그 정리 (자식 프로세스 spawn 전 1회)
+    from src.utils.logger import prune_old_logs
+    removed = prune_old_logs()
+    if removed:
+        logger.info(f"오래된 로그 {removed}개 정리 (7일 경과)")
+
     image_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=2)
     ui_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=100)
     # 설정 변경을 브로드캐스트하는 큐 (UI → Capture, UI → AI, UI → STT)

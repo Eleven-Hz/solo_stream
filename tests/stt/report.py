@@ -2,10 +2,10 @@
 DB에서 STT 세션 데이터를 읽어 HTML 리포트를 생성한다.
 
 단독 실행:
-  python tests/stt/report.py                     # 최신 세션
-  python tests/stt/report.py --session 3         # 세션 ID 지정
-  python tests/stt/report.py --all               # 전체 세션
-  python tests/stt/report.py --out result.html   # 출력 경로 지정
+  python tests/stt/report.py                          # 최신 세션
+  python tests/stt/report.py --session 3              # 세션 ID 지정
+  python tests/stt/report.py --all                    # 전체 세션
+  python tests/stt/report.py --out output/result.html # 출력 경로 지정
 """
 import argparse
 import base64
@@ -192,7 +192,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--session", type=int, help="특정 세션 ID")
     parser.add_argument("--all", action="store_true", help="전체 세션")
-    parser.add_argument("--out", default=str(ROOT / "tests" / "stt" / "result.html"))
+    parser.add_argument("--out", default=str(ROOT / "tests" / "stt" / "output" / "result.html"))
     args = parser.parse_args()
 
     init_db()

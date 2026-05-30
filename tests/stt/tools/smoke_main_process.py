@@ -1,7 +1,7 @@
 """src/main.py 의 stt_process 가 독립 프로세스로 띄워졌을 때 동작 점검.
 
 사용:
-  .\venv\Scripts\python.exe tests\stt\smoke_main_process.py [duration_seconds]
+  .\venv\Scripts\python.exe tests\stt\tools\smoke_main_process.py [duration_seconds]
 
 duration_seconds 동안 chat_active=True 신호를 보내 마이크 캡처/STT를 켰다가,
 들어온 발화 이벤트를 화면에 출력하고 종료한다.
@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent.parent
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from src.utils.config_loader import load_config, get_api_key

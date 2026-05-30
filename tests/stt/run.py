@@ -310,13 +310,13 @@ def main():
     app_config = load_config()
 
     out_cfg = test_cfg.get("output", {})
-    output_path = ROOT / out_cfg.get("file", "tests/stt/result.txt")
+    output_path = ROOT / out_cfg.get("file", "tests/stt/output/result.txt")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     encoding = out_cfg.get("encoding", "utf-8")
     append = out_cfg.get("append", False)
     mode = "a" if append else "w"
 
-    txt_file = out_cfg.get("file", "tests/stt/result.txt")
+    txt_file = out_cfg.get("file", "tests/stt/output/result.txt")
     html_path = ROOT / Path(txt_file).with_suffix(".html")
 
     print(f"결과 저장: {output_path}  ({'추가' if append else '덮어쓰기'})")

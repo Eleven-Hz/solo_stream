@@ -26,7 +26,7 @@
 ### Testing Requirements
 - `tests/stt/run.py` — WAV 파일을 입력으로 VAD segmentation + transcribe 정확도 평가.
 - `tests/integration/run.py` — STT + vision 라운드의 lookback 매칭 검증.
-- `tests/stt/list_devices.py` — sounddevice 장치 인덱스 확인 (마이크 device 설정용).
+- `tests/stt/tools/list_devices.py` — sounddevice 장치 인덱스 확인 (마이크 device 설정용).
 
 ### Common Patterns
 - `STTPipeline.start(on_event)`로 두 스레드 기동, `stop()`으로 큐 sentinel(`None`) 전달 후 join.

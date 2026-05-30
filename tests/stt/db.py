@@ -5,10 +5,11 @@ tests/stt/results.db 에 세션/segment/결과를 저장한다.
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "results.db"
+DB_PATH = Path(__file__).parent / "output" / "results.db"
 
 
 def _conn() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     return con

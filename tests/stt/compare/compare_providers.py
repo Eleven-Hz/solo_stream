@@ -7,11 +7,11 @@ STT 제공자 정확도 비교 — Gemini vs OpenAI.
 
 결과:
   - 콘솔에 segment별 텍스트/지연 출력
-  - tests/stt/result_provider_compare.html (오디오 재생 + 텍스트 나란히 비교)
+  - tests/stt/output/result_provider_compare.html (오디오 재생 + 텍스트 나란히 비교)
 
 실행:
-  python tests/stt/compare_providers.py
-  python tests/stt/compare_providers.py --file tests/stt/audio/crosscode_audio_01.wav --max-segments 8
+  python tests/stt/compare/compare_providers.py
+  python tests/stt/compare/compare_providers.py --file tests/stt/audio/crosscode_audio_01.wav --max-segments 8
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import html
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent.parent
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 import numpy as np
@@ -172,7 +172,8 @@ tfoot th{{background:#e8f0fe;}}
 <tfoot><tr><th>평균 응답시간</th>{avg}</tr></tfoot>
 </table>
 </body></html>"""
-    out_path = ROOT / "tests" / "stt" / "result_provider_compare.html"
+    out_path = ROOT / "tests" / "stt" / "output" / "result_provider_compare.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(out, encoding="utf-8")
     print(f"\n리포트: {out_path}")
 
