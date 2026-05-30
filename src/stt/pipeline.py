@@ -46,6 +46,7 @@ class STTPipeline:
         speech_pad_ms: int = 100,
         max_utterance_s: float = 30.0,
         min_transcript_chars: int = 1,
+        input_gain: float = 1.0,
     ):
         from silero_vad import load_silero_vad
 
@@ -53,6 +54,7 @@ class STTPipeline:
         self._sample_rate = sample_rate
         self._device = None if (device is None or device == "default") else device
         self._threshold = threshold
+        self._input_gain = float(input_gain)
         self._min_speech_samples = int(min_speech_ms * sample_rate / 1000)
         self._min_silence_samples = int(min_silence_ms * sample_rate / 1000)
         self._pad_samples = int(speech_pad_ms * sample_rate / 1000)
@@ -142,6 +144,9 @@ class STTPipeline:
                     logger.debug("마이크 입력 overflow")
 
                 pcm = data.reshape(-1).astype(np.float32, copy=False)
+                if self._input_gain != 1.0:
+                    # 캡처 단계 게인: VAD 감지율과 transcribe 신호 레벨을 함께 올린다.
+                    pcm = np.clip(pcm * self._input_gain, -1.0, 1.0)
                 prob = self._vad_prob(pcm)
                 is_speech = prob >= self._threshold
 

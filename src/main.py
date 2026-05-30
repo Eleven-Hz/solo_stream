@@ -451,6 +451,9 @@ def stt_process(
         model=stt_cfg.get("model", "gemini-2.5-flash"),
         language=stt_cfg.get("language", "ko"),
         prompt=stt_cfg.get("transcribe_prompt"),
+        normalize_target_level=float(stt_cfg.get("normalize_target_level", 0.1)),
+        normalize_percentile=float(stt_cfg.get("normalize_percentile", 95.0)),
+        normalize_max_gain=float(stt_cfg.get("normalize_max_gain", 20.0)),
     )
 
     pipeline = STTPipeline(
@@ -463,6 +466,7 @@ def stt_process(
         speech_pad_ms=int(stt_cfg.get("speech_pad_ms", 100)),
         max_utterance_s=float(stt_cfg.get("max_utterance_seconds", 30.0)),
         min_transcript_chars=int(stt_cfg.get("min_transcript_chars", 1)),
+        input_gain=float(stt_cfg.get("input_gain", 1.0)),
     )
 
     def _push(ev: "UtteranceEvent") -> None:

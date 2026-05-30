@@ -49,6 +49,17 @@ stt:
   sample_rate: 16000
   device: default
   vad_threshold: 0.5
+  # 캡처 단계 입력 게인 (1.0=변경 없음). 마이크가 작게 잡히면 1.5~3.0 으로 올려
+  # VAD 감지율과 transcribe 신호 레벨을 함께 높인다. 너무 키우면 노이즈도 발화로 오인.
+  input_gain: 1.0
+  # Gemini 전송 직전 퍼센타일 기반 정규화 (0=비활성화).
+  # |pcm|의 normalize_percentile 값을 normalize_target_level 로 끌어올린다.
+  # peak가 아니라 퍼센타일 기준이라 게임 효과음 같은 한 번의 큰 소리에 흔들리지 않고,
+  # 정상 음량(기준≥target)은 건드리지 않는다(boost-only).
+  normalize_target_level: 0.1
+  normalize_percentile: 95
+  # 정규화 게인 상한. 무음/노이즈가 과증폭되는 것을 막는다.
+  normalize_max_gain: 20.0
   min_speech_ms: 250
   min_silence_ms: 500
   speech_pad_ms: 100

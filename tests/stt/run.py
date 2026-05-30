@@ -180,6 +180,15 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper, html_path: Path
     total_duration = len(pcm) / sr
     w(f"오디오: {total_duration:.1f}s · {sr}Hz · {len(pcm):,} samples")
 
+    # 1.5) 캡처-단계 입력 게인 (실시간 파이프라인 _capture_loop 미러)
+    #      VAD 이전에 적용해야 작은 발화의 VAD 감지율을 올릴 수 있다.
+    input_gain = float(stt_cfg.get("input_gain", 1.0))
+    if input_gain != 1.0:
+        peak_before = float(np.abs(pcm).max()) if pcm.size else 0.0
+        pcm = np.clip(pcm * input_gain, -1.0, 1.0).astype(np.float32)
+        peak_after = float(np.abs(pcm).max()) if pcm.size else 0.0
+        w(f"입력 게인 {input_gain}x 적용 (peak {peak_before:.4f} → {peak_after:.4f})")
+
     # 2) VAD
     w("\nVAD 발화 구간 검출 중...")
     vad = SileroVAD(
@@ -219,15 +228,29 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper, html_path: Path
 
     if not segments:
         w("\n발화가 감지되지 않았습니다. VAD threshold나 입력 음성을 확인해 주세요.")
+        if html_path:
+            html_content = build_html([session_id])
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.write_text(html_content, encoding="utf-8")
+            w(f"\n리포트: {html_path}")
         return
 
     # 4) Transcribe
     api_key = get_api_key(app_config)
+    norm_level = float(stt_cfg.get("normalize_target_level", 0.0))
+    norm_pct = float(stt_cfg.get("normalize_percentile", 95.0))
+    norm_max_gain = float(stt_cfg.get("normalize_max_gain", 20.0))
+    w(f"  정규화     : "
+      + (f"target_level={norm_level} p{norm_pct:.0f} max_gain={norm_max_gain}"
+         if norm_level > 0 else "비활성화"))
     transcriber = GeminiTranscriber(
         api_key=api_key,
         model=stt_cfg["model"],
         language=stt_cfg["language"],
         prompt=stt_cfg.get("prompt"),
+        normalize_target_level=norm_level,
+        normalize_percentile=norm_pct,
+        normalize_max_gain=norm_max_gain,
     )
 
     elapseds: list[float] = []

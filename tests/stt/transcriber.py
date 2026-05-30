@@ -27,6 +27,32 @@ _TRANSCRIBE_PROMPT_TEMPLATE = """첨부된 음성을 한국어로 그대로 받�
 {context_hint}"""
 
 
+def _normalize_pcm(
+    pcm: np.ndarray,
+    target_level: float = 0.0,
+    percentile: float = 95.0,
+    max_gain: float = 20.0,
+    silence_floor: float = 1e-4,
+) -> np.ndarray:
+    """src.stt.transcriber.normalize_pcm 와 동일한 퍼센타일 정규화 (테스트용 미러).
+
+    target_level <= 0 이면 비활성화(기존 동작 유지).
+    """
+    if target_level <= 0:
+        return pcm
+    if pcm.dtype != np.float32:
+        pcm = pcm.astype(np.float32)
+    if pcm.size == 0:
+        return pcm
+    ref = float(np.percentile(np.abs(pcm), percentile))
+    if ref < silence_floor:
+        return pcm
+    gain = min(target_level / ref, max_gain)
+    if gain <= 1.0:
+        return pcm
+    return np.clip(pcm * gain, -1.0, 1.0).astype(np.float32)
+
+
 def _pcm_to_wav_bytes(pcm: np.ndarray, sample_rate: int) -> bytes:
     """float32 PCM(-1..1)을 16-bit PCM WAV bytes로 변환."""
     import soundfile as sf
@@ -48,6 +74,9 @@ class GeminiTranscriber:
         model: str = "gemini-2.5-flash",
         language: str = "ko",
         prompt: str | None = None,
+        normalize_target_level: float = 0.0,
+        normalize_percentile: float = 95.0,
+        normalize_max_gain: float = 20.0,
     ):
         from google import genai
 
@@ -55,7 +84,14 @@ class GeminiTranscriber:
         self._model = model
         self._language = language
         self._extra_prompt = prompt or ""
-        logger.info(f"GeminiTranscriber 준비: model={model} language={language}")
+        self._normalize_target_level = normalize_target_level
+        self._normalize_percentile = normalize_percentile
+        self._normalize_max_gain = normalize_max_gain
+        logger.info(
+            f"GeminiTranscriber 준비: model={model} language={language} "
+            f"normalize_level={normalize_target_level} p{normalize_percentile:.0f} "
+            f"max_gain={normalize_max_gain}"
+        )
 
     def _build_prompt(self) -> str:
         context_hint = self._extra_prompt.strip()
@@ -82,6 +118,12 @@ class GeminiTranscriber:
         """PCM을 transcribe. (텍스트, 응답시간_초) 반환."""
         from google.genai import types
 
+        pcm = _normalize_pcm(
+            pcm,
+            target_level=self._normalize_target_level,
+            percentile=self._normalize_percentile,
+            max_gain=self._normalize_max_gain,
+        )
         wav_bytes = _pcm_to_wav_bytes(pcm, sample_rate)
         prompt = self._build_prompt()
 
