@@ -197,6 +197,24 @@ class SettingsPanel(QWidget):
         "claude-sonnet-4-6",
         "claude-opus-4-7",
     ]
+    # STT provider별 transcribe 모델 후보.
+    # gemini는 generate_content(오디오 이해)로 받아쓰기가 되는 멀티모달 모델만 포함.
+    # (live/tts/native-audio 변형은 다른 API라 GeminiTranscriber로 동작하지 않아 제외)
+    _STT_MODELS = {
+        "gemini": [
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash",
+        ],
+        "openai": [
+            "gpt-4o-mini-transcribe",
+            "gpt-4o-transcribe",
+            "whisper-1",
+        ],
+    }
 
     def __init__(self, settings_queue: Queue, config: dict, parent=None):
         super().__init__(parent)
@@ -537,6 +555,21 @@ class SettingsPanel(QWidget):
         claude_row.addWidget(self._claude_key_input)
         layout.addLayout(claude_row)
 
+        openai_row = QHBoxLayout()
+        openai_lbl = QLabel("OpenAI")
+        openai_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        openai_lbl.setFixedWidth(42)
+        openai_row.addWidget(openai_lbl)
+        self._openai_key_input = QLineEdit()
+        self._openai_key_input.setPlaceholderText("OPENAI_API_KEY")
+        self._openai_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._openai_key_input.setStyleSheet(
+            "QLineEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
+            "border-radius: 4px; padding: 3px 6px; font-size: 10px; }"
+        )
+        openai_row.addWidget(self._openai_key_input)
+        layout.addLayout(openai_row)
+
         save_keys_btn = QPushButton("API 키 저장 (.env.local)")
         save_keys_btn.setStyleSheet(self._btn_style("#1a3a1a", "#2d6a2d"))
         save_keys_btn.clicked.connect(self._save_api_keys)
@@ -758,6 +791,22 @@ class SettingsPanel(QWidget):
         stt_model_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
         layout.addWidget(stt_model_label)
 
+        # provider 행 (gemini | openai) — 변경 시 모델 목록 교체
+        provider_row = QHBoxLayout()
+        provider_lbl = QLabel("provider")
+        provider_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        provider_lbl.setFixedWidth(110)
+        provider_row.addWidget(provider_lbl)
+        self._stt_provider_combo = QComboBox()
+        self._stt_provider_combo.setStyleSheet(_combo_style)
+        self._stt_provider_combo.addItems(["gemini", "openai"])
+        cur_provider = str(stt_cfg.get("provider", "gemini")).lower()
+        idx_p = self._stt_provider_combo.findText(cur_provider)
+        if idx_p >= 0:
+            self._stt_provider_combo.setCurrentIndex(idx_p)
+        provider_row.addWidget(self._stt_provider_combo)
+        layout.addLayout(provider_row)
+
         model_row = QHBoxLayout()
         model_lbl = QLabel("model")
         model_lbl.setStyleSheet("color: #888; font-size: 10px;")
@@ -765,20 +814,26 @@ class SettingsPanel(QWidget):
         model_row.addWidget(model_lbl)
         self._stt_model_combo = QComboBox()
         self._stt_model_combo.setStyleSheet(_combo_style)
-        self._stt_model_combo.addItems([
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-2.5-pro",
-        ])
-        self._stt_model_combo.setEditable(True)
-        cur_model = str(stt_cfg.get("model", "gemini-2.5-flash"))
-        idx_m = self._stt_model_combo.findText(cur_model)
-        if idx_m >= 0:
-            self._stt_model_combo.setCurrentIndex(idx_m)
-        else:
-            self._stt_model_combo.setEditText(cur_model)
         model_row.addWidget(self._stt_model_combo)
         layout.addLayout(model_row)
+
+        cur_model = str(stt_cfg.get("model", "gemini-2.5-flash"))
+
+        def _on_stt_provider_changed(provider: str):
+            self._stt_model_combo.clear()
+            models = list(self._STT_MODELS.get(provider, []))
+            # 같은 provider면 저장된 모델을, provider가 바뀌면 목록 첫 항목을 선택
+            target = cur_model if provider == cur_provider else (models[0] if models else "")
+            # 목록에 없는(예: config에 직접 적은) 모델도 선택지로 노출해 드롭다운만으로 고르게 함
+            if target and target not in models:
+                models.append(target)
+            self._stt_model_combo.addItems(models)
+            idx_m = self._stt_model_combo.findText(target)
+            if idx_m >= 0:
+                self._stt_model_combo.setCurrentIndex(idx_m)
+
+        self._stt_provider_combo.currentTextChanged.connect(_on_stt_provider_changed)
+        _on_stt_provider_changed(cur_provider)  # 초기 목록 채우기
 
         lang_row = QHBoxLayout()
         lang_lbl = QLabel("language")
@@ -1009,14 +1064,18 @@ class SettingsPanel(QWidget):
 
             gemini_key = self._gemini_key_input.text().strip()
             claude_key = self._claude_key_input.text().strip()
+            openai_key = self._openai_key_input.text().strip()
             if gemini_key:
                 lines = _set_key(lines, "GEMINI_API_KEY", gemini_key)
                 self._gemini_key_input.clear()
             if claude_key:
                 lines = _set_key(lines, "CLAUDE_API_KEY", claude_key)
                 self._claude_key_input.clear()
+            if openai_key:
+                lines = _set_key(lines, "OPENAI_API_KEY", openai_key)
+                self._openai_key_input.clear()
 
-            if gemini_key or claude_key:
+            if gemini_key or claude_key or openai_key:
                 with open(env_path, "w", encoding="utf-8") as f:
                     f.writelines(lines)
                 logger.info("API 키 저장 완료")
@@ -1029,15 +1088,18 @@ class SettingsPanel(QWidget):
             from pathlib import Path
             import yaml as _yaml
 
+            old_stt = self._config.get("stt", {}) or {}
             new_stt = {
                 "enabled": self._stt_enabled_chk.isChecked(),
-                "sample_rate": int(self._config.get("stt", {}).get("sample_rate", 16000)),
+                "sample_rate": int(old_stt.get("sample_rate", 16000)),
                 "device": self._stt_device_input.text().strip() or "default",
                 "vad_threshold": float(self._stt_threshold_spin.value()),
                 "min_speech_ms": int(self._stt_min_speech_ms_spin.value()),
                 "min_silence_ms": int(self._stt_min_silence_ms_spin.value()),
                 "speech_pad_ms": int(self._stt_speech_pad_ms_spin.value()),
                 "max_utterance_seconds": float(self._stt_max_utt_spin.value()),
+                "provider": self._stt_provider_combo.currentText().strip() or "gemini",
+                "openai_api_key_env": str(old_stt.get("openai_api_key_env", "OPENAI_API_KEY")),
                 "model": self._stt_model_combo.currentText().strip(),
                 "language": self._stt_language_input.text().strip() or "ko",
                 "transcribe_prompt": self._stt_prompt_text.toPlainText().strip(),
@@ -1045,11 +1107,21 @@ class SettingsPanel(QWidget):
                 "min_transcript_chars": int(self._stt_min_chars_spin.value()),
                 "default_weight": self._stt_weight_combo.currentText(),
             }
+            # 정규화 등 UI에 없는 기존 항목은 보존
+            for k in ("input_gain", "normalize_target_level", "normalize_percentile",
+                      "normalize_max_gain"):
+                if k in old_stt:
+                    new_stt[k] = old_stt[k]
 
             config_path = Path(__file__).parent.parent.parent / "config.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = _yaml.safe_load(f)
-            old_enabled = bool((cfg.get("stt") or {}).get("enabled", False))
+            old_cfg_stt = cfg.get("stt") or {}
+            old_enabled = bool(old_cfg_stt.get("enabled", False))
+            transcriber_changed = (
+                str(old_cfg_stt.get("provider", "gemini")) != new_stt["provider"]
+                or str(old_cfg_stt.get("model", "")) != new_stt["model"]
+            )
             cfg["stt"] = new_stt
             with open(config_path, "w", encoding="utf-8") as f:
                 _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -1071,6 +1143,12 @@ class SettingsPanel(QWidget):
             if old_enabled != new_enabled:
                 self._stt_status.setText(
                     f"저장 완료. enabled {old_enabled} → {new_enabled} 변경은 재시작 후 적용됩니다."
+                )
+                self._stt_status.setStyleSheet("color: #f4b400; font-size: 10px;")
+            elif transcriber_changed:
+                self._stt_status.setText(
+                    f"저장 완료. provider/model({new_stt['provider']} · {new_stt['model']}) "
+                    "변경은 재시작 후 적용됩니다."
                 )
                 self._stt_status.setStyleSheet("color: #f4b400; font-size: 10px;")
             else:

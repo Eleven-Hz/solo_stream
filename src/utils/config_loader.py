@@ -29,3 +29,9 @@ def get_claude_api_key(config: dict) -> str | None:
     """Claude API 키 반환. 설정되지 않았으면 None 반환 (선택적 사용)."""
     env_name = config["ai"].get("claude_api_key_env", "CLAUDE_API_KEY")
     return os.getenv(env_name) or os.getenv("ANTHROPIC_API_KEY")
+
+
+def get_openai_api_key(config: dict) -> str | None:
+    """OpenAI API 키 반환. 설정되지 않았으면 None 반환 (STT provider=openai 일 때만 필요)."""
+    env_name = (config.get("stt") or {}).get("openai_api_key_env", "OPENAI_API_KEY")
+    return os.getenv(env_name) or os.getenv("OPENAI_API_KEY")

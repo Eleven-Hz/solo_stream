@@ -153,3 +153,117 @@ class GeminiTranscriber:
             text = ""
         elapsed = time.perf_counter() - t0
         return text, elapsed
+
+
+# OpenAI gpt-4o-transcribe / mini 는 chat 스타일 프롬프트가 아니라 'prompt' 파라미터로
+# 도메인 힌트만 받는다. 받아쓰기 규칙은 모델 기본 동작에 맡긴다.
+_OPENAI_DEFAULT_PROMPT = "한국어 음성입니다. 짧은 감탄사(아, 어, 음, 와 등)도 그대로 받아 적으세요."
+
+
+class OpenAITranscriber:
+    """OpenAI Audio Transcriptions 기반 transcriber.
+
+    GeminiTranscriber 와 동일하게 transcribe(pcm, sr) -> (text, elapsed) 를 제공한다.
+    모델 후보: gpt-4o-transcribe / gpt-4o-mini-transcribe / whisper-1.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4o-mini-transcribe",
+        language: str = "ko",
+        prompt: str | None = None,
+        normalize_target_level: float = 0.1,
+        normalize_percentile: float = 95.0,
+        normalize_max_gain: float = 20.0,
+    ):
+        from openai import OpenAI
+
+        self._client = OpenAI(api_key=api_key)
+        self._model = model
+        self._language = language
+        self._prompt = (prompt or _OPENAI_DEFAULT_PROMPT).strip()
+        self._normalize_target_level = normalize_target_level
+        self._normalize_percentile = normalize_percentile
+        self._normalize_max_gain = normalize_max_gain
+        logger.info(
+            f"OpenAITranscriber 준비: model={model} language={language} "
+            f"normalize_level={normalize_target_level} p{normalize_percentile:.0f} "
+            f"max_gain={normalize_max_gain}"
+        )
+
+    def transcribe(self, pcm: np.ndarray, sample_rate: int = 16000) -> tuple[str, float]:
+        pcm = normalize_pcm(
+            pcm,
+            target_level=self._normalize_target_level,
+            percentile=self._normalize_percentile,
+            max_gain=self._normalize_max_gain,
+        )
+        wav_bytes = pcm_to_wav_bytes(pcm, sample_rate)
+        buf = io.BytesIO(wav_bytes)
+        buf.name = "audio.wav"  # SDK가 확장자로 포맷 추론
+
+        t0 = time.perf_counter()
+        try:
+            resp = self._client.audio.transcriptions.create(
+                model=self._model,
+                file=buf,
+                language=self._language,
+                prompt=self._prompt,
+                response_format="text",
+            )
+            text = (resp if isinstance(resp, str) else getattr(resp, "text", "")).strip()
+        except Exception as e:
+            logger.error(f"transcribe 실패: {e}")
+            text = ""
+        elapsed = time.perf_counter() - t0
+        return text, elapsed
+
+
+def create_transcriber(
+    provider: str,
+    *,
+    gemini_api_key: str | None = None,
+    openai_api_key: str | None = None,
+    model: str = "gemini-2.5-flash",
+    language: str = "ko",
+    prompt: str | None = None,
+    normalize_target_level: float = 0.1,
+    normalize_percentile: float = 95.0,
+    normalize_max_gain: float = 20.0,
+):
+    """provider("gemini"|"openai")에 맞는 transcriber를 생성한다.
+
+    두 transcriber 모두 transcribe(pcm, sr) -> (text, elapsed) 인터페이스가 동일하므로
+    STTPipeline 입장에서는 교체 가능하다.
+    """
+    provider = (provider or "gemini").lower()
+    if provider == "openai":
+        if not openai_api_key:
+            raise ValueError(
+                "STT provider=openai 인데 OpenAI API 키가 없습니다. "
+                ".env.local 에 OPENAI_API_KEY 를 설정하세요."
+            )
+        return OpenAITranscriber(
+            api_key=openai_api_key,
+            model=model,
+            language=language,
+            prompt=prompt,
+            normalize_target_level=normalize_target_level,
+            normalize_percentile=normalize_percentile,
+            normalize_max_gain=normalize_max_gain,
+        )
+    if not gemini_api_key:
+        raise ValueError(
+            "STT provider=gemini 인데 Gemini API 키가 없습니다. "
+            ".env.local 에 GEMINI_API_KEY 를 설정하세요."
+        )
+    return GeminiTranscriber(
+        api_key=gemini_api_key,
+        model=model,
+        language=language,
+        prompt=prompt,
+        normalize_target_level=normalize_target_level,
+        normalize_percentile=normalize_percentile,
+        normalize_max_gain=normalize_max_gain,
+    )

@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.utils.config_loader import load_config, get_api_key, get_claude_api_key
+from src.utils.config_loader import load_config, get_api_key, get_claude_api_key, get_openai_api_key
 from src.utils.logger import setup_logger
 
 logger = setup_logger("solo_stream")
@@ -435,19 +435,23 @@ def stt_process(
     settings_queue: multiprocessing.Queue,
     config: dict,
     api_key: str,
+    openai_api_key: str | None = None,
 ):
     setup_logger("solo_stream")
     setup_logger("solo_stream.stt")
     log = logging.getLogger("solo_stream.stt")
 
     from src.stt import STTPipeline, UtteranceEvent
-    from src.stt.transcriber import GeminiTranscriber
+    from src.stt.transcriber import create_transcriber
 
     stt_cfg = config.get("stt", {}) or {}
     sample_rate = int(stt_cfg.get("sample_rate", 16000))
 
-    transcriber = GeminiTranscriber(
-        api_key=api_key,
+    provider = str(stt_cfg.get("provider", "gemini")).lower()
+    transcriber = create_transcriber(
+        provider,
+        gemini_api_key=api_key,
+        openai_api_key=openai_api_key,
         model=stt_cfg.get("model", "gemini-2.5-flash"),
         language=stt_cfg.get("language", "ko"),
         prompt=stt_cfg.get("transcribe_prompt"),
@@ -455,6 +459,7 @@ def stt_process(
         normalize_percentile=float(stt_cfg.get("normalize_percentile", 95.0)),
         normalize_max_gain=float(stt_cfg.get("normalize_max_gain", 20.0)),
     )
+    log.info(f"STT transcriber provider={provider} model={stt_cfg.get('model')}")
 
     pipeline = STTPipeline(
         transcriber=transcriber,
@@ -517,6 +522,7 @@ def main():
     config = load_config()
     api_key = get_api_key(config)
     claude_api_key = get_claude_api_key(config)
+    openai_api_key = get_openai_api_key(config)
     logger.info("Solo Stream 시작")
 
     image_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=2)
@@ -548,7 +554,7 @@ def main():
     if stt_enabled:
         processes.append(multiprocessing.Process(
             target=stt_process,
-            args=(stt_queue, stt_settings_queue, config, api_key),
+            args=(stt_queue, stt_settings_queue, config, api_key, openai_api_key),
             name="STTProcess",
             daemon=True,
         ))
