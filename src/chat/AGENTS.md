@@ -9,9 +9,9 @@
 ## Key Files
 | File | Description |
 |------|-------------|
-| `persona_loader.py` | `load_personas(persona_dir)` — `personas/*.yaml`의 `bots:` 배열 모두 합쳐 풀 반환. `normalize_user_speech_weight(value, default)` — YAML이 `off`를 boolean False로 파싱하는 함정 + `off/low/medium/high` 검증. |
+| `persona_loader.py` | `load_personas(persona_dir)` — `personas/*.yaml`의 `bots:` 배열 모두 합쳐 풀 반환. `normalize_user_speech_weight(value, default)` — YAML이 `off`를 boolean False로 파싱하는 함정 + `off/low/medium/high` 검증. 봇 dict의 선택 필드 `aliases`(list)는 STT가 이름을 풀어 받아쓸 때의 호명 매칭용 — `src/main.py::_detect_mentioned_bots`가 name+aliases를 공백 제거 후 부분문자열 검사. |
 | `game_profile_loader.py` | `load_profile(game_name, ai_client, config)` — `game_profiles/<slug>.yaml` 캐시 우선, 없으면 Gemini Google Search grounding으로 5단계 멀티턴 생성(기본/시스템·지역/적·스킬/vision_focus/chat_tips/한국어 번역 검수). `build_profile_context` (채팅용 전체) / `build_vision_context` (Vision 묘사 전용, 토큰 최소화) 헬퍼 제공. |
-| `orchestrator.py` | `schedule_chats(chats, bots, ui_queue, delay_min, delay_max)` — 별도 스레드에서 봇 `frequency`(high=1.0/medium=0.7/low=0.4)에 따라 일부 스킵, 1~8초 랜덤 딜레이 후 ui_queue.put. |
+| `orchestrator.py` | `schedule_chats(chats, bots, ui_queue, delay_min, delay_max, mentioned_names)` — 별도 스레드에서 봇 `frequency`(high=1.0/medium=0.7/low=0.4)에 따라 일부 스킵, 1~8초 랜덤 딜레이 후 ui_queue.put. **`mentioned_names`(호명된 봇)는 frequency 스킵에서 면제** — low 빈도 봇이라도 호명 답변은 반드시 UI에 띄운다. |
 | `__init__.py` | 패키지 마커 |
 
 ## For AI Agents

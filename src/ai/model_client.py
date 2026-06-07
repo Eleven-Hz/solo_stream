@@ -14,6 +14,10 @@ logger = logging.getLogger("solo_stream.ai")
 
 _VISION_SYSTEM = "당신은 게임 방송 전문 해설 AI입니다. 주어진 게임 정보를 활용해 화면을 정확하고 간결하게 한국어로 분석합니다."
 
+# Vision 분석 실패 시 game_context 자리에 들어가는 표식 문자열.
+# 채팅 프롬프트 빌드 시 이 값이면 "화면 정보 없음"으로 치환해 봇이 발화/채팅에 집중하게 한다.
+VISION_ERROR_MARKER = "게임 화면 분석 중 오류가 발생했습니다."
+
 _VISION_PROMPT_TEMPLATE = """{game_profile_section}{prev_location_section}스크린샷을 분석해 아래 형식으로만 답하세요.
 
 묘사: <화면에 보이는 것을 2~3줄로 서술{vision_focus_hint}>
@@ -56,10 +60,10 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 아래 게임 정보와 현재 상황을 바탕으로 각 봇이 채팅을 칩니다.
 
 {game_profile_context}
-
+{user_speech_section}
 [현재 게임 상황]
 {game_context}
-{user_speech_section}
+
 [최근 채팅 기록]
 {chat_history}
 
@@ -76,6 +80,12 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 - 봇별 [자기 기억] 범위만큼만 자기 과거 발언을 참고한다. 범위 밖 발언은 기억 못 함.
 - 봇별 [타인 반응] 설정이 false이면 다른 봇 발언에 직접 반응하거나 닉네임 언급 금지.
 - 봇별 [타인 반응 빈도]가 있으면 그 확률로만 타인 발언에 반응한다 (예: 0.3 → 30% 확률).
+- 봇이 다른 봇에게 받아칠 때는 그 봇의 닉네임을 직접 부르며 말할 수 있다 ([타인 반응]이 true인 경우에 한함).
+- 봇별 [호명됨] true인 봇은 스트리머가 자기 이름을 부른 것이다. 반드시 응답하며, 일반 게임 채팅이 아니라 **스트리머가 한 말 그 자체에 직접 반응**한다 — 인사("안녕")를 받으면 인사로 받아치고, 질문을 받으면 답하고, 의견을 받으면 그에 대해 말한다. 페르소나 말투는 유지하되 발화 내용을 무시하고 엉뚱한 채팅을 치지 않는다.
+- **[호명됨] true인 봇은 자기 직전 발언(내 최근 발언)을 그대로 반복하지 않는다.** HP/SP·화면 상황 코멘트로 때우지 말고, 호명한 발화의 내용에 맞춰 새로운 말을 한다. (예: "패드가 편한가요?"라고 물으면 "HP 여유롭네요"가 아니라 "패드 추천드려요" 같이 질문에 답)
+- 스트리머 발화가 질문이면(물음표가 없어도 "어디", "뭐", "어떤", "할까" 등 묻는 말투 포함) 호명된 봇이 없더라도 봇 중 최소 1명은 그 질문에 **구체적인 내용으로 직접 답한다**. "글쎄", "음..." 같은 회피 금지.
+  · 게임 내 질문(다음 지역/공략/어디로)이면 고인물·분석 성향 봇이 게임 정보를 근거로 실제 답을 제시한다.
+  · 게임 추천·취향 질문이면(예: "이거랑 비슷한 게임 뭐 있어?") 시청자답게 실제 게임 제목 등 구체적 답을 1개 이상 댄다.
 - 봇별 [스트리머 발화 반응]에 따라 스트리머가 한 말에 대한 반응 강도를 다르게 한다.
   · off    — 스트리머 발화를 무시. 화면 상황만 보고 채팅.
   · low    — 들었다는 정도. 가벼운 동조/리액션만 (예: "ㅇㅈ", "ㄹㅇ"). 직접 답하지 않음.
@@ -93,9 +103,15 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 ]"""
 
 
-def _build_bots_info(bots: list[dict], chat_history: list[dict], default_speech_weight: str = "medium") -> str:
+def _build_bots_info(
+    bots: list[dict],
+    chat_history: list[dict],
+    default_speech_weight: str = "medium",
+    mentioned_names: list[str] | None = None,
+) -> str:
     from src.chat.persona_loader import normalize_user_speech_weight
 
+    mentioned_set = set(mentioned_names or [])
     lines = []
     for b in bots:
         name = b["name"]
@@ -117,6 +133,9 @@ def _build_bots_info(bots: list[dict], chat_history: list[dict], default_speech_
 
         line += f" / [스트리머 발화 반응] {speech_weight}"
 
+        if name in mentioned_set:
+            line += " / [호명됨] true"
+
         if memory_depth > 0:
             own = [c["message"] for c in chat_history if c.get("name") == name]
             recent_own = own[-memory_depth:] if own else []
@@ -126,6 +145,15 @@ def _build_bots_info(bots: list[dict], chat_history: list[dict], default_speech_
 
         lines.append(line)
     return "\n".join(lines)
+
+
+def _game_context_for_prompt(game_context: str) -> str:
+    """Vision 분석이 실패했으면 프롬프트에 오류 문장을 그대로 넣지 않고
+    '화면 정보 없음'으로 치환한다. 봇이 오류 메시지를 채팅 소재로 삼거나
+    그쪽에 끌려가 스트리머 발화를 무시하는 것을 막는다."""
+    if not game_context or game_context.strip() == VISION_ERROR_MARKER:
+        return "(화면 정보 없음 — 최근 채팅과 스트리머 발화를 보고 반응)"
+    return game_context
 
 
 def _build_user_speech_section(user_speech: list[dict] | None) -> str:
@@ -237,7 +265,7 @@ class GeminiClient:
             return response.text.strip()
         except Exception as e:
             logger.error(f"Vision 분석 실패: {e}")
-            return "게임 화면 분석 중 오류가 발생했습니다."
+            return VISION_ERROR_MARKER
 
     def generate_chats(
         self,
@@ -247,15 +275,16 @@ class GeminiClient:
         game_profile_context: str = "",
         user_speech: list[dict] | None = None,
         default_speech_weight: str = "medium",
+        mentioned_names: list[str] | None = None,
     ) -> list[dict]:
-        bots_info = _build_bots_info(bots, chat_history, default_speech_weight)
+        bots_info = _build_bots_info(bots, chat_history, default_speech_weight, mentioned_names)
         history_text = (
             "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
             if chat_history else "(아직 채팅 없음)"
         )
         prompt = _CHAT_PROMPT_TEMPLATE.format(
             game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
-            game_context=game_context,
+            game_context=_game_context_for_prompt(game_context),
             user_speech_section=_build_user_speech_section(user_speech),
             chat_history=history_text,
             bots_info=bots_info,
@@ -322,7 +351,7 @@ class ClaudeClient:
             return response.content[0].text.strip()
         except Exception as e:
             logger.error(f"Claude Vision 분석 실패: {e}")
-            return "게임 화면 분석 중 오류가 발생했습니다."
+            return VISION_ERROR_MARKER
 
     def generate_chats(
         self,
@@ -332,15 +361,16 @@ class ClaudeClient:
         game_profile_context: str = "",
         user_speech: list[dict] | None = None,
         default_speech_weight: str = "medium",
+        mentioned_names: list[str] | None = None,
     ) -> list[dict]:
-        bots_info = _build_bots_info(bots, chat_history, default_speech_weight)
+        bots_info = _build_bots_info(bots, chat_history, default_speech_weight, mentioned_names)
         history_text = (
             "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
             if chat_history else "(아직 채팅 없음)"
         )
         prompt = _CHAT_PROMPT_TEMPLATE.format(
             game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
-            game_context=game_context,
+            game_context=_game_context_for_prompt(game_context),
             user_speech_section=_build_user_speech_section(user_speech),
             chat_history=history_text,
             bots_info=bots_info,

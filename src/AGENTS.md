@@ -39,6 +39,7 @@
 ### Common Patterns
 - 모든 로깅은 `setup_logger("solo_stream")` 후 `logging.getLogger("solo_stream.<subsystem>")` 로 자식 로거 사용 — 핸들러는 부모만 가진다.
 - 채팅 한 라운드의 vision/STT/프롬프트/응답은 `_write_round_block`이 `\n` join 멀티라인 메시지로 한 번에 `chat_log.info()` — `_BlockFormatter`가 첫 줄에만 타임스탬프를 찍어 시각적 블록을 유지.
+- 봇 호명: `ai_process`의 batch 선정부에서 `_detect_mentioned_bots(user_speech_payload, bot_pool)`로 발화에 이름이 불린 봇을 찾아 batch에 먼저 채우고(`mentioned_in_batch`), 남은 자리만 `random.sample`로 채운다. 호명 봇 이름은 `generate_chats(mentioned_names=...)`로 넘겨 프롬프트의 `[호명됨] true` 표시·강제 응답 규칙과 연결되고, 동일한 `mentioned_names`를 `schedule_chats(..., mentioned_names)`에도 넘겨 **호명 봇의 답변이 frequency 스킵으로 UI에서 누락되지 않게** 한다 (호명→batch 포함→LLM 응답까지 됐어도 orchestrator 스킵에 걸리면 화면에 안 뜸). 매칭은 발화·후보(봇 `name` + `aliases`)를 모두 공백 제거 후 부분문자열 비교 — STT가 이름을 풀어 받아쓰는 경우(예: "도네요정"→"돈의 요정")는 페르소나 `aliases`로 보완한다.
 
 ## Dependencies
 

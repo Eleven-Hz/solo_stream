@@ -85,6 +85,37 @@ def capture_process(
             time.sleep(interval)
 
 
+# ── 봇 호명 감지 ─────────────────────────────────────────────────────────────
+
+def _detect_mentioned_bots(
+    user_speech: list[dict],
+    bot_pool: list[dict],
+) -> list[dict]:
+    """스트리머 발화에서 봇 이름(또는 별칭)이 언급된 봇들을 찾는다.
+
+    발화 텍스트(공백 제거)에 봇 `name` 또는 `aliases` 항목(공백 제거)이
+    부분 문자열로 등장하면 호명된 것으로 본다. 별칭은 STT가 이름을 풀어 받아쓰는
+    경우(예: "도네요정"→"돈의 요정", "외쿸인"→"외국인")를 보완하기 위한 것.
+    bot_pool 순서를 유지해 반환하며, 같은 봇은 한 번만 포함한다.
+    """
+    if not user_speech or not bot_pool:
+        return []
+    # 모든 발화 텍스트를 공백 제거해 하나로 합쳐 검사
+    joined = "".join((u.get("text") or "").replace(" ", "") for u in user_speech)
+    if not joined:
+        return []
+    mentioned = []
+    for b in bot_pool:
+        candidates = [b.get("name") or ""]
+        candidates.extend(b.get("aliases") or [])
+        for cand in candidates:
+            key = str(cand).replace(" ", "")
+            if key and key in joined:
+                mentioned.append(b)
+                break
+    return mentioned
+
+
 # ── 라운드 로그 포맷 ─────────────────────────────────────────────────────────
 
 def _write_round_block(
@@ -354,10 +385,20 @@ def ai_process(
                             "seconds_ago": sec_ago,
                         })
 
-            # 라운드마다 풀에서 batch_size만큼 랜덤 샘플링
+            # 발화에서 호명된 봇은 이번 라운드 batch에 반드시 포함시킨다.
+            mentioned = _detect_mentioned_bots(user_speech_payload, bot_pool)
+            mentioned_names = [b["name"] for b in mentioned]
+            if mentioned_names:
+                log.info(f"호명 감지: {mentioned_names}")
+
+            # 라운드마다 풀에서 batch_size만큼 발언자 선정 (호명 봇 우선)
             sample_size = min(batch_size, len(bot_pool))
-            batch = random.sample(bot_pool, sample_size)
-            log.info(f"이번 라운드 발언자 {sample_size}명: {[b['name'] for b in batch]}")
+            mentioned_in_batch = mentioned[:sample_size]
+            remaining_slots = sample_size - len(mentioned_in_batch)
+            others_pool = [b for b in bot_pool if b not in mentioned_in_batch]
+            others = random.sample(others_pool, min(remaining_slots, len(others_pool)))
+            batch = mentioned_in_batch + others
+            log.info(f"이번 라운드 발언자 {len(batch)}명: {[b['name'] for b in batch]}")
             chats = chat_client.generate_chats(
                 game_context=game_context,
                 bots=batch,
@@ -365,6 +406,7 @@ def ai_process(
                 game_profile_context=profile_context,
                 user_speech=user_speech_payload or None,
                 default_speech_weight=default_weight,
+                mentioned_names=mentioned_names,
             )
 
             # 한 라운드의 전체 흐름을 chat_log 에 단일 블록으로 출력
@@ -401,7 +443,7 @@ def ai_process(
 
                 t = threading.Thread(
                     target=schedule_chats,
-                    args=(chats, batch, ui_queue, delay_min, delay_max),
+                    args=(chats, batch, ui_queue, delay_min, delay_max, mentioned_names),
                     daemon=True,
                 )
                 t.start()
