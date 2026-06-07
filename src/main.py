@@ -156,7 +156,8 @@ def _write_round_block(
         lines.append("[STT 발화 없음]")
 
     bot_summary = ", ".join(
-        f"{b['name']}({normalize_user_speech_weight(b.get('user_speech_weight'), default=default_weight)})"
+        f"{b['name']}({normalize_user_speech_weight(b.get('user_speech_weight'), default=default_weight)}"
+        f"/{b.get('emotion', '?')})"
         for b in batch
     )
     lines.append("")
@@ -212,6 +213,7 @@ def ai_process(
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
+    from src.chat.emotion import EmotionState, update_emotions
     from src.utils.logger import get_chat_logger
 
     client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
@@ -259,6 +261,11 @@ def ai_process(
     round_num = 0
     chat_active = False  # 시작/종료 버튼으로 제어
     last_location = ""  # 직전 라운드에서 확인된 위치
+    # 봇별 동적 감정 상태 (3신호로 매 라운드 갱신). base는 페르소나 YAML emotion.
+    emotion_states: dict = {
+        b["name"]: EmotionState(b["name"], b.get("emotion", "평온"), b.get("relationship", ""))
+        for b in bot_pool
+    }
 
     # STT 설정
     stt_cfg = config.get("stt", {}) or {}
@@ -358,13 +365,15 @@ def ai_process(
             vision_elapsed = time.perf_counter() - vision_t0
             log.info(f"[게임 상황] {game_context}")
 
-            # 위치 추출해서 다음 라운드에 전달
+            # 위치 / 이벤트 추출 (이벤트는 감정 신호원 — 없으면 빈 문자열)
+            event_text = ""
             for line in game_context.splitlines():
                 if line.startswith("위치:"):
                     loc = line[len("위치:"):].strip()
                     if loc and loc != "알 수 없음":
                         last_location = loc
-                    break
+                elif line.startswith("이벤트:"):
+                    event_text = line[len("이벤트:"):].strip()
 
             # 2차 drain: vision 분석이 도는 동안(수 초~십수 초) 도착한 발화까지 수거
             _drain_stt_queue()
@@ -391,6 +400,13 @@ def ai_process(
             if mentioned_names:
                 log.info(f"호명 감지: {mentioned_names}")
 
+            # 감정 갱신: 3신호(채팅 톤 + Vision 이벤트 + STT 발화)로 봇 풀 전체 감정 전이.
+            # Vision 이벤트가 비어도 나머지 신호로 굴러간다.
+            speech_texts = [u["text"] for u in user_speech_payload]
+            emotion_labels = update_emotions(
+                emotion_states, bot_pool, chat_history, event_text, speech_texts,
+            )
+
             # 라운드마다 풀에서 batch_size만큼 발언자 선정 (호명 봇 우선)
             sample_size = min(batch_size, len(bot_pool))
             mentioned_in_batch = mentioned[:sample_size]
@@ -398,6 +414,8 @@ def ai_process(
             others_pool = [b for b in bot_pool if b not in mentioned_in_batch]
             others = random.sample(others_pool, min(remaining_slots, len(others_pool)))
             batch = mentioned_in_batch + others
+            # batch 봇의 emotion을 동적 라벨로 덮은 사본 사용 (원본 bot_pool은 보존)
+            batch = [{**b, "emotion": emotion_labels.get(b["name"], b.get("emotion", "평온"))} for b in batch]
             log.info(f"이번 라운드 발언자 {len(batch)}명: {[b['name'] for b in batch]}")
             chats = chat_client.generate_chats(
                 game_context=game_context,

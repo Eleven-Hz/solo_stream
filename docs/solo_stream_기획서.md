@@ -276,13 +276,13 @@ ai:
 
 ### Phase 2 — 리얼리티 강화 (예상 2주)
 
-| 작업 | 설명 |
-|---|---|
-| STT 연동 | VAD + 로컬 Whisper 또는 Gemini Audio (config로 선택) |
-| 감정 변화 시스템 | 게임 이벤트에 따른 봇 감정 상태 전이 |
-| 봇 간 상호작용 | A봇이 B봇을 멘션하는 기능 |
-| 채팅 타이밍 고도화 | 게임 이벤트 직후 반응 급증 등 |
-| Strands Agent 툴 옵션 | 페르소나별 선택적 Strands Agent 도입 |
+| 작업 | 설명 | 상태 |
+|---|---|---|
+| STT 연동 | VAD + Gemini Audio / OpenAI (config로 provider 선택) | ✅ 완료 |
+| 봇 호명·상호작용 | 발화에서 봇 이름 감지→batch 강제 포함, 별칭/질문 응답, A봇→B봇 멘션 | ✅ 완료 |
+| 감정 변화 시스템 | **3신호(채팅 톤+Vision 이벤트+STT 발화) 합산**으로 봇 감정 전이. Vision 이벤트 단일 의존을 피해 화면 인식이 불안정해도 작동 (`src/chat/emotion.py`) | ✅ 완료 |
+| 채팅 타이밍 고도화 | 게임 이벤트 직후 반응 급증 등 | ⬜ 미착수 |
+| Strands Agent 툴 옵션 | 페르소나별 선택적 Strands Agent 도입 | ⬜ 미착수 |
 
 #### Strands Agent 툴 옵션 상세
 
