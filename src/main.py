@@ -123,6 +123,44 @@ def _detect_mentioned_bots(
     return mentioned
 
 
+def _normalize_msg(text: str) -> str:
+    """중복 비교용 정규화: 공백 제거 + 소문자. ㅠㅠㅠㅠ 길이 차 등은 의도적으로
+    구분 유지(완전 동일 복붙만 잡는다)."""
+    return "".join((text or "").split()).lower()
+
+
+def _drop_repeat_chats(
+    chats: list[dict],
+    chat_history: list[dict],
+    *,
+    recent_n: int = 10,
+) -> list[dict]:
+    """LLM이 직전 라운드 발언을 글자 그대로 복붙한 채팅을 드롭한다 (B: 중복 차단).
+
+    프롬프트 규칙(A)으로도 대부분 막히지만, 가끔 새는 완전 동일 복붙을 코드에서
+    확정적으로 거른다. 판정 기준:
+      - 같은 봇(name)이 최근 chat_history에서 친 것과 메시지가 동일하면 드롭.
+      - 이번 라운드 batch 안에서도 같은 (name, message) 중복이면 한 번만 남긴다.
+    서로 다른 봇이 우연히 같은 짧은 리액션("ㅠㅠ")을 치는 것은 자연스러우므로
+    name이 다르면 막지 않는다 (그건 봇별 페르소나 표현).
+    """
+    recent = chat_history[-recent_n:]
+    seen_by_name: set[tuple[str, str]] = {
+        (c.get("name", ""), _normalize_msg(c.get("message", ""))) for c in recent
+    }
+    out: list[dict] = []
+    for c in chats:
+        key = (c.get("name", ""), _normalize_msg(c.get("message", "")))
+        if not key[1]:
+            continue  # 빈 메시지 제외
+        if key in seen_by_name:
+            logger.debug(f"[중복 드롭] {key[0]}: {c.get('message','')}")
+            continue
+        seen_by_name.add(key)
+        out.append(c)
+    return out
+
+
 # ── 라운드 로그 포맷 ─────────────────────────────────────────────────────────
 
 def _write_round_block(
@@ -424,7 +462,7 @@ def ai_process(
 
             # 흥분도(hype) 계산: 스트리머 발화 + 직전 채팅 톤(ㅋㅋ/ㅠㅠ/강조어)에서
             # hype(0~1)·valence(±)를 뽑아 이번 라운드 타이밍·물량·분위기 힌트를 정한다.
-            # 직전 라운드가 발동이었으면 봇 채팅 신호를 감쇠(0.15)해 ㅋㅋ/ㅠㅠ 메아리가
+            # 직전 라운드가 발동이었으면 봇 채팅 신호를 감쇠(0.3)해 ㅋㅋ/ㅠㅠ 메아리가
             # 분위기를 자가발전시키는 걸 끊는다. 발화 신호는 감쇠하지 않는다.
             recent_chat_texts = [c.get("message", "") for c in chat_history[-8:]]
             echo_damp = 0.15 if prev_round_hyped else 1.0
@@ -468,6 +506,13 @@ def ai_process(
                 mentioned_names=mentioned_names,
                 mood_hint=hype_profile.mood_hint or None,
             )
+
+            # 직전 라운드 발언을 그대로 복붙한 채팅 드롭 (B). hype delay 축소로 인접
+            # 라운드 간격이 짧아지면 같은 메시지가 화면에 거의 동시에 떠 중복으로 보인다.
+            before = len(chats)
+            chats = _drop_repeat_chats(chats, chat_history)
+            if len(chats) < before:
+                log.info(f"중복 복붙 {before - len(chats)}개 드롭")
 
             # 한 라운드의 전체 흐름을 chat_log 에 단일 블록으로 출력
             _write_round_block(
