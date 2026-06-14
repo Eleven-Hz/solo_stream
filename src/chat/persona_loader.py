@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from src.utils import paths
+
 logger = logging.getLogger("solo_stream.persona")
 
 _VALID_WEIGHTS = {"off", "low", "medium", "high"}
@@ -28,8 +30,9 @@ def load_personas(persona_dir: str) -> list[dict]:
     """
     base_path = Path(persona_dir)
     if not base_path.is_absolute():
-        # 프로젝트 루트 기준
-        base_path = Path(__file__).parent.parent.parent / persona_dir
+        # 사용자 커스텀 personas/ 우선 (user_data 에 시딩됨) → 없으면 번들 기본.
+        # personas/*.yaml 은 사용자가 직접 편집 가능해야 하므로 파일로 존재한다.
+        base_path = paths.resolve_resource(persona_dir)
 
     all_bots = []
     for yaml_file in sorted(base_path.glob("*.yaml")):

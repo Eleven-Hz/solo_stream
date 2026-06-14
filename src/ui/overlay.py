@@ -30,6 +30,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.utils import paths
+
 logger = logging.getLogger("solo_stream.ui")
 
 _NAME_COLORS = [
@@ -674,7 +676,7 @@ class SettingsPanel(QWidget):
         try:
             from pathlib import Path
             import yaml as _yaml
-            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            config_path = paths.user_data_dir() / "config.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = _yaml.safe_load(f) or {}
             cfg.setdefault("logging", {})["save_to_file"] = bool(checked)
@@ -1138,7 +1140,7 @@ class SettingsPanel(QWidget):
         try:
             from pathlib import Path
             import yaml as _yaml
-            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            config_path = paths.user_data_dir() / "config.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = _yaml.safe_load(f)
             cfg.setdefault("ui", {})["window_excludes"] = self._excludes
@@ -1162,7 +1164,7 @@ class SettingsPanel(QWidget):
         current = self._profile_combo.currentText()
         self._profile_combo.clear()
         self._profile_combo.addItem("자동 (창 타이틀에서 감지)")
-        profile_dir = Path(__file__).parent.parent.parent / "game_profiles"
+        profile_dir = paths.user_data_dir() / "game_profiles"
         if profile_dir.exists():
             for p in sorted(profile_dir.glob("*.yaml")):
                 if p.stem == "default":
@@ -1211,7 +1213,7 @@ class SettingsPanel(QWidget):
         # 기존 파일 삭제 후 재생성 요청
         import re
         from pathlib import Path
-        profile_dir = Path(__file__).parent.parent.parent / "game_profiles"
+        profile_dir = paths.user_data_dir() / "game_profiles"
         safe = re.sub(r'[\\/:*?"<>|]', "", game_name).strip().lower().replace(" ", "_")[:64]
         profile_path = profile_dir / f"{safe}.yaml"
         if profile_path.exists():
@@ -1238,7 +1240,7 @@ class SettingsPanel(QWidget):
         try:
             from pathlib import Path
             import yaml as _yaml
-            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            config_path = paths.user_data_dir() / "config.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = _yaml.safe_load(f)
             ai = cfg.setdefault("ai", {})
@@ -1256,7 +1258,7 @@ class SettingsPanel(QWidget):
         try:
             from pathlib import Path
             import yaml as _yaml
-            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            config_path = paths.user_data_dir() / "config.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = _yaml.safe_load(f)
             ai = cfg.setdefault("ai", {})
@@ -1273,7 +1275,7 @@ class SettingsPanel(QWidget):
     def _save_api_keys(self):
         try:
             from pathlib import Path
-            env_path = Path(__file__).parent.parent.parent / ".env.local"
+            env_path = paths.user_data_dir() / ".env.local"
             lines: list[str] = []
             if env_path.exists():
                 with open(env_path, "r", encoding="utf-8") as f:
@@ -1338,7 +1340,7 @@ class SettingsPanel(QWidget):
                 if k in old_stt:
                     new_stt[k] = old_stt[k]
 
-            config_path = Path(__file__).parent.parent.parent / "config.yaml"
+            config_path = paths.user_data_dir() / "config.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = _yaml.safe_load(f)
             old_cfg_stt = cfg.get("stt") or {}

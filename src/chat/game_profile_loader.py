@@ -18,9 +18,12 @@ from pathlib import Path
 import yaml
 from google.genai import types
 
+from src.utils import paths
+
 logger = logging.getLogger("solo_stream.game_profile")
 
-_PROFILE_DIR = Path(__file__).parent.parent.parent / "game_profiles"
+# 프로필은 런타임에 자동 생성·저장되므로 쓰기 가능한 사용자 데이터 폴더 기준.
+_PROFILE_DIR = paths.user_data_dir() / "game_profiles"
 _DEFAULT_PROFILE_MODEL = "gemini-2.5-flash"
 
 # ── few-shot 예시 (CrossCode) ──────────────────────────────────────────────────
@@ -189,7 +192,7 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None) -> 
     게임 프로필 로드. 없으면 ai_client로 자동 생성.
     ai_client가 None이면 default 프로필 반환.
     """
-    _PROFILE_DIR.mkdir(exist_ok=True)
+    _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
     filename = _safe_filename(game_name)
     profile_path = _PROFILE_DIR / f"{filename}.yaml"
@@ -360,7 +363,8 @@ def _clean_list(items: list) -> list[str]:
 
 
 def _load_default() -> dict:
-    default_path = _PROFILE_DIR / "default.yaml"
+    # default.yaml 은 번들 기본 (사용자 오버라이드 우선 → 번들).
+    default_path = paths.resolve_resource("game_profiles/default.yaml")
     if default_path.exists():
         with open(default_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)

@@ -3,14 +3,17 @@ import yaml
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 프로젝트 루트 기준으로 .env.local 로드
-_ROOT = Path(__file__).parent.parent.parent
-load_dotenv(_ROOT / ".env.local")
-load_dotenv(_ROOT / ".env")  # fallback
+from src.utils import paths
+
+# .env.local 은 쓰기 가능한 사용자 데이터 폴더 기준 (DEV 모드면 프로젝트 루트).
+# 사용자가 첫 실행에 입력한 키는 user_data_dir()/.env.local 에 저장된다.
+load_dotenv(paths.user_data_dir() / ".env.local")
+load_dotenv(paths.user_data_dir() / ".env")  # fallback
 
 
 def load_config(config_path: str | None = None) -> dict:
-    path = Path(config_path) if config_path else _ROOT / "config.yaml"
+    # 명시 경로가 없으면: 사용자 config 우선 → 없으면 번들 기본.
+    path = Path(config_path) if config_path else paths.resolve_resource("config.yaml")
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 

@@ -3,7 +3,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-_LOG_DIR = Path(__file__).parent.parent.parent / "logs"
+from src.utils import paths
+
+# 로그는 쓰기 가능한 사용자 데이터 폴더에 기록 (DEV 모드면 프로젝트 루트의 logs/).
+_LOG_DIR = paths.user_data_dir() / "logs"
 # 세션/채팅 로그는 '하루 1개' 파일에 append 한다 (session_YYYYMMDD.log).
 # 같은 날 실행되는 모든 프로세스(메인/AI/STT)가 같은 파일에 append.
 _RETENTION_DAYS = 7
@@ -43,7 +46,7 @@ def save_to_file_enabled() -> bool:
     config_loader 의존을 피한다 (logger 는 import 시점에 쓰여 순환을 피해야 함)."""
     try:
         import yaml
-        cfg_path = Path(__file__).parent.parent.parent / "config.yaml"
+        cfg_path = paths.resolve_resource("config.yaml")
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         return bool((cfg.get("logging") or {}).get("save_to_file", True))
@@ -83,7 +86,7 @@ def setup_logger(name: str = "solo_stream", level: int = logging.INFO) -> loggin
     # 여러 프로세스(메인/AI/STT)가 같은 일별 파일에 append 한다.
     session_path = _session_log_path()
     if save_to_file_enabled():
-        _LOG_DIR.mkdir(exist_ok=True)
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(session_path, mode="a", encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)

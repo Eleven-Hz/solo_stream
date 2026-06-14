@@ -677,6 +677,11 @@ def ui_process(
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 
 def main():
+    # 최초 실행 시딩: 사용자 데이터 폴더(%APPDATA%\SoloStream) 생성 +
+    # 번들 기본 config.yaml / personas/ 복사. DEV 모드면 프로젝트 루트라 no-op.
+    from src.utils import paths
+    paths.ensure_user_data()
+
     config = load_config()
     api_key = get_api_key(config)
     claude_api_key = get_claude_api_key(config)
