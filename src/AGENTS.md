@@ -10,7 +10,7 @@
 | File | Description |
 |------|-------------|
 | `main.py` | 엔트리포인트. 큐/프로세스 생성, `capture_process` / `ai_process` / `stt_process` / `ui_process` 정의, 설정 브로드캐스트 스레드 구동, 라운드 블록 로그 포맷 (`_write_round_block`) 정의 |
-| `__init__.py` | 패키지 마커 (비어있음) |
+| `__init__.py` | 패키지 마커 + **앱 버전 단일 소스** (`__version__`). UI 설정 화면(게임 탭 하단 about 섹션)·`사용설명.txt`가 이 값을 참조. 릴리스 시 여기 한 곳만 올린다. |
 
 ## Subdirectories
 | Directory | Purpose |

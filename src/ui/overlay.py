@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src import __version__ as APP_VERSION
 from src.utils import paths
 
 logger = logging.getLogger("solo_stream.ui")
@@ -299,6 +300,7 @@ class SettingsPanel(QWidget):
             self._build_section_excludes(layout)
             self._build_section_game_profile(layout)
             self._build_section_logging(layout)
+            self._build_section_about(layout)
         return self._make_scroll_tab(_body)
 
     def _build_tab_ai(self) -> QWidget:
@@ -722,6 +724,20 @@ class SettingsPanel(QWidget):
             logger.error(f"로그 설정 저장 실패: {e}")
             self._log_status.setText(f"저장 실패: {e}")
             self._log_status.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+
+    def _build_section_about(self, layout: QVBoxLayout):
+        # 구분선
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+        about = QLabel(f"Solo Stream  ·  v{APP_VERSION}")
+        about.setStyleSheet("color: #777; font-size: 10px;")
+        layout.addWidget(about)
+
+        contact = QLabel("문의: contact.team8889@gmail.com")
+        contact.setStyleSheet("color: #555; font-size: 9px;")
+        layout.addWidget(contact)
 
     # ── 음성(STT) 탭 섹션 ───────────────────────────────────────────────
 

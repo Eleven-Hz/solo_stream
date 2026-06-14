@@ -1,19 +1,26 @@
 @echo off
-rem Solo Stream 포터블(onedir) 빌드.
-rem 사전: venv 에 requirements.txt + requirements-build.txt 설치 완료.
-rem 산출: dist\SoloStream\SoloStream.exe + _internal\
+rem Solo Stream portable(onedir) build.
+rem Pre: venv has requirements.txt + requirements-build.txt installed.
+rem Out: dist\SoloStream\SoloStream.exe + _internal\
 setlocal
 
 echo [build] clean build/ dist/
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
-echo [build] PyInstaller 실행
+echo [build] run PyInstaller
 call venv\Scripts\pyinstaller.exe solo_stream.spec
 if errorlevel 1 (
-    echo [build] 실패: PyInstaller 종료 코드 %errorlevel%
+    echo [build] FAILED: PyInstaller exit code %errorlevel%
     exit /b %errorlevel%
 )
 
-echo [build] 완료: dist\SoloStream\SoloStream.exe
+rem Copy user guide next to exe (deploy root) so users can see it.
+rem Putting it in spec datas would bury it inside _internal\.
+rem Use PowerShell (not cmd copy) so the Korean filename survives codepage issues.
+echo [build] copy user guide
+powershell -NoProfile -Command "Get-ChildItem -LiteralPath . -Filter '*.txt' | Where-Object { $_.Name -match '[^\x00-\x7F]' } | Copy-Item -Destination 'dist\SoloStream\' -Force"
+if errorlevel 1 echo [build] WARN: failed to copy user guide - check manually
+
+echo [build] done: dist\SoloStream\SoloStream.exe
 endlocal
