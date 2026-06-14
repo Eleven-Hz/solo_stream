@@ -68,7 +68,11 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=["build_hooks/rthook_mp.py"],
+    # 런타임 훅에서 freeze_support() 를 호출하면 안 된다 — spawn 자식이 런타임 훅을
+    # __main__ 으로 부트스트랩할 때 타겟 함수(ai_process 등)를 rthook 모듈에서
+    # 찾으려다 AttributeError 로 죽는다. freeze_support() 는 main.py 의
+    # `if __name__ == "__main__":` 블록에 있으며 그게 올바른 유일한 위치다.
+    runtime_hooks=[],
     excludes=[
         # 번들 크기 절감: 테스트/노트북/시각화 등 런타임 불필요 패키지.
         "tkinter",
