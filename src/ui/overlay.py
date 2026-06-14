@@ -218,10 +218,11 @@ class SettingsPanel(QWidget):
         ],
     }
 
-    def __init__(self, settings_queue: Queue, config: dict, parent=None):
+    def __init__(self, settings_queue: Queue, config: dict, parent=None, onboarding: bool = False):
         super().__init__(parent)
         self._settings_queue = settings_queue
         self._config = config
+        self._onboarding = onboarding
         self._excludes: list[str] = list(config.get("ui", {}).get("window_excludes", []))
         self._setup_ui()
 
@@ -264,6 +265,10 @@ class SettingsPanel(QWidget):
         self._tabs.addTab(self._build_tab_stt(), "음성")
         # 비용 탭은 위 탭들의 모델 콤보를 참조하므로 마지막에 빌드한다.
         self._tabs.addTab(self._build_tab_cost(), "비용")
+
+        # 첫 실행 온보딩: 키 입력이 있는 'AI 모델' 탭을 기본으로 연다.
+        if self._onboarding:
+            self._tabs.setCurrentIndex(1)
 
         # 모든 위젯 초기화 후 캡처 창 목록 새로고침
         self._refresh_windows()
@@ -535,6 +540,20 @@ class SettingsPanel(QWidget):
         api_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
         layout.addWidget(api_label)
 
+        # 첫 실행 온보딩 안내 배너 (키 미설정으로 AI/STT 비활성 상태).
+        if getattr(self, "_onboarding", False):
+            onboard = QLabel(
+                "⚠ Gemini API 키가 없어 AI·음성 인식이 꺼져 있습니다.\n"
+                "아래에 Gemini 키를 입력하고 '저장'을 누른 뒤 프로그램을 다시 실행하세요.\n"
+                "키 발급: https://aistudio.google.com/apikey"
+            )
+            onboard.setWordWrap(True)
+            onboard.setStyleSheet(
+                "QLabel { background: #3a2a1a; color: #ffcf8a; border: 1px solid #6a4a2a; "
+                "border-radius: 4px; padding: 6px 8px; font-size: 10px; }"
+            )
+            layout.addWidget(onboard)
+
         gemini_row = QHBoxLayout()
         gemini_lbl = QLabel("Gemini")
         gemini_lbl.setStyleSheet("color: #888; font-size: 10px;")
@@ -584,6 +603,11 @@ class SettingsPanel(QWidget):
         save_keys_btn.setStyleSheet(self._btn_style("#1a3a1a", "#2d6a2d"))
         save_keys_btn.clicked.connect(self._save_api_keys)
         layout.addWidget(save_keys_btn)
+
+        self._api_key_status = QLabel("")
+        self._api_key_status.setWordWrap(True)
+        self._api_key_status.setStyleSheet("color: #888; font-size: 10px;")
+        layout.addWidget(self._api_key_status)
 
     def _build_section_game_profile(self, layout: QVBoxLayout):
         # 구분선
@@ -1306,8 +1330,25 @@ class SettingsPanel(QWidget):
                 with open(env_path, "w", encoding="utf-8") as f:
                     f.writelines(lines)
                 logger.info("API 키 저장 완료")
+                # 키는 프로세스 시작 시점에만 읽히므로(특히 온보딩이면 AI/STT 미기동)
+                # 적용하려면 재시작이 필요하다.
+                self._set_api_key_status(
+                    "✓ 저장 완료. AI·음성 인식을 적용하려면 프로그램을 다시 실행하세요.",
+                    ok=True,
+                )
+            else:
+                self._set_api_key_status("입력된 키가 없습니다. 키를 입력 후 저장하세요.", ok=False)
         except Exception as e:
             logger.error(f"API 키 저장 실패: {e}")
+            self._set_api_key_status(f"저장 실패: {e}", ok=False)
+
+    def _set_api_key_status(self, text: str, ok: bool):
+        status = getattr(self, "_api_key_status", None)
+        if status is None:
+            return
+        color = "#6bcb77" if ok else "#f4b400"
+        status.setStyleSheet(f"color: {color}; font-size: 10px;")
+        status.setText(text)
 
     def _save_stt_settings(self):
         """UI에서 변경한 STT 설정을 config.yaml에 저장 + 가능한 항목은 ai_process에 브로드캐스트."""
@@ -1409,12 +1450,13 @@ def _extract_game_name(window_title: str) -> str:
 class ChatOverlay(QWidget):
     RESIZE_MARGIN = 12
 
-    def __init__(self, config: dict, ui_queue: Queue, settings_queue: Queue):
+    def __init__(self, config: dict, ui_queue: Queue, settings_queue: Queue, onboarding: bool = False):
         super().__init__()
         self._config = config["ui"]
         self._config_full = config
         self._ui_queue = ui_queue
         self._settings_queue = settings_queue
+        self._onboarding = onboarding
         self._drag_pos = QPoint()
         self._resizing = False
         self._resize_start_pos = QPoint()
@@ -1425,6 +1467,10 @@ class ChatOverlay(QWidget):
         self._setup_window()
         self._setup_ui()
         self._setup_timer()
+
+        # 첫 실행 온보딩: 키 미설정이면 설정 패널을 자동으로 열어 키 입력을 유도.
+        if self._onboarding:
+            self._toggle_settings()
 
     def _setup_window(self):
         self.setWindowFlags(
@@ -1497,7 +1543,7 @@ class ChatOverlay(QWidget):
         chat_layout.addWidget(self._list)
 
         # 설정 페이지
-        self._settings_panel = SettingsPanel(self._settings_queue, self._config_full)
+        self._settings_panel = SettingsPanel(self._settings_queue, self._config_full, onboarding=self._onboarding)
         self._settings_panel.setStyleSheet("background: transparent;")
 
         self._stack.addWidget(chat_page)       # index 0
@@ -1677,12 +1723,12 @@ class ChatOverlay(QWidget):
             painter.drawLine(w - m + offset, h - 2, w - 2, h - m + offset)
 
 
-def run_overlay(config: dict, ui_queue: Queue, settings_queue: Queue):
+def run_overlay(config: dict, ui_queue: Queue, settings_queue: Queue, onboarding: bool = False):
     import sys
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
 
-    overlay = ChatOverlay(config, ui_queue, settings_queue)
+    overlay = ChatOverlay(config, ui_queue, settings_queue, onboarding=onboarding)
     overlay.show()
 
     sys.exit(app.exec())

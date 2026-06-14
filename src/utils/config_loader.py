@@ -18,14 +18,14 @@ def load_config(config_path: str | None = None) -> dict:
         return yaml.safe_load(f)
 
 
-def get_api_key(config: dict) -> str:
+def get_api_key(config: dict) -> str | None:
+    """Gemini API 키 반환. 없으면 None.
+
+    예전엔 키가 없으면 ValueError 를 raise 했지만, 포터블(frozen) 배포에서는
+    콘솔이 없어 조용히 죽어버린다. 첫 실행 온보딩에서 키 입력을 안내하기 위해
+    None 을 반환하고, 호출부(main)가 graceful degrade 한다."""
     env_name = config["ai"].get("api_key_env", "GEMINI_API_KEY")
-    key = os.getenv(env_name) or os.getenv("GEMINI_API") or os.getenv("GEMINI_API_KEY")
-    if not key:
-        raise ValueError(
-            f"API 키를 찾을 수 없습니다. .env.local에 {env_name}=your_key 형태로 설정하세요."
-        )
-    return key
+    return os.getenv(env_name) or os.getenv("GEMINI_API") or os.getenv("GEMINI_API_KEY")
 
 
 def get_claude_api_key(config: dict) -> str | None:

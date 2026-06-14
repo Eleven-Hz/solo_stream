@@ -669,9 +669,10 @@ def ui_process(
     ui_queue: multiprocessing.Queue,
     settings_queue: multiprocessing.Queue,
     config: dict,
+    onboarding: bool = False,
 ):
     from src.ui.overlay import run_overlay
-    run_overlay(config, ui_queue, settings_queue)
+    run_overlay(config, ui_queue, settings_queue, onboarding=onboarding)
 
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
@@ -688,6 +689,16 @@ def main():
     openai_api_key = get_openai_api_key(config)
     logger.info("Solo Stream 시작")
 
+    # 키 미설정 시 graceful degrade: AI/STT 프로세스를 띄우지 않고 UI(오버레이)만 시작해
+    # 첫 실행 온보딩(API 키 입력)을 노출한다. frozen 배포에서 콘솔 없이 조용히 죽던
+    # ValueError 크래시를 대체. Gemini 키는 vision/chat/STT 모두의 기본 키이므로 필수.
+    onboarding = not api_key
+    if onboarding:
+        logger.warning(
+            "Gemini API 키 미설정 — AI/STT 비활성. 오버레이 설정에서 키 입력 후 재시작하세요. "
+            f"(키 저장 위치: {paths.user_data_dir() / '.env.local'})"
+        )
+
     # 오래된 로그 정리 (자식 프로세스 spawn 전 1회)
     from src.utils.logger import prune_old_logs
     removed = prune_old_logs()
@@ -701,35 +712,39 @@ def main():
     ai_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
     stt_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
 
-    stt_enabled = bool((config.get("stt") or {}).get("enabled", False))
+    stt_enabled = bool((config.get("stt") or {}).get("enabled", False)) and not onboarding
     stt_queue: multiprocessing.Queue | None = (
         multiprocessing.Queue(maxsize=200) if stt_enabled else None
     )
 
-    processes = [
-        multiprocessing.Process(
-            target=capture_process,
-            args=(image_queue, capture_settings_queue, config),
-            name="CaptureProcess",
-            daemon=True,
-        ),
-        multiprocessing.Process(
-            target=ai_process,
-            args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key, stt_queue),
-            name="AIProcess",
-            daemon=True,
-        ),
-    ]
-    if stt_enabled:
-        processes.append(multiprocessing.Process(
-            target=stt_process,
-            args=(stt_queue, stt_settings_queue, config, api_key, openai_api_key),
-            name="STTProcess",
-            daemon=True,
-        ))
-        logger.info("STT enabled — STTProcess 추가")
-    else:
-        logger.info("STT disabled (config.stt.enabled=false) — STTProcess 미시작")
+    # 온보딩(키 미설정) 모드면 AI/Capture/STT 를 띄우지 않는다 (키 없이 호출하면 인증 실패).
+    # UI 만 시작해 키 입력을 받고, 사용자가 저장 후 재시작하면 정상 동작한다.
+    processes: list[multiprocessing.Process] = []
+    if not onboarding:
+        processes = [
+            multiprocessing.Process(
+                target=capture_process,
+                args=(image_queue, capture_settings_queue, config),
+                name="CaptureProcess",
+                daemon=True,
+            ),
+            multiprocessing.Process(
+                target=ai_process,
+                args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key, stt_queue),
+                name="AIProcess",
+                daemon=True,
+            ),
+        ]
+        if stt_enabled:
+            processes.append(multiprocessing.Process(
+                target=stt_process,
+                args=(stt_queue, stt_settings_queue, config, api_key, openai_api_key),
+                name="STTProcess",
+                daemon=True,
+            ))
+            logger.info("STT enabled — STTProcess 추가")
+        else:
+            logger.info("STT disabled (config.stt.enabled=false) — STTProcess 미시작")
 
     for p in processes:
         p.start()
@@ -757,7 +772,7 @@ def main():
     broadcast_thread.start()
 
     try:
-        ui_process(ui_queue, broadcast_queue, config)
+        ui_process(ui_queue, broadcast_queue, config, onboarding=onboarding)
     except KeyboardInterrupt:
         logger.info("종료 신호 수신")
     finally:
