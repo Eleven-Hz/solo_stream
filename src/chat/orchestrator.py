@@ -23,6 +23,7 @@ def schedule_chats(
     delay_min: float = 1.0,
     delay_max: float = 8.0,
     mentioned_names: list[str] | None = None,
+    skip_relief: float = 0.0,
 ):
     """
     chats를 랜덤 딜레이로 ui_queue에 넣는다.
@@ -31,9 +32,15 @@ def schedule_chats(
     호명에 대한 답변은 반드시 화면에 떠야 하므로. (호명 봇이 batch에 강제 포함되어
     LLM이 답을 생성해도, frequency 스킵에 걸려 UI에서 누락되면 "불러도 답이 없다"가 됨)
     별도 스레드에서 호출된다.
+
+    `delay_min`/`delay_max`/`skip_relief`는 라운드마다 흥분도(hype)에 따라 달라진다
+    (main.py의 build_hype_profile). 흥분 라운드는 좁은 delay로 빠르게,
+    skip_relief>0으로 저빈도 봇도 덜 잘려 채팅이 우르르 올라온다.
+      - skip_relief: frequency 통과 확률에 더하는 보정. 0=평소, 1=스킵 면제.
     """
     bot_freq = {b["name"]: b.get("frequency", "medium") for b in bots}
     mentioned = set(mentioned_names or [])
+    relief = max(0.0, min(1.0, skip_relief))
 
     shuffled = chats[:]
     random.shuffle(shuffled)
@@ -44,8 +51,10 @@ def schedule_chats(
         if name not in mentioned:
             freq = bot_freq.get(name, "medium")
             chance = _FREQUENCY_CHANCE.get(freq, 0.7)
+            # 흥분 라운드는 스킵 확률을 완화: 통과 확률을 relief만큼 1.0 쪽으로 끌어올린다.
+            chance = chance + (1.0 - chance) * relief
             if random.random() > chance:
-                logger.debug(f"[스킵] {name} (frequency={freq})")
+                logger.debug(f"[스킵] {name} (frequency={freq}, relief={relief:.2f})")
                 continue
 
         delay = random.uniform(delay_min, delay_max)

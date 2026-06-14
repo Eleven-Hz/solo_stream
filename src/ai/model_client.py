@@ -60,7 +60,7 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 아래 게임 정보와 현재 상황을 바탕으로 각 봇이 채팅을 칩니다.
 
 {game_profile_context}
-{user_speech_section}
+{mood_section}{user_speech_section}
 [현재 게임 상황]
 {game_context}
 
@@ -174,6 +174,15 @@ def _build_user_speech_section(user_speech: list[dict] | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _build_mood_section(mood_hint: str | None) -> str:
+    """프롬프트의 [채팅창 분위기] 섹션. 흥분 라운드(hype 높음)에만 채워진다.
+    hype.build_hype_profile 이 만든 mood_hint 를 받아 LLM 에 톤을 지시한다."""
+    hint = (mood_hint or "").strip()
+    if not hint:
+        return ""
+    return f"[채팅창 분위기]\n{hint}\n\n"
+
+
 class ChatCallDebug:
     """generate_chats 가 마지막 호출 정보를 보관해 호출자가 라운드 로그에 합쳐쓸 수 있게 함."""
     __slots__ = ("provider", "model", "prompt", "raw_response", "elapsed_s")
@@ -276,6 +285,7 @@ class GeminiClient:
         user_speech: list[dict] | None = None,
         default_speech_weight: str = "medium",
         mentioned_names: list[str] | None = None,
+        mood_hint: str | None = None,
     ) -> list[dict]:
         bots_info = _build_bots_info(bots, chat_history, default_speech_weight, mentioned_names)
         history_text = (
@@ -284,6 +294,7 @@ class GeminiClient:
         )
         prompt = _CHAT_PROMPT_TEMPLATE.format(
             game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
+            mood_section=_build_mood_section(mood_hint),
             game_context=_game_context_for_prompt(game_context),
             user_speech_section=_build_user_speech_section(user_speech),
             chat_history=history_text,
@@ -362,6 +373,7 @@ class ClaudeClient:
         user_speech: list[dict] | None = None,
         default_speech_weight: str = "medium",
         mentioned_names: list[str] | None = None,
+        mood_hint: str | None = None,
     ) -> list[dict]:
         bots_info = _build_bots_info(bots, chat_history, default_speech_weight, mentioned_names)
         history_text = (
@@ -370,6 +382,7 @@ class ClaudeClient:
         )
         prompt = _CHAT_PROMPT_TEMPLATE.format(
             game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
+            mood_section=_build_mood_section(mood_hint),
             game_context=_game_context_for_prompt(game_context),
             user_speech_section=_build_user_speech_section(user_speech),
             chat_history=history_text,

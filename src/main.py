@@ -23,6 +23,10 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("solo_stream")
 
+# 흥분(hype) 발동 임계값. 이 이상이면 채팅 타이밍 고도화(빠르게/많이/mood_hint)가 켜진다.
+# build_hype_profile·발동 로그가 공유하는 발동 임계값.
+HYPE_THRESHOLD = 0.35
+
 
 # ── 캡처 프로세스 ─────────────────────────────────────────────────────────────
 
@@ -131,6 +135,7 @@ def _write_round_block(
     chats: list[dict],
     chat_debug,
     profile_context: str = "",
+    hype_note: str = "",
 ) -> None:
     """한 라운드의 vision / STT / 프롬프트 / 응답을 한 블록으로 chat_log 에 출력.
 
@@ -162,6 +167,8 @@ def _write_round_block(
     )
     lines.append("")
     lines.append(f"[봇 {len(batch)}명] {bot_summary}")
+    if hype_note:
+        lines.append(hype_note)
 
     if chat_debug is not None:
         lines.append("")
@@ -214,6 +221,7 @@ def ai_process(
     from src.chat.orchestrator import schedule_chats
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
     from src.chat.emotion import EmotionState, update_emotions
+    from src.chat.hype import compute_hype, build_hype_profile
     from src.utils.logger import get_chat_logger
 
     client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
@@ -407,8 +415,24 @@ def ai_process(
                 emotion_states, bot_pool, chat_history, event_text, speech_texts,
             )
 
-            # 라운드마다 풀에서 batch_size만큼 발언자 선정 (호명 봇 우선)
-            sample_size = min(batch_size, len(bot_pool))
+            # 흥분도(hype) 계산: 스트리머 발화 + 직전 채팅 톤(ㅋㅋ/ㅠㅠ/강조어)에서
+            # hype(0~1)·valence(±)를 뽑아 이번 라운드 타이밍·물량·분위기 힌트를 정한다.
+            recent_chat_texts = [c.get("message", "") for c in chat_history[-8:]]
+            hype_signal = compute_hype(speech_texts, recent_chat_texts)
+            hype_profile = build_hype_profile(
+                hype_signal, base_delay_min=delay_min, base_delay_max=delay_max,
+                threshold=HYPE_THRESHOLD,
+            )
+            round_hyped = hype_profile.hype >= HYPE_THRESHOLD
+            if round_hyped:
+                log.info(
+                    f"흥분 감지 hype={hype_profile.hype:.2f} val={hype_signal.valence:+.2f} "
+                    f"→ delay={hype_profile.delay_min}~{hype_profile.delay_max} "
+                    f"+batch={hype_profile.extra_batch} skip_relief={hype_profile.skip_relief}"
+                )
+
+            # 라운드마다 batch_size(흥분 시 증량)만큼 발언자 선정 (호명 봇 우선)
+            sample_size = min(batch_size + hype_profile.extra_batch, len(bot_pool))
             mentioned_in_batch = mentioned[:sample_size]
             remaining_slots = sample_size - len(mentioned_in_batch)
             others_pool = [b for b in bot_pool if b not in mentioned_in_batch]
@@ -425,6 +449,7 @@ def ai_process(
                 user_speech=user_speech_payload or None,
                 default_speech_weight=default_weight,
                 mentioned_names=mentioned_names,
+                mood_hint=hype_profile.mood_hint or None,
             )
 
             # 한 라운드의 전체 흐름을 chat_log 에 단일 블록으로 출력
@@ -440,6 +465,12 @@ def ai_process(
                 chats=chats,
                 chat_debug=getattr(chat_client, "last_chat_call", None),
                 profile_context=profile_context,
+                hype_note=(
+                    f"[흥분] hype={hype_profile.hype:.2f} val={hype_signal.valence:+.2f}"
+                    f" → delay={hype_profile.delay_min}~{hype_profile.delay_max}"
+                    f" +batch={hype_profile.extra_batch} skip_relief={hype_profile.skip_relief}"
+                    if round_hyped else ""
+                ),
             )
 
             # 채팅 생성에 쓰인 발화는 버퍼에서 제거 (같은 발화가 다음 라운드에 또 들어가지 않게)
@@ -461,7 +492,11 @@ def ai_process(
 
                 t = threading.Thread(
                     target=schedule_chats,
-                    args=(chats, batch, ui_queue, delay_min, delay_max, mentioned_names),
+                    args=(
+                        chats, batch, ui_queue,
+                        hype_profile.delay_min, hype_profile.delay_max,
+                        mentioned_names, hype_profile.skip_relief,
+                    ),
                     daemon=True,
                 )
                 t.start()
