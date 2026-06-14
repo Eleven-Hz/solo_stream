@@ -2,6 +2,10 @@
 venv/*
 venv/
 __pycache__/
+
+# PyInstaller 빌드 산출물 (spec 자체는 추적)
+build/
+dist/
 __pycache__/*
 *.pyc
 */__init__.py

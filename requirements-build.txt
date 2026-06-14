@@ -1,0 +1,10 @@
+# Build-only (packaging) dependencies. Separate from runtime requirements.txt.
+# Usage:
+#   venv\Scripts\pip install -r requirements.txt
+#   venv\Scripts\pip install -r requirements-build.txt
+#   build.bat
+#
+# torch should be the CPU-only wheel (CUDA build -> 1GB+ bundle).
+# Current venv already has 2.x+cpu.
+# If needed: pip install torch --index-url https://download.pytorch.org/whl/cpu
+pyinstaller>=6.0
