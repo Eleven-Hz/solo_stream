@@ -705,6 +705,42 @@ class SettingsPanel(QWidget):
         self._log_status.setWordWrap(True)
         layout.addWidget(self._log_status)
 
+        # 데이터 폴더(설정·키·로그) 탐색기에서 열기
+        open_data_btn = QPushButton("데이터 폴더 열기 (설정·키·로그)")
+        open_data_btn.setStyleSheet(
+            "QPushButton { color: #ddd; background: rgba(40,40,55,180); border: 1px solid #555; "
+            "border-radius: 4px; padding: 5px 10px; font-size: 11px; }"
+            "QPushButton:hover { background: rgba(60,60,80,200); }"
+        )
+        open_data_btn.clicked.connect(self._open_user_data_dir)
+        layout.addWidget(open_data_btn)
+
+        data_hint = QLabel(f"위치: {paths.user_data_dir()}")
+        data_hint.setStyleSheet("color: #666; font-size: 9px;")
+        data_hint.setWordWrap(True)
+        layout.addWidget(data_hint)
+
+    def _open_user_data_dir(self):
+        """사용자 데이터 폴더(%APPDATA%\\SoloStream)를 탐색기에서 연다."""
+        import os
+        import subprocess
+        import sys
+        try:
+            udir = paths.ensure_user_data()
+            if sys.platform.startswith("win"):
+                os.startfile(str(udir))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(udir)])
+            else:
+                subprocess.Popen(["xdg-open", str(udir)])
+            logger.info(f"데이터 폴더 열기: {udir}")
+            self._log_status.setText(f"데이터 폴더를 열었습니다: {udir}")
+            self._log_status.setStyleSheet("color: #888; font-size: 10px;")
+        except Exception as e:
+            logger.error(f"데이터 폴더 열기 실패: {e}")
+            self._log_status.setText(f"폴더 열기 실패: {e}")
+            self._log_status.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+
     def _save_logging_setting(self, checked: bool):
         try:
             from pathlib import Path
