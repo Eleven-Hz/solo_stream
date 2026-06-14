@@ -42,6 +42,11 @@ _LAUGH_RE = re.compile(r"[ㅋㅎ]{2,}")     # ㅋㅋ, ㅎㅎ, ㅋㅎㅋ…
 _CRY_RE = re.compile(r"[ㅜㅠ]{2,}")        # ㅠㅠ, ㅜㅜ…
 _BANG_RE = re.compile(r"[!?]{1,}")          # !, !!, ?!
 
+# 발화 valence가 이 값 이상이면 "명확한 방향"으로 보고 봇 채팅 메아리보다 우선한다.
+# _scan_text 에서 방향 키워드 1개=±0.5, 웃음/울음=±1 이므로, 0.5는 "긍/부정 단서가
+# 발화에 하나라도 분명히 있으면" 그 방향을 확정한다는 뜻.
+SPEECH_VAL_DECISIVE = 0.5
+
 
 @dataclass
 class HypeSignal:
@@ -92,26 +97,61 @@ def compute_hype(
     *,
     speech_weight: float = 1.0,
     chat_weight: float = 0.5,
+    chat_echo_damp: float = 1.0,
 ) -> HypeSignal:
     """스트리머 발화 + 직전 봇 채팅에서 hype/valence 산출.
 
     - 발화(speech_weight)를 채팅 톤(chat_weight)보다 무겁게 본다: 스트리머의
       실제 리액션이 분위기의 1차 소스이고, 봇 채팅은 보조 신호.
     - 어느 한쪽이 비어도 나머지로 동작.
+
+    `chat_echo_damp` (0~1): 봇 채팅 신호에 추가로 곱하는 감쇠 계수. 직전 라운드가
+    흥분 발동이었으면 봇들이 mood_hint 때문에 ㅋㅋ/ㅠㅠ를 대량 생성하는데, 그게
+    이번 라운드 채팅 신호로 되먹임되면 부정/긍정 분위기가 봇 메아리만으로 눈덩이처럼
+    커진다(자가발전 루프). 직전이 발동이면 caller가 이 값을 낮춰(<1) 메아리를 끊는다.
+    발화(STT) 신호는 감쇠하지 않는다 — 스트리머의 실제 리액션은 항상 신뢰.
     """
     s_hype, s_val, s_laugh, s_cry = _scan_text(" ".join(user_speech_texts or []))
     c_hype, c_val, c_laugh, c_cry = _scan_text(" ".join(own_chat_texts or []))
 
-    hype_raw = s_hype * speech_weight + c_hype * chat_weight
-    val_raw = s_val * speech_weight + c_val * chat_weight
+    damp = max(0.0, min(1.0, chat_echo_damp))
+    eff_chat_weight = chat_weight * damp
 
+    hype_raw = s_hype * speech_weight + c_hype * eff_chat_weight
     hype = max(0.0, min(1.0, hype_raw))
+
+    # 메아리 감쇠 시 채팅발 반복토큰(laugh/cry)도 같은 비율로 줄여 mood_hint 판정 왜곡 방지.
+    c_laugh_eff = round(c_laugh * damp)
+    c_cry_eff = round(c_cry * damp)
+    laugh = s_laugh + c_laugh_eff
+    cry = s_cry + c_cry_eff
+
+    # valence(분위기 방향): 발화가 분위기의 1차 소스다. 발화 valence가 명확하면
+    # (|s_val| ≥ SPEECH_VAL_DECISIVE) 그 부호를 확정 방향으로 삼고, 봇 채팅은 같은
+    # 방향일 때만 보강한다 — 봇이 친 ㅠㅠ 메아리가 스트리머의 승리("이겼다!") 방향을
+    # 부정으로 뒤집어 mood_hint가 ㅠㅠ로 나가는 것을 막는다.
+    s_val_eff = s_val * speech_weight
+    c_val_eff = c_val * eff_chat_weight
+    if abs(s_val) >= SPEECH_VAL_DECISIVE:
+        # 발화 방향 확정. 채팅은 동방향 성분만 더하고, 역방향이면 무시.
+        if (c_val_eff >= 0) == (s_val_eff >= 0):
+            val_raw = s_val_eff + c_val_eff
+        else:
+            val_raw = s_val_eff
+        # 반복토큰도 발화 방향과 어긋나는 채팅발 성분은 버린다 (mood_hint 일관성).
+        if s_val > 0:
+            cry = s_cry
+        else:
+            laugh = s_laugh
+    else:
+        val_raw = s_val_eff + c_val_eff
     valence = max(-1.0, min(1.0, val_raw))
+
     return HypeSignal(
         hype=hype,
         valence=valence,
-        laugh=s_laugh + c_laugh,
-        cry=s_cry + c_cry,
+        laugh=laugh,
+        cry=cry,
     )
 
 

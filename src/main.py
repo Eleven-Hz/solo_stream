@@ -24,8 +24,11 @@ from src.utils.logger import setup_logger
 logger = setup_logger("solo_stream")
 
 # 흥분(hype) 발동 임계값. 이 이상이면 채팅 타이밍 고도화(빠르게/많이/mood_hint)가 켜진다.
-# build_hype_profile·발동 로그가 공유하는 발동 임계값.
+# build_hype_profile·발동 로그·메아리 감쇠 판정이 모두 이 값을 공유한다.
 HYPE_THRESHOLD = 0.35
+# 직전 라운드가 발동이었던 다음 라운드에 적용하는 상향 임계값. 봇 채팅 신호를 감쇠해도
+# 메아리가 임계값 바로 위에 걸려 발동이 안 풀리는 경계 케이스를 평소로 되돌린다.
+HYPE_THRESHOLD_AFTER_HYPE = 0.5
 
 
 # ── 캡처 프로세스 ─────────────────────────────────────────────────────────────
@@ -269,6 +272,10 @@ def ai_process(
     round_num = 0
     chat_active = False  # 시작/종료 버튼으로 제어
     last_location = ""  # 직전 라운드에서 확인된 위치
+    # 직전 라운드 흥분 발동 여부. 발동이면 그 라운드 봇 채팅(mood_hint로 ㅋㅋ/ㅠㅠ 대량
+    # 생성)이 이번 hype 입력으로 되먹임돼 분위기가 봇 메아리만으로 눈덩이처럼 커진다
+    # (부정 자가발전 루프). 발동 직후 라운드는 채팅 신호를 감쇠해 메아리를 끊는다.
+    prev_round_hyped = False
     # 봇별 동적 감정 상태 (3신호로 매 라운드 갱신). base는 페르소나 YAML emotion.
     emotion_states: dict = {
         b["name"]: EmotionState(b["name"], b.get("emotion", "평온"), b.get("relationship", ""))
@@ -417,19 +424,29 @@ def ai_process(
 
             # 흥분도(hype) 계산: 스트리머 발화 + 직전 채팅 톤(ㅋㅋ/ㅠㅠ/강조어)에서
             # hype(0~1)·valence(±)를 뽑아 이번 라운드 타이밍·물량·분위기 힌트를 정한다.
+            # 직전 라운드가 발동이었으면 봇 채팅 신호를 감쇠(0.15)해 ㅋㅋ/ㅠㅠ 메아리가
+            # 분위기를 자가발전시키는 걸 끊는다. 발화 신호는 감쇠하지 않는다.
             recent_chat_texts = [c.get("message", "") for c in chat_history[-8:]]
-            hype_signal = compute_hype(speech_texts, recent_chat_texts)
+            echo_damp = 0.15 if prev_round_hyped else 1.0
+            hype_signal = compute_hype(
+                speech_texts, recent_chat_texts, chat_echo_damp=echo_damp,
+            )
+            # 감쇠 라운드는 임계값을 올려, 메아리만 남은 경계 케이스(감쇠 후 hype가
+            # 임계값 바로 위)도 평소로 되돌린다 — 발동을 "한 박자 쉬게" 한다.
+            round_threshold = HYPE_THRESHOLD_AFTER_HYPE if prev_round_hyped else HYPE_THRESHOLD
             hype_profile = build_hype_profile(
                 hype_signal, base_delay_min=delay_min, base_delay_max=delay_max,
-                threshold=HYPE_THRESHOLD,
+                threshold=round_threshold,
             )
-            round_hyped = hype_profile.hype >= HYPE_THRESHOLD
+            round_hyped = hype_profile.hype >= round_threshold
             if round_hyped:
                 log.info(
                     f"흥분 감지 hype={hype_profile.hype:.2f} val={hype_signal.valence:+.2f} "
                     f"→ delay={hype_profile.delay_min}~{hype_profile.delay_max} "
                     f"+batch={hype_profile.extra_batch} skip_relief={hype_profile.skip_relief}"
+                    f"{' (메아리 감쇠 적용)' if prev_round_hyped else ''}"
                 )
+            prev_round_hyped = round_hyped
 
             # 라운드마다 batch_size(흥분 시 증량)만큼 발언자 선정 (호명 봇 우선)
             sample_size = min(batch_size + hype_profile.extra_batch, len(bot_pool))
@@ -469,6 +486,7 @@ def ai_process(
                     f"[흥분] hype={hype_profile.hype:.2f} val={hype_signal.valence:+.2f}"
                     f" → delay={hype_profile.delay_min}~{hype_profile.delay_max}"
                     f" +batch={hype_profile.extra_batch} skip_relief={hype_profile.skip_relief}"
+                    f"{' (메아리 감쇠)' if echo_damp < 1.0 else ''}"
                     if round_hyped else ""
                 ),
             )
