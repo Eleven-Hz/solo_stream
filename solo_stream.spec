@@ -75,11 +75,40 @@ a = Analysis(
         "matplotlib",
         "pytest",
         "IPython",
+        # cv2(opencv) ~98MB — skimage 가 끌어오지만 SSIM 경로는 cv2 미사용 (실측 확인).
+        "cv2",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
+)
+
+
+# ── 런타임 불필요 파일 제거 (크기 절감) ───────────────────────────────────────
+# torch 는 C++ 헤더(include/)와 정적 링크 라이브러리(*.lib)를 함께 깔지만
+# 런타임 추론에는 전혀 쓰이지 않는다. test 디렉터리도 마찬가지.
+# a.datas / a.binaries 의 dest 경로(첫 요소) 기준으로 걸러낸다.
+def _keep(entry):
+    dest = entry[0].replace("\\", "/")
+    # torch C++ 개발 헤더
+    if "torch/include/" in dest:
+        return False
+    # 정적 링크 라이브러리 (Windows .lib — 런타임 미사용, DLL 은 유지)
+    if dest.endswith(".lib"):
+        return False
+    # torch 내부 테스트 디렉터리
+    if dest.startswith("torch/test/") or "/torch/test/" in dest:
+        return False
+    return True
+
+
+_n_datas, _n_bins = len(a.datas), len(a.binaries)
+a.datas = [e for e in a.datas if _keep(e)]
+a.binaries = [e for e in a.binaries if _keep(e)]
+print(
+    f"[spec] 크기 절감 필터: datas {_n_datas}->{len(a.datas)}, "
+    f"binaries {_n_bins}->{len(a.binaries)}"
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
