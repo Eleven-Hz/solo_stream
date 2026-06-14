@@ -609,6 +609,13 @@ class SettingsPanel(QWidget):
         self._api_key_status.setStyleSheet("color: #888; font-size: 10px;")
         layout.addWidget(self._api_key_status)
 
+        # 키 저장 후 적용하려면 재시작이 필요하다. 저장 성공 시에만 노출.
+        self._restart_btn = QPushButton("지금 다시 시작")
+        self._restart_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        self._restart_btn.clicked.connect(self._restart_app)
+        self._restart_btn.setVisible(False)
+        layout.addWidget(self._restart_btn)
+
     def _build_section_game_profile(self, layout: QVBoxLayout):
         # 구분선
         sep5 = QLabel()
@@ -1331,11 +1338,13 @@ class SettingsPanel(QWidget):
                     f.writelines(lines)
                 logger.info("API 키 저장 완료")
                 # 키는 프로세스 시작 시점에만 읽히므로(특히 온보딩이면 AI/STT 미기동)
-                # 적용하려면 재시작이 필요하다.
+                # 적용하려면 재시작이 필요하다. '지금 다시 시작' 버튼을 노출한다.
                 self._set_api_key_status(
-                    "✓ 저장 완료. AI·음성 인식을 적용하려면 프로그램을 다시 실행하세요.",
+                    "✓ 저장 완료. 아래 '지금 다시 시작'을 누르면 AI·음성 인식이 적용됩니다.",
                     ok=True,
                 )
+                if getattr(self, "_restart_btn", None) is not None:
+                    self._restart_btn.setVisible(True)
             else:
                 self._set_api_key_status("입력된 키가 없습니다. 키를 입력 후 저장하세요.", ok=False)
         except Exception as e:
@@ -1349,6 +1358,20 @@ class SettingsPanel(QWidget):
         color = "#6bcb77" if ok else "#f4b400"
         status.setStyleSheet(f"color: {color}; font-size: 10px;")
         status.setText(text)
+
+    def _restart_app(self):
+        """저장한 키를 적용하기 위해 앱을 새 프로세스로 재실행하고 현재 인스턴스를 종료."""
+        from PyQt6.QtWidgets import QApplication
+        try:
+            paths.restart_app()
+            logger.info("앱 재시작 요청 — 새 인스턴스 실행 후 현재 종료")
+        except Exception as e:
+            logger.error(f"재시작 실패: {e}")
+            self._set_api_key_status(
+                f"자동 재시작 실패: {e}\n프로그램을 직접 종료 후 다시 실행하세요.", ok=False
+            )
+            return
+        QApplication.quit()
 
     def _save_stt_settings(self):
         """UI에서 변경한 STT 설정을 config.yaml에 저장 + 가능한 항목은 ai_process에 브로드캐스트."""

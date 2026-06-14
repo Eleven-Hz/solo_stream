@@ -119,3 +119,27 @@ def ensure_user_data() -> Path:
         shutil.copy2(src_default_profile, dst_default_profile)
 
     return udir
+
+
+def relaunch_command() -> list[str]:
+    """앱을 새 프로세스로 다시 실행하기 위한 커맨드(argv) 리스트.
+
+    - frozen(onedir): exe 자체를 다시 실행.
+    - 스크립트: 현재 파이썬으로 `-m src.main` 재실행.
+    """
+    if is_frozen():
+        return [sys.executable]
+    return [sys.executable, "-m", "src.main"]
+
+
+def restart_app() -> None:
+    """현재 프로세스를 새 인스턴스로 교체(재시작). 키 저장 후 온보딩에서 호출.
+
+    새 프로세스를 띄운 뒤 호출자가 현재 프로세스를 정리/종료하도록 한다.
+    스크립트 모드에선 프로젝트 루트를 cwd 로 둬야 `-m src.main` 이 동작한다.
+    """
+    import subprocess
+
+    cmd = relaunch_command()
+    cwd = None if is_frozen() else str(_PROJECT_ROOT)
+    subprocess.Popen(cmd, cwd=cwd, close_fds=True)
