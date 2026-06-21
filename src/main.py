@@ -284,6 +284,8 @@ def ai_process(
     profile_context = build_profile_context(game_profile)
     vision_context = build_vision_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
+    ui_queue.put({"system": True, "type": "profile_loaded",
+                  "name": game_profile.get("name", "?")})
 
     # 같은 게임 프로필이 짧은 시간에 여러 번 재로드되어도 헤더는 한 번만 찍는다.
     _last_logged_profile = {"key": None}
@@ -367,6 +369,9 @@ def ai_process(
                 last_location = ""
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
                 _log_profile_header(profile_context, game_profile.get("name", "?"))
+                # UI 라벨("재생성 중...")을 완료 상태로 갱신하도록 통지
+                ui_queue.put({"system": True, "type": "profile_loaded",
+                              "name": game_profile.get("name", "?")})
             elif "chat_active" in setting:
                 chat_active = setting["chat_active"]
                 log.info(f"채팅 {'시작' if chat_active else '일시정지'}")
