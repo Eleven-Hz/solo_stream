@@ -22,5 +22,16 @@ echo [build] copy user guide
 powershell -NoProfile -Command "Get-ChildItem -LiteralPath . -Filter '*.txt' | Where-Object { $_.Name -match '[^\x00-\x7F]' } | Copy-Item -Destination 'dist\SoloStream\' -Force"
 if errorlevel 1 echo [build] WARN: failed to copy user guide - check manually
 
+rem Provenance manifest: ties this exe to a commit + records artifact SHA256.
+rem Trustworthy only when built on a clean (committed) tree; dirty builds are flagged.
+echo [build] write BUILD_INFO.txt
+powershell -NoProfile -ExecutionPolicy Bypass -File make_build_info.ps1
+if errorlevel 1 echo [build] WARN: BUILD_INFO.txt generation failed - check manually
+
+rem Package the deploy folder + a checksum so recipients can verify the zip is intact/untampered.
+echo [build] zip + sha256
+powershell -NoProfile -ExecutionPolicy Bypass -File make_release_zip.ps1
+if errorlevel 1 echo [build] WARN: zip/sha256 packaging failed - check manually
+
 echo [build] done: dist\SoloStream\SoloStream.exe
 endlocal
