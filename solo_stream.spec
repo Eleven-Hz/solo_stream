@@ -35,7 +35,7 @@ binaries = []
 hiddenimports = []
 
 # ── 무거운/동적 import 패키지 전체 수집 ───────────────────────────────────────
-for pkg in ("torch", "skimage", "google.genai", "sounddevice", "soundfile"):
+for pkg in ("torch", "skimage", "google.genai", "anthropic", "openai", "sounddevice", "soundfile"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
@@ -46,8 +46,6 @@ hiddenimports += [
     "win32gui",
     "win32api",
     "win32con",
-    "anthropic",
-    "openai",
     "silero_vad",
     "mss",
     "mss.tools",
