@@ -7,7 +7,7 @@ PyQt6 기반 투명 채팅 오버레이.
 import logging
 from multiprocessing import Queue
 
-from PyQt6.QtCore import Qt, QTimer, QPoint, QSize
+from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QAction
 from PyQt6.QtWidgets import (
     QApplication,
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -159,6 +160,153 @@ class TitleBar(QWidget):
                 "border-radius: 3px; font-size: 10px; padding: 0 6px; }"
                 "QPushButton:hover { background: rgba(50,100,50,200); }"
             )
+
+
+def _parse_device(device: str):
+    """STT device 설정 문자열을 sounddevice 인자로 변환.
+    'default'/'' → None, 숫자 문자열 → int 인덱스, 그 외 → 이름 문자열."""
+    d = (device or "").strip()
+    if not d or d.lower() == "default":
+        return None
+    try:
+        return int(d)
+    except ValueError:
+        return d
+
+
+class _MicTestWorker(QObject):
+    """마이크 입력 레벨을 측정하는 워커 (UI 프로세스 내 독립 스트림).
+
+    STT 프로세스와 무관하게 sounddevice InputStream만 잠깐 열어 RMS 레벨을
+    계산해 시그널로 흘린다. silero-vad 로딩 없이 가벼워서 '내 목소리가 잡히나'를
+    시작 전에도 즉시 확인할 수 있다.
+    """
+    level = pyqtSignal(float)   # 0.0 ~ 1.0 정규화 레벨
+    error = pyqtSignal(str)
+    stopped = pyqtSignal()
+
+    def __init__(self, device, sample_rate: int = 16000):
+        super().__init__()
+        self._device = device
+        self._sample_rate = sample_rate
+        self._running = False
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        try:
+            import numpy as np
+            import sounddevice as sd
+        except Exception as e:
+            self.error.emit(f"오디오 라이브러리 로드 실패: {e}")
+            self.stopped.emit()
+            return
+
+        sr = self._sample_rate
+        block = 1024
+        try:
+            stream = sd.InputStream(
+                samplerate=sr, channels=1, dtype="float32",
+                device=self._device, blocksize=block,
+            )
+        except Exception as e:
+            self.error.emit(f"마이크 열기 실패: {e}")
+            self.stopped.emit()
+            return
+
+        self._running = True
+        try:
+            with stream:
+                while self._running:
+                    try:
+                        data, _ = stream.read(block)
+                    except Exception as e:
+                        self.error.emit(f"마이크 읽기 오류: {e}")
+                        break
+                    pcm = data.reshape(-1)
+                    if pcm.size == 0:
+                        continue
+                    # RMS → 대략 0~1 레벨로 스케일 (말소리 RMS가 보통 0.02~0.2 범위라
+                    # ×8 정도로 키워 미터가 의미 있게 움직이게 한다)
+                    rms = float(np.sqrt(np.mean(np.square(pcm))))
+                    self.level.emit(min(rms * 8.0, 1.0))
+        except Exception as e:
+            self.error.emit(f"마이크 스트림 오류: {e}")
+        finally:
+            self.stopped.emit()
+
+
+class _STTTestWorker(QObject):
+    """선택한 장치로 N초 녹음 후 현재 provider/model로 받아쓰기하는 워커.
+
+    실제 STTPipeline/VAD 없이 단발 녹음 → create_transcriber().transcribe() 로
+    '받아쓰기가 되는지'를 확인한다. API 키·요금이 실제로 사용된다.
+    """
+    progress = pyqtSignal(str)              # 진행 상태 메시지
+    finished = pyqtSignal(str, float)       # (transcript, elapsed_s)
+    error = pyqtSignal(str)
+
+    def __init__(self, *, device, sample_rate, record_seconds,
+                 provider, model, language, prompt,
+                 gemini_key, openai_key,
+                 normalize_target_level, normalize_percentile, normalize_max_gain):
+        super().__init__()
+        self._device = device
+        self._sample_rate = sample_rate
+        self._record_seconds = record_seconds
+        self._provider = provider
+        self._model = model
+        self._language = language
+        self._prompt = prompt
+        self._gemini_key = gemini_key
+        self._openai_key = openai_key
+        self._norm = (normalize_target_level, normalize_percentile, normalize_max_gain)
+
+    def run(self):
+        try:
+            import numpy as np
+            import sounddevice as sd
+            from src.stt.transcriber import create_transcriber
+        except Exception as e:
+            self.error.emit(f"라이브러리 로드 실패: {e}")
+            return
+
+        # 1) 녹음
+        self.progress.emit("🔴 녹음 중... 지금 말하세요.")
+        sr = self._sample_rate
+        frames = int(sr * self._record_seconds)
+        try:
+            rec = sd.rec(frames, samplerate=sr, channels=1, dtype="float32",
+                         device=self._device)
+            sd.wait()
+        except Exception as e:
+            self.error.emit(f"녹음 실패: {e}")
+            return
+        pcm = np.asarray(rec, dtype=np.float32).reshape(-1)
+        if pcm.size == 0:
+            self.error.emit("녹음된 오디오가 없습니다. 입력 장치를 확인하세요.")
+            return
+
+        # 2) transcribe
+        self.progress.emit("⏳ 받아쓰기 중...")
+        try:
+            transcriber = create_transcriber(
+                self._provider,
+                gemini_api_key=self._gemini_key,
+                openai_api_key=self._openai_key,
+                model=self._model,
+                language=self._language,
+                prompt=self._prompt or None,
+                normalize_target_level=self._norm[0],
+                normalize_percentile=self._norm[1],
+                normalize_max_gain=self._norm[2],
+            )
+            text, elapsed = transcriber.transcribe(pcm, sr)
+        except Exception as e:
+            self.error.emit(f"받아쓰기 실패: {e}")
+            return
+        self.finished.emit(text, elapsed)
 
 
 class SettingsPanel(QWidget):
@@ -986,16 +1134,41 @@ class SettingsPanel(QWidget):
     # ── 음성(STT) 탭 섹션 ───────────────────────────────────────────────
 
     def _build_section_stt(self, layout: QVBoxLayout):
+        # 배치 순서: ① enabled → ② 입력 장치 → ③ 마이크 테스트 → ④ STT 테스트
+        #            → ⑤ Transcribe 모델 → ⑥ 나머지(반응강도/lookback/VAD/프롬프트)
         stt_cfg = self._config.get("stt", {}) or {}
-
-        _input_style = (
+        self._stt_input_style = (
             "QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit { "
             "background: #1e1e2e; color: #ddd; border: 1px solid #444; "
             "border-radius: 4px; padding: 3px 6px; font-size: 13px; }"
         )
-        _combo_style = self._COMBO_STYLE
 
-        # enabled 토글
+        self._build_stt_enabled(layout, stt_cfg)
+        self._build_stt_device(layout, stt_cfg)
+        self._build_stt_mic_test(layout)
+        self._build_stt_stt_test(layout)
+        self._build_stt_model(layout, stt_cfg)
+        self._build_stt_rest(layout, stt_cfg)
+
+        # 저장 버튼
+        save_stt_btn = QPushButton("STT 설정 저장 (config.yaml)")
+        save_stt_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        save_stt_btn.clicked.connect(self._save_stt_settings)
+        layout.addWidget(save_stt_btn)
+
+        self._stt_status = QLabel("")
+        self._stt_status.setStyleSheet("color: #888; font-size: 12px;")
+        self._stt_status.setWordWrap(True)
+        layout.addWidget(self._stt_status)
+
+    # ── 음성 탭 하위 섹션 ───────────────────────────────────────────────────
+
+    def _stt_sep(self, layout: QVBoxLayout):
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+    def _build_stt_enabled(self, layout: QVBoxLayout, stt_cfg: dict):
         title = QLabel("음성 인식 (STT)")
         title.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(title)
@@ -1016,131 +1189,97 @@ class SettingsPanel(QWidget):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        # 구분선
-        sep = QLabel(); sep.setFixedHeight(1)
-        sep.setStyleSheet("background: rgba(255,255,255,20);")
-        layout.addWidget(sep)
+    def _build_stt_device(self, layout: QVBoxLayout, stt_cfg: dict):
+        self._stt_sep(layout)
+        dev_label = QLabel("입력 장치 (마이크)")
+        dev_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
+        layout.addWidget(dev_label)
 
-        # default_weight
-        weight_row = QHBoxLayout()
-        weight_lbl = QLabel("기본 반응 강도")
-        weight_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
-        weight_lbl.setFixedWidth(110)
-        weight_row.addWidget(weight_lbl)
-        self._stt_weight_combo = QComboBox()
-        self._stt_weight_combo.setStyleSheet(_combo_style)
-        self._stt_weight_combo.addItems(["off", "low", "medium", "high"])
-        cur_w = str(stt_cfg.get("default_weight", "high")).lower()
-        idx = self._stt_weight_combo.findText(cur_w)
-        self._stt_weight_combo.setCurrentIndex(idx if idx >= 0 else 3)
-        weight_row.addWidget(self._stt_weight_combo)
-        layout.addLayout(weight_row)
+        self._stt_device_combo = QComboBox()
+        self._stt_device_combo.setStyleSheet(self._COMBO_STYLE)
+        self._constrain_combo(self._stt_device_combo)
+        layout.addWidget(self._stt_device_combo)
+        self._populate_input_devices(str(stt_cfg.get("device", "default")))
 
-        w_hint = QLabel("페르소나에 user_speech_weight가 없는 봇이 사용하는 기본값")
-        w_hint.setStyleSheet("color: #666; font-size: 11px;")
-        w_hint.setWordWrap(True)
-        layout.addWidget(w_hint)
+        dev_btns = QHBoxLayout()
+        refresh_dev_btn = QPushButton("새로고침")
+        refresh_dev_btn.setStyleSheet(self._btn_style("#333", "#555"))
+        refresh_dev_btn.clicked.connect(
+            lambda: self._populate_input_devices(self._selected_device_str())
+        )
+        dev_btns.addWidget(refresh_dev_btn)
+        dev_btns.addStretch()
+        layout.addLayout(dev_btns)
 
-        # lookback_seconds
-        lb_row = QHBoxLayout()
-        lb_lbl = QLabel("lookback (초)")
-        lb_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
-        lb_lbl.setFixedWidth(110)
-        lb_row.addWidget(lb_lbl)
-        self._stt_lookback_spin = QDoubleSpinBox()
-        self._stt_lookback_spin.setStyleSheet(_input_style)
-        self._stt_lookback_spin.setRange(1.0, 120.0)
-        self._stt_lookback_spin.setSingleStep(1.0)
-        self._stt_lookback_spin.setDecimals(1)
-        self._stt_lookback_spin.setValue(float(stt_cfg.get("lookback_seconds", 20.0)))
-        lb_row.addWidget(self._stt_lookback_spin)
-        layout.addLayout(lb_row)
+    def _build_stt_mic_test(self, layout: QVBoxLayout):
+        self._stt_sep(layout)
+        mic_label = QLabel("마이크 테스트")
+        mic_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
+        layout.addWidget(mic_label)
 
-        lb_hint = QLabel("vision 라운드 직전 N초 안의 발화만 채팅 컨텍스트로 사용")
-        lb_hint.setStyleSheet("color: #666; font-size: 11px;")
-        lb_hint.setWordWrap(True)
-        layout.addWidget(lb_hint)
+        mic_hint = QLabel("선택한 입력 장치로 마이크를 잠깐 열어 입력 레벨을 봅니다. "
+                          "말했을 때 막대가 움직이면 정상입니다 (▶ 시작과 무관).")
+        mic_hint.setStyleSheet("color: #666; font-size: 11px;")
+        mic_hint.setWordWrap(True)
+        layout.addWidget(mic_hint)
 
-        # min_transcript_chars
-        mc_row = QHBoxLayout()
-        mc_lbl = QLabel("최소 글자 수")
-        mc_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
-        mc_lbl.setFixedWidth(110)
-        mc_row.addWidget(mc_lbl)
-        self._stt_min_chars_spin = QSpinBox()
-        self._stt_min_chars_spin.setStyleSheet(_input_style)
-        self._stt_min_chars_spin.setRange(0, 50)
-        self._stt_min_chars_spin.setValue(int(stt_cfg.get("min_transcript_chars", 2)))
-        mc_row.addWidget(self._stt_min_chars_spin)
-        layout.addLayout(mc_row)
+        self._mic_test_btn = QPushButton("🎤 마이크 테스트 시작")
+        self._mic_test_btn.setStyleSheet(self._btn_style("#1a472a", "#2d6a4f"))
+        self._mic_test_btn.clicked.connect(self._toggle_mic_test)
+        layout.addWidget(self._mic_test_btn)
 
-        # 구분선
-        sep2 = QLabel(); sep2.setFixedHeight(1)
-        sep2.setStyleSheet("background: rgba(255,255,255,20);")
-        layout.addWidget(sep2)
+        self._mic_level_bar = QProgressBar()
+        self._mic_level_bar.setRange(0, 100)
+        self._mic_level_bar.setValue(0)
+        self._mic_level_bar.setTextVisible(False)
+        self._mic_level_bar.setFixedHeight(14)
+        self._mic_level_bar.setStyleSheet(
+            "QProgressBar { background: #111118; border: 1px solid #444; border-radius: 4px; }"
+            "QProgressBar::chunk { background: #6BCB77; border-radius: 3px; }"
+        )
+        layout.addWidget(self._mic_level_bar)
 
-        # VAD 파라미터
-        vad_label = QLabel("VAD 파라미터")
-        vad_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
-        layout.addWidget(vad_label)
+        self._mic_test_status = QLabel("")
+        self._mic_test_status.setStyleSheet("color: #888; font-size: 11px;")
+        self._mic_test_status.setWordWrap(True)
+        layout.addWidget(self._mic_test_status)
 
-        # threshold
-        th_row = QHBoxLayout()
-        th_lbl = QLabel("threshold")
-        th_lbl.setStyleSheet("color: #888; font-size: 12px;")
-        th_lbl.setFixedWidth(110)
-        th_row.addWidget(th_lbl)
-        self._stt_threshold_spin = QDoubleSpinBox()
-        self._stt_threshold_spin.setStyleSheet(_input_style)
-        self._stt_threshold_spin.setRange(0.1, 0.9)
-        self._stt_threshold_spin.setSingleStep(0.05)
-        self._stt_threshold_spin.setDecimals(2)
-        self._stt_threshold_spin.setValue(float(stt_cfg.get("vad_threshold", 0.5)))
-        th_row.addWidget(self._stt_threshold_spin)
-        layout.addLayout(th_row)
+        # 마이크 테스트 상태 보관용
+        self._mic_thread = None
+        self._mic_worker = None
+        self._mic_peak = 0.0
 
-        # min_speech_ms / min_silence_ms
-        for label_text, key, default in [
-            ("min_speech (ms)", "min_speech_ms", 250),
-            ("min_silence (ms)", "min_silence_ms", 500),
-            ("speech_pad (ms)", "speech_pad_ms", 100),
-        ]:
-            row = QHBoxLayout()
-            lbl = QLabel(label_text)
-            lbl.setStyleSheet("color: #888; font-size: 12px;")
-            lbl.setFixedWidth(110)
-            row.addWidget(lbl)
-            spin = QSpinBox()
-            spin.setStyleSheet(_input_style)
-            spin.setRange(0, 5000)
-            spin.setSingleStep(50)
-            spin.setValue(int(stt_cfg.get(key, default)))
-            row.addWidget(spin)
-            layout.addLayout(row)
-            # 동적 속성으로 보관 (apply 시 일괄 수집)
-            setattr(self, f"_stt_{key}_spin", spin)
+    def _build_stt_stt_test(self, layout: QVBoxLayout):
+        self._stt_sep(layout)
+        stt_test_label = QLabel("STT 테스트 (받아쓰기)")
+        stt_test_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
+        layout.addWidget(stt_test_label)
 
-        # max_utterance_seconds
-        mu_row = QHBoxLayout()
-        mu_lbl = QLabel("max 발화 (초)")
-        mu_lbl.setStyleSheet("color: #888; font-size: 12px;")
-        mu_lbl.setFixedWidth(110)
-        mu_row.addWidget(mu_lbl)
-        self._stt_max_utt_spin = QDoubleSpinBox()
-        self._stt_max_utt_spin.setStyleSheet(_input_style)
-        self._stt_max_utt_spin.setRange(5.0, 120.0)
-        self._stt_max_utt_spin.setSingleStep(5.0)
-        self._stt_max_utt_spin.setDecimals(1)
-        self._stt_max_utt_spin.setValue(float(stt_cfg.get("max_utterance_seconds", 30.0)))
-        mu_row.addWidget(self._stt_max_utt_spin)
-        layout.addLayout(mu_row)
+        stt_test_hint = QLabel("아래 버튼을 누르고 약 4초간 말하면, 현재 provider/model로 "
+                               "받아쓰기한 결과를 보여줍니다. (API 키·요금 사용)")
+        stt_test_hint.setStyleSheet("color: #666; font-size: 11px;")
+        stt_test_hint.setWordWrap(True)
+        layout.addWidget(stt_test_hint)
 
-        # 구분선
-        sep3 = QLabel(); sep3.setFixedHeight(1)
-        sep3.setStyleSheet("background: rgba(255,255,255,20);")
-        layout.addWidget(sep3)
+        self._stt_test_btn = QPushButton("📝 STT 테스트 (4초 녹음)")
+        self._stt_test_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        self._stt_test_btn.clicked.connect(self._start_stt_test)
+        layout.addWidget(self._stt_test_btn)
 
-        # 모델 + 언어
+        self._stt_test_result = QLabel("")
+        self._stt_test_result.setStyleSheet("color: #888; font-size: 12px;")
+        self._stt_test_result.setWordWrap(True)
+        layout.addWidget(self._stt_test_result)
+
+        # STT 테스트 상태 보관용
+        self._stt_test_thread = None
+        self._stt_test_worker = None
+
+    def _build_stt_model(self, layout: QVBoxLayout, stt_cfg: dict):
+        _input_style = self._stt_input_style
+        _combo_style = self._COMBO_STYLE
+
+        self._stt_sep(layout)
         stt_model_label = QLabel("Transcribe 모델")
         stt_model_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(stt_model_label)
@@ -1200,19 +1339,129 @@ class SettingsPanel(QWidget):
         lang_row.addWidget(self._stt_language_input)
         layout.addLayout(lang_row)
 
-        device_row = QHBoxLayout()
-        device_lbl = QLabel("device")
-        device_lbl.setStyleSheet("color: #888; font-size: 12px;")
-        device_lbl.setFixedWidth(110)
-        device_row.addWidget(device_lbl)
-        self._stt_device_input = QLineEdit()
-        self._stt_device_input.setStyleSheet(_input_style)
-        self._stt_device_input.setPlaceholderText("default 또는 장치 인덱스/이름")
-        self._stt_device_input.setText(str(stt_cfg.get("device", "default")))
-        device_row.addWidget(self._stt_device_input)
-        layout.addLayout(device_row)
+    def _build_stt_rest(self, layout: QVBoxLayout, stt_cfg: dict):
+        _input_style = self._stt_input_style
+        _combo_style = self._COMBO_STYLE
+
+        self._stt_sep(layout)
+        rest_label = QLabel("반응/감지 설정")
+        rest_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
+        layout.addWidget(rest_label)
+
+        # default_weight
+        weight_row = QHBoxLayout()
+        weight_lbl = QLabel("기본 반응 강도")
+        weight_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
+        weight_lbl.setFixedWidth(110)
+        weight_row.addWidget(weight_lbl)
+        self._stt_weight_combo = QComboBox()
+        self._stt_weight_combo.setStyleSheet(_combo_style)
+        self._stt_weight_combo.addItems(["off", "low", "medium", "high"])
+        cur_w = str(stt_cfg.get("default_weight", "high")).lower()
+        idx = self._stt_weight_combo.findText(cur_w)
+        self._stt_weight_combo.setCurrentIndex(idx if idx >= 0 else 3)
+        weight_row.addWidget(self._stt_weight_combo)
+        layout.addLayout(weight_row)
+
+        w_hint = QLabel("페르소나에 user_speech_weight가 없는 봇이 사용하는 기본값")
+        w_hint.setStyleSheet("color: #666; font-size: 11px;")
+        w_hint.setWordWrap(True)
+        layout.addWidget(w_hint)
+
+        # lookback_seconds
+        lb_row = QHBoxLayout()
+        lb_lbl = QLabel("lookback (초)")
+        lb_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
+        lb_lbl.setFixedWidth(110)
+        lb_row.addWidget(lb_lbl)
+        self._stt_lookback_spin = QDoubleSpinBox()
+        self._stt_lookback_spin.setStyleSheet(_input_style)
+        self._stt_lookback_spin.setRange(1.0, 120.0)
+        self._stt_lookback_spin.setSingleStep(1.0)
+        self._stt_lookback_spin.setDecimals(1)
+        self._stt_lookback_spin.setValue(float(stt_cfg.get("lookback_seconds", 20.0)))
+        lb_row.addWidget(self._stt_lookback_spin)
+        layout.addLayout(lb_row)
+
+        lb_hint = QLabel("vision 라운드 직전 N초 안의 발화만 채팅 컨텍스트로 사용")
+        lb_hint.setStyleSheet("color: #666; font-size: 11px;")
+        lb_hint.setWordWrap(True)
+        layout.addWidget(lb_hint)
+
+        # min_transcript_chars
+        mc_row = QHBoxLayout()
+        mc_lbl = QLabel("최소 글자 수")
+        mc_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
+        mc_lbl.setFixedWidth(110)
+        mc_row.addWidget(mc_lbl)
+        self._stt_min_chars_spin = QSpinBox()
+        self._stt_min_chars_spin.setStyleSheet(_input_style)
+        self._stt_min_chars_spin.setRange(0, 50)
+        self._stt_min_chars_spin.setValue(int(stt_cfg.get("min_transcript_chars", 2)))
+        mc_row.addWidget(self._stt_min_chars_spin)
+        layout.addLayout(mc_row)
+
+        # 구분선
+        self._stt_sep(layout)
+
+        # VAD 파라미터
+        vad_label = QLabel("VAD 파라미터")
+        vad_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
+        layout.addWidget(vad_label)
+
+        # threshold
+        th_row = QHBoxLayout()
+        th_lbl = QLabel("threshold")
+        th_lbl.setStyleSheet("color: #888; font-size: 12px;")
+        th_lbl.setFixedWidth(110)
+        th_row.addWidget(th_lbl)
+        self._stt_threshold_spin = QDoubleSpinBox()
+        self._stt_threshold_spin.setStyleSheet(_input_style)
+        self._stt_threshold_spin.setRange(0.1, 0.9)
+        self._stt_threshold_spin.setSingleStep(0.05)
+        self._stt_threshold_spin.setDecimals(2)
+        self._stt_threshold_spin.setValue(float(stt_cfg.get("vad_threshold", 0.5)))
+        th_row.addWidget(self._stt_threshold_spin)
+        layout.addLayout(th_row)
+
+        # min_speech_ms / min_silence_ms / speech_pad_ms
+        for label_text, key, default in [
+            ("min_speech (ms)", "min_speech_ms", 250),
+            ("min_silence (ms)", "min_silence_ms", 500),
+            ("speech_pad (ms)", "speech_pad_ms", 100),
+        ]:
+            row = QHBoxLayout()
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #888; font-size: 12px;")
+            lbl.setFixedWidth(110)
+            row.addWidget(lbl)
+            spin = QSpinBox()
+            spin.setStyleSheet(_input_style)
+            spin.setRange(0, 5000)
+            spin.setSingleStep(50)
+            spin.setValue(int(stt_cfg.get(key, default)))
+            row.addWidget(spin)
+            layout.addLayout(row)
+            # 동적 속성으로 보관 (apply 시 일괄 수집)
+            setattr(self, f"_stt_{key}_spin", spin)
+
+        # max_utterance_seconds
+        mu_row = QHBoxLayout()
+        mu_lbl = QLabel("max 발화 (초)")
+        mu_lbl.setStyleSheet("color: #888; font-size: 12px;")
+        mu_lbl.setFixedWidth(110)
+        mu_row.addWidget(mu_lbl)
+        self._stt_max_utt_spin = QDoubleSpinBox()
+        self._stt_max_utt_spin.setStyleSheet(_input_style)
+        self._stt_max_utt_spin.setRange(5.0, 120.0)
+        self._stt_max_utt_spin.setSingleStep(5.0)
+        self._stt_max_utt_spin.setDecimals(1)
+        self._stt_max_utt_spin.setValue(float(stt_cfg.get("max_utterance_seconds", 30.0)))
+        mu_row.addWidget(self._stt_max_utt_spin)
+        layout.addLayout(mu_row)
 
         # transcribe_prompt
+        self._stt_sep(layout)
         prompt_label = QLabel("Transcribe 프롬프트")
         prompt_label.setStyleSheet("color: #bbb; font-size: 13px;")
         layout.addWidget(prompt_label)
@@ -1223,16 +1472,38 @@ class SettingsPanel(QWidget):
         self._stt_prompt_text.setPlainText(str(stt_cfg.get("transcribe_prompt", "")))
         layout.addWidget(self._stt_prompt_text)
 
-        # 저장 버튼
-        save_stt_btn = QPushButton("STT 설정 저장 (config.yaml)")
-        save_stt_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
-        save_stt_btn.clicked.connect(self._save_stt_settings)
-        layout.addWidget(save_stt_btn)
+    # ── 입력 장치 콤보 ──────────────────────────────────────────────────────
 
-        self._stt_status = QLabel("")
-        self._stt_status.setStyleSheet("color: #888; font-size: 12px;")
-        self._stt_status.setWordWrap(True)
-        layout.addWidget(self._stt_status)
+    def _populate_input_devices(self, want: str):
+        """입력 장치 목록을 콤보에 채운다. want(저장된 device 문자열)를 선택.
+        항목 userData에 device 값 문자열('default'/'3' 등)을 담는다."""
+        combo = self._stt_device_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("기본 장치 (시스템 설정)", userData="default")
+        try:
+            import sounddevice as sd
+            for idx, dev in enumerate(sd.query_devices()):
+                if dev.get("max_input_channels", 0) > 0:
+                    combo.addItem(f"[{idx}] {dev['name']}", userData=str(idx))
+        except Exception as e:
+            logger.warning(f"입력 장치 조회 실패: {e}")
+        # want 와 일치하는 항목 선택 (userData 우선, 없으면 default)
+        target_idx = 0
+        for i in range(combo.count()):
+            if str(combo.itemData(i)) == str(want):
+                target_idx = i
+                break
+        combo.setCurrentIndex(target_idx)
+        combo.blockSignals(False)
+
+    def _selected_device_str(self) -> str:
+        """현재 선택된 입력 장치의 device 설정 문자열('default'/'3' 등)."""
+        combo = getattr(self, "_stt_device_combo", None)
+        if combo is None:
+            return "default"
+        data = combo.currentData()
+        return str(data) if data is not None else "default"
 
     # ── 비용 탭 섹션 ─────────────────────────────────────────────────────
 
@@ -1665,7 +1936,7 @@ class SettingsPanel(QWidget):
             new_stt = {
                 "enabled": self._stt_enabled_chk.isChecked(),
                 "sample_rate": int(old_stt.get("sample_rate", 16000)),
-                "device": self._stt_device_input.text().strip() or "default",
+                "device": self._selected_device_str(),
                 "vad_threshold": float(self._stt_threshold_spin.value()),
                 "min_speech_ms": int(self._stt_min_speech_ms_spin.value()),
                 "min_silence_ms": int(self._stt_min_silence_ms_spin.value()),
@@ -1732,6 +2003,159 @@ class SettingsPanel(QWidget):
             logger.error(f"STT 설정 저장 실패: {e}", exc_info=True)
             self._stt_status.setText(f"저장 실패: {e}")
             self._stt_status.setStyleSheet("color: #ff6b6b; font-size: 12px;")
+
+    # ── 마이크 테스트 ───────────────────────────────────────────────────────
+
+    def _toggle_mic_test(self):
+        if self._mic_thread is not None:
+            self._stop_mic_test()
+        else:
+            self._start_mic_test()
+
+    def _start_mic_test(self):
+        device = _parse_device(self._selected_device_str())
+        sr = int((self._config.get("stt") or {}).get("sample_rate", 16000))
+        self._mic_peak = 0.0
+
+        self._mic_worker = _MicTestWorker(device, sample_rate=sr)
+        self._mic_thread = QThread(self)
+        self._mic_worker.moveToThread(self._mic_thread)
+        self._mic_thread.started.connect(self._mic_worker.run)
+        self._mic_worker.level.connect(self._on_mic_level)
+        self._mic_worker.error.connect(self._on_mic_error)
+        self._mic_worker.stopped.connect(self._on_mic_stopped)
+        self._mic_thread.start()
+
+        self._mic_test_btn.setText("⏹ 마이크 테스트 중지")
+        self._mic_test_btn.setStyleSheet(self._btn_style("#5a1a1a", "#7a2a2a"))
+        self._mic_test_status.setText("측정 중... 마이크에 대고 말해보세요.")
+        self._mic_test_status.setStyleSheet("color: #888; font-size: 11px;")
+
+    def _stop_mic_test(self):
+        if self._mic_worker is not None:
+            self._mic_worker.stop()
+        if self._mic_thread is not None:
+            self._mic_thread.quit()
+            self._mic_thread.wait(1500)
+        self._mic_thread = None
+        self._mic_worker = None
+        self._mic_level_bar.setValue(0)
+        self._mic_test_btn.setText("🎤 마이크 테스트 시작")
+        self._mic_test_btn.setStyleSheet(self._btn_style("#1a472a", "#2d6a4f"))
+        # 피크 결과를 남겨 '잡혔는지' 판단을 돕는다.
+        if self._mic_peak >= 0.05:
+            self._mic_test_status.setText(
+                f"✓ 음성이 감지되었습니다 (피크 {int(self._mic_peak * 100)}%)."
+            )
+            self._mic_test_status.setStyleSheet("color: #6BCB77; font-size: 11px;")
+        elif self._mic_peak > 0:
+            self._mic_test_status.setText(
+                f"입력이 약합니다 (피크 {int(self._mic_peak * 100)}%). "
+                "마이크 볼륨/장치를 확인하세요."
+            )
+            self._mic_test_status.setStyleSheet("color: #f4b400; font-size: 11px;")
+        else:
+            self._mic_test_status.setText("입력이 감지되지 않았습니다. device 설정을 확인하세요.")
+            self._mic_test_status.setStyleSheet("color: #f4b400; font-size: 11px;")
+
+    def _on_mic_level(self, level: float):
+        self._mic_peak = max(self._mic_peak, level)
+        self._mic_level_bar.setValue(int(level * 100))
+
+    def _on_mic_error(self, msg: str):
+        logger.warning(f"마이크 테스트 오류: {msg}")
+        self._mic_test_status.setText(f"오류: {msg}")
+        self._mic_test_status.setStyleSheet("color: #ff6b6b; font-size: 11px;")
+
+    def _on_mic_stopped(self):
+        # 워커 run()이 (오류 등으로) 자체 종료한 경우에도 버튼/스레드 상태를 정리.
+        if self._mic_thread is not None and not self._mic_worker_running():
+            self._mic_thread.quit()
+            self._mic_thread.wait(1500)
+            self._mic_thread = None
+            self._mic_worker = None
+            self._mic_level_bar.setValue(0)
+            self._mic_test_btn.setText("🎤 마이크 테스트 시작")
+            self._mic_test_btn.setStyleSheet(self._btn_style("#1a472a", "#2d6a4f"))
+
+    def _mic_worker_running(self) -> bool:
+        return bool(self._mic_worker and getattr(self._mic_worker, "_running", False))
+
+    # ── STT 테스트 ──────────────────────────────────────────────────────────
+
+    def _start_stt_test(self):
+        if self._stt_test_thread is not None:
+            return  # 이미 진행 중
+        from src.utils.config_loader import get_api_key, get_openai_api_key
+
+        provider = self._stt_provider_combo.currentText().strip() or "gemini"
+        gemini_key = get_api_key(self._config)
+        openai_key = get_openai_api_key(self._config)
+        # 키 사전 점검 (워커에서도 잡지만 빠른 피드백)
+        if provider == "openai" and not openai_key:
+            self._set_stt_test_result("OpenAI API 키가 없습니다. AI 모델 탭에서 저장 후 재시작하세요.", "#f4b400")
+            return
+        if provider == "gemini" and not gemini_key:
+            self._set_stt_test_result("Gemini API 키가 없습니다. AI 모델 탭에서 저장 후 재시작하세요.", "#f4b400")
+            return
+
+        stt_cfg = self._config.get("stt", {}) or {}
+        self._stt_test_worker = _STTTestWorker(
+            device=_parse_device(self._selected_device_str()),
+            sample_rate=int(stt_cfg.get("sample_rate", 16000)),
+            record_seconds=4.0,
+            provider=provider,
+            model=self._stt_model_combo.currentText().strip(),
+            language=self._stt_language_input.text().strip() or "ko",
+            prompt=self._stt_prompt_text.toPlainText().strip(),
+            gemini_key=gemini_key,
+            openai_key=openai_key,
+            normalize_target_level=float(stt_cfg.get("normalize_target_level", 0.1)),
+            normalize_percentile=float(stt_cfg.get("normalize_percentile", 95.0)),
+            normalize_max_gain=float(stt_cfg.get("normalize_max_gain", 20.0)),
+        )
+        self._stt_test_thread = QThread(self)
+        self._stt_test_worker.moveToThread(self._stt_test_thread)
+        self._stt_test_thread.started.connect(self._stt_test_worker.run)
+        self._stt_test_worker.progress.connect(self._on_stt_test_progress)
+        self._stt_test_worker.finished.connect(self._on_stt_test_finished)
+        self._stt_test_worker.error.connect(self._on_stt_test_error)
+        self._stt_test_thread.start()
+
+        self._stt_test_btn.setEnabled(False)
+        self._stt_test_btn.setText("STT 테스트 진행 중...")
+
+    def _set_stt_test_result(self, text: str, color: str):
+        self._stt_test_result.setText(text)
+        self._stt_test_result.setStyleSheet(f"color: {color}; font-size: 12px;")
+
+    def _on_stt_test_progress(self, msg: str):
+        self._set_stt_test_result(msg, "#888")
+
+    def _on_stt_test_finished(self, text: str, elapsed: float):
+        if text:
+            self._set_stt_test_result(f"✓ 인식 결과 ({elapsed:.1f}s): {text}", "#6BCB77")
+        else:
+            self._set_stt_test_result(
+                f"인식된 텍스트가 없습니다 ({elapsed:.1f}s). 더 또렷하게 말하거나 "
+                "마이크 볼륨/장치를 확인하세요.",
+                "#f4b400",
+            )
+        self._cleanup_stt_test()
+
+    def _on_stt_test_error(self, msg: str):
+        logger.warning(f"STT 테스트 오류: {msg}")
+        self._set_stt_test_result(f"오류: {msg}", "#ff6b6b")
+        self._cleanup_stt_test()
+
+    def _cleanup_stt_test(self):
+        if self._stt_test_thread is not None:
+            self._stt_test_thread.quit()
+            self._stt_test_thread.wait(2000)
+        self._stt_test_thread = None
+        self._stt_test_worker = None
+        self._stt_test_btn.setEnabled(True)
+        self._stt_test_btn.setText("📝 STT 테스트 (4초 녹음)")
 
     def set_profile_name(self, name: str):
         self._profile_status.setText(f"현재 프로필: {name}")
