@@ -13,6 +13,7 @@
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import yaml
@@ -21,6 +22,13 @@ from google.genai import types
 from src.utils import paths
 
 logger = logging.getLogger("solo_stream.game_profile")
+
+# 일시적(retryable) 오류로 간주할 신호. 이런 오류는 백오프 후 재시도한다.
+_RETRYABLE_MARKERS = ("503", "unavailable", "429", "resource_exhausted",
+                      "rate limit", "overloaded", "deadline", "500", "internal")
+_MAX_RETRIES = 5          # 각 단계 최대 시도 횟수(첫 시도 포함)
+_RETRY_BASE_DELAY = 4.0   # 지수 백오프 기본 지연(초): 4 → 8 → 16 → 30(상한)
+_RETRY_MAX_DELAY = 30.0   # 백오프 지연 상한(초)
 
 # 프로필은 런타임에 자동 생성·저장되므로 쓰기 가능한 사용자 데이터 폴더 기준.
 _PROFILE_DIR = paths.user_data_dir() / "game_profiles"
@@ -167,16 +175,45 @@ def _safe_filename(game_name: str) -> str:
     return name[:64]
 
 
+def _is_retryable(err: Exception) -> bool:
+    """503/429 등 일시적 오류면 True (재시도 대상)."""
+    msg = str(err).lower()
+    return any(m in msg for m in _RETRYABLE_MARKERS)
+
+
 def _search(ai_client, prompt: str, model: str) -> str:
-    """Google Search grounding으로 단일 검색 실행."""
-    response = ai_client._client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-        ),
-    )
-    return response.text.strip()
+    """Google Search grounding으로 단일 검색 실행.
+
+    503/UNAVAILABLE 같은 일시적 오류는 지수 백오프로 최대 _MAX_RETRIES 회 재시도한다.
+    모든 재시도가 실패하면 마지막 예외를 그대로 raise 한다(호출부가 메시지 수집).
+    """
+    last_err: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            response = ai_client._client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
+            text = (response.text or "").strip()
+            if not text:
+                # 503 등으로 본문이 비어 돌아오는 케이스도 일시적 오류로 취급해 재시도
+                raise RuntimeError("빈 응답(text 없음)")
+            return text
+        except Exception as e:
+            last_err = e
+            if attempt < _MAX_RETRIES and _is_retryable(e):
+                delay = min(_RETRY_BASE_DELAY * (2 ** (attempt - 1)), _RETRY_MAX_DELAY)
+                logger.warning(
+                    f"    일시적 오류 — {delay:.0f}s 후 재시도 ({attempt}/{_MAX_RETRIES}): {e}"
+                )
+                time.sleep(delay)
+                continue
+            raise
+    # 도달하지 않지만 방어적으로
+    raise last_err if last_err else RuntimeError("검색 실패")
 
 
 def _parse_json(text: str) -> dict:
@@ -211,9 +248,15 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None) -> 
     logger.info(f"게임 프로필 없음. 멀티턴 검색으로 자동 생성 중: {game_name} (모델: {model})")
     profile = _generate_profile(game_name, ai_client, model)
 
+    # 생성 중 발생한 단계 오류는 UI 표시용이라 디스크에는 저장하지 않는다.
+    # (오류가 박제되면 다음 실행 때 파일이 그대로 로드돼 재생성 기회를 놓친다)
+    errors = profile.get("_generation_errors")
+    to_save = {k: v for k, v in profile.items() if k != "_generation_errors"}
     with open(profile_path, "w", encoding="utf-8") as f:
-        yaml.dump(profile, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
     logger.info(f"게임 프로필 저장 완료: {profile_path}")
+    if errors:
+        logger.warning(f"프로필 생성 중 {len(errors)}개 단계 실패 — 일부 정보 누락 가능")
 
     return profile
 
@@ -229,6 +272,13 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         "skills": [],
         "chat_tips": [],
     }
+    # 단계 실패(재시도 소진 포함)를 모아 호출부가 UI로 표시할 수 있게 한다.
+    errors: list[str] = []
+
+    def _record_error(step: str, e: Exception):
+        retryable = " (재시도 후에도 실패)" if _is_retryable(e) else ""
+        logger.error(f"  {step} 실패{retryable}: {e}")
+        errors.append(f"{step}: {e}")
 
     # ── 1단계: 기본 정보 ────────────────────────────────────────────────────
     logger.info(f"[1/5] 기본 정보 검색 중...")
@@ -240,7 +290,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         profile["description"] = data.get("description", "")
         logger.info(f"  → 이름: {profile['name']}")
     except Exception as e:
-        logger.error(f"  1단계 실패: {e}")
+        _record_error("1단계(기본 정보)", e)
 
     # ── 2단계: 전투 시스템 + 지역 ───────────────────────────────────────────
     logger.info(f"[2/5] 전투 시스템 + 지역 검색 중...")
@@ -252,7 +302,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         profile["locations"] = _clean_list(data.get("locations", []))
         logger.info(f"  → 시스템 {len(profile['systems'])}개, 지역 {len(profile['locations'])}개")
     except Exception as e:
-        logger.error(f"  2단계 실패: {e}")
+        _record_error("2단계(전투/지역)", e)
 
     # ── 3단계: 몬스터/보스 + 스킬 ──────────────────────────────────────────
     logger.info(f"[3/5] 몬스터/보스 + 스킬 검색 중...")
@@ -264,7 +314,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         profile["skills"] = _clean_list(data.get("skills", []))
         logger.info(f"  → 적 {len(profile['enemies'])}개, 스킬 {len(profile['skills'])}개")
     except Exception as e:
-        logger.error(f"  3단계 실패: {e}")
+        _record_error("3단계(몬스터/스킬)", e)
 
     # ── 3b단계: vision_focus 생성 ────────────────────────────────────────────
     logger.info(f"[3b/5] Vision 묘사 포커스 생성 중...")
@@ -275,7 +325,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         profile["vision_focus"] = _clean_list(data.get("vision_focus", []))
         logger.info(f"  → vision_focus {len(profile['vision_focus'])}개")
     except Exception as e:
-        logger.error(f"  3b단계 실패: {e}")
+        _record_error("3b단계(Vision 포커스)", e)
 
     # ── 4단계: chat_tips 심화 검색 ──────────────────────────────────────────
     logger.info(f"[4/5] 커뮤니티 밈/채팅 포인트 심화 검색 중...")
@@ -286,14 +336,17 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         profile["chat_tips"] = _clean_list(data.get("chat_tips", []))
         logger.info(f"  → chat_tips {len(profile['chat_tips'])}개")
     except Exception as e:
-        logger.error(f"  4단계 실패: {e}")
+        _record_error("4단계(채팅 포인트)", e)
 
     # ── 5단계: 한국어 번역 검수 ─────────────────────────────────────────────
     logger.info(f"[5/5] 한국어 번역 검수 중...")
     try:
         profile = _verify_translations(game_name, profile, ai_client, model)
     except Exception as e:
-        logger.error(f"  5단계 실패: {e}")
+        _record_error("5단계(번역 검수)", e)
+
+    if errors:
+        profile["_generation_errors"] = errors
 
     return profile
 

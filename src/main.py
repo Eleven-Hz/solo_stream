@@ -280,12 +280,29 @@ def ai_process(
     initial_game = config["capture"].get("target_window") or ""
     # 창 타이틀에서 게임명 추출 (예: "CrossCode Min v1.4.2-4" → "CrossCode")
     game_name = _extract_game_name(initial_game)
+    def _notify_profile_loaded(profile: dict):
+        """프로필 로드 완료를 UI에 통지. 생성 중 단계 실패가 있으면 채팅창에도 표시."""
+        ui_queue.put({"system": True, "type": "profile_loaded",
+                      "name": profile.get("name", "?")})
+        gen_errors = profile.get("_generation_errors") or []
+        if gen_errors:
+            summary = " / ".join(gen_errors[:3])
+            if len(gen_errors) > 3:
+                summary += f" 외 {len(gen_errors) - 3}건"
+            ui_queue.put({
+                "name": "시스템",
+                "message": (
+                    f"⚠ 게임 프로필 일부 생성 실패 ({len(gen_errors)}단계). "
+                    f"서버 혼잡(503) 등 일시적 오류일 수 있습니다. "
+                    f"잠시 후 '게임 프로필 재생성'으로 다시 시도하세요. — {summary}"
+                ),
+            })
+
     game_profile = load_profile(game_name, ai_client=gemini_client, config=config)
     profile_context = build_profile_context(game_profile)
     vision_context = build_vision_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
-    ui_queue.put({"system": True, "type": "profile_loaded",
-                  "name": game_profile.get("name", "?")})
+    _notify_profile_loaded(game_profile)
 
     # 같은 게임 프로필이 짧은 시간에 여러 번 재로드되어도 헤더는 한 번만 찍는다.
     _last_logged_profile = {"key": None}
@@ -369,9 +386,8 @@ def ai_process(
                 last_location = ""
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
                 _log_profile_header(profile_context, game_profile.get("name", "?"))
-                # UI 라벨("재생성 중...")을 완료 상태로 갱신하도록 통지
-                ui_queue.put({"system": True, "type": "profile_loaded",
-                              "name": game_profile.get("name", "?")})
+                # UI 라벨("재생성 중...")을 완료 상태로 갱신 + 생성 실패 시 안내 표시
+                _notify_profile_loaded(game_profile)
             elif "chat_active" in setting:
                 chat_active = setting["chat_active"]
                 log.info(f"채팅 {'시작' if chat_active else '일시정지'}")
