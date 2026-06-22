@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QTabWidget,
@@ -267,19 +268,23 @@ class SettingsPanel(QWidget):
         """)
         outer.addWidget(self._tabs)
 
-        # 각 탭의 내용은 별도 메서드로 빌드
+        # 각 탭의 내용은 별도 메서드로 빌드.
+        # 시작하기 탭은 기존 탭들의 핸들러를 재사용하므로, 기존 탭을 먼저 빌드해
+        # 핸들러/위젯이 준비된 뒤 맨 앞(index 0)에 끼워 넣는다.
         self._tabs.addTab(self._build_tab_game(), "게임")
         self._tabs.addTab(self._build_tab_ai(), "AI 모델")
         self._tabs.addTab(self._build_tab_stt(), "음성")
         # 비용 탭은 위 탭들의 모델 콤보를 참조하므로 마지막에 빌드한다.
         self._tabs.addTab(self._build_tab_cost(), "비용")
-
-        # 첫 실행 온보딩: 키 입력이 있는 'AI 모델' 탭을 기본으로 연다.
-        if self._onboarding:
-            self._tabs.setCurrentIndex(1)
+        # 시작하기 탭을 맨 앞에 삽입 (처음 쓰는 사람을 1→2→3 순서로 유도)
+        self._tabs.insertTab(0, self._build_tab_start(), "시작하기")
 
         # 모든 위젯 초기화 후 캡처 창 목록 새로고침
         self._refresh_windows()
+        self._refresh_start_status()
+
+        # 첫 실행 온보딩: '시작하기' 탭을 기본으로 연다.
+        self._tabs.setCurrentIndex(0)
 
     def _make_scroll_tab(self, content_layout_fn):
         """탭 내용은 길어질 수 있어 스크롤 영역에 담는다. content_layout_fn(layout) 콜백으로 위젯 추가."""
@@ -327,6 +332,200 @@ class SettingsPanel(QWidget):
             self._build_section_cost(layout)
         return self._make_scroll_tab(_body)
 
+    # ── 시작하기 탭 (온보딩 1→2→3) ──────────────────────────────────────────
+
+    def _build_tab_start(self) -> QWidget:
+        def _body(layout: QVBoxLayout):
+            intro = QLabel("처음 사용하시나요? 아래 순서대로 진행하면 됩니다.")
+            intro.setStyleSheet("color: #ddd; font-size: 13px;")
+            intro.setWordWrap(True)
+            layout.addWidget(intro)
+
+            self._build_start_step_keys(layout)
+            self._build_start_step_window(layout)
+            self._build_start_step_profile(layout)
+
+            # 마무리 안내
+            sep = QLabel(); sep.setFixedHeight(1)
+            sep.setStyleSheet("background: rgba(255,255,255,20);")
+            layout.addWidget(sep)
+            done = QLabel("준비가 끝나면 우측 상단의 ▶ 시작 버튼을 누르세요.")
+            done.setStyleSheet("color: #6BCB77; font-size: 12px;")
+            done.setWordWrap(True)
+            layout.addWidget(done)
+        return self._make_scroll_tab(_body)
+
+    def _start_step_header(self, layout: QVBoxLayout, title: str) -> QLabel:
+        """'① 제목                [상태]' 형태의 스텝 헤더. 상태 QLabel을 반환."""
+        row = QHBoxLayout()
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("color: #ddd; font-size: 13px; font-weight: bold;")
+        row.addWidget(title_lbl)
+        row.addStretch()
+        status = QLabel("—")
+        status.setStyleSheet("color: #888; font-size: 12px;")
+        row.addWidget(status)
+        layout.addLayout(row)
+        return status
+
+    def _build_start_step_keys(self, layout: QVBoxLayout):
+        self._start_key_status = self._start_step_header(layout, "① API 키 입력")
+        desc = QLabel("Gemini 키를 입력하고 저장하세요. 저장 후에는 다시 시작해야 적용됩니다.\n"
+                      "키 발급: https://aistudio.google.com/apikey")
+        desc.setStyleSheet("color: #888; font-size: 12px;")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        row = QHBoxLayout()
+        self._start_gemini_input = QLineEdit()
+        self._start_gemini_input.setPlaceholderText("GEMINI_API_KEY")
+        self._start_gemini_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._start_gemini_input.setStyleSheet(
+            "QLineEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
+            "border-radius: 4px; padding: 3px 6px; font-size: 12px; }"
+        )
+        self._start_gemini_input.returnPressed.connect(self._start_save_key)
+        row.addWidget(self._start_gemini_input)
+        save_btn = QPushButton("저장")
+        save_btn.setStyleSheet(self._btn_style("#1a3a1a", "#2d6a2d"))
+        save_btn.clicked.connect(self._start_save_key)
+        row.addWidget(save_btn)
+        layout.addLayout(row)
+
+        # 키 저장 후 재시작 버튼 (저장 성공 시에만 노출)
+        self._start_restart_btn = QPushButton("지금 다시 시작")
+        self._start_restart_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        self._start_restart_btn.clicked.connect(self._restart_app)
+        self._start_restart_btn.setVisible(False)
+        layout.addWidget(self._start_restart_btn)
+
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+    def _build_start_step_window(self, layout: QVBoxLayout):
+        self._start_window_status = self._start_step_header(layout, "② 게임 창 선택 (창모드)")
+        desc = QLabel("게임을 창모드로 켠 뒤, 목록에서 선택하고 '캡처 적용'을 누르세요.")
+        desc.setStyleSheet("color: #888; font-size: 12px;")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        self._start_window_combo = QComboBox()
+        self._start_window_combo.setStyleSheet(self._COMBO_STYLE)
+        self._constrain_combo(self._start_window_combo)
+        layout.addWidget(self._start_window_combo)
+
+        row = QHBoxLayout()
+        refresh_btn = QPushButton("새로고침")
+        refresh_btn.setStyleSheet(self._btn_style("#333", "#555"))
+        refresh_btn.clicked.connect(self._refresh_windows)
+        row.addWidget(refresh_btn)
+        apply_btn = QPushButton("캡처 적용")
+        apply_btn.setStyleSheet(self._btn_style("#1a472a", "#2d6a4f"))
+        apply_btn.clicked.connect(self._start_apply_window)
+        row.addWidget(apply_btn)
+        layout.addLayout(row)
+
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+    def _build_start_step_profile(self, layout: QVBoxLayout):
+        self._start_profile_status_dot = self._start_step_header(layout, "③ 게임 프로필 생성")
+        desc = QLabel("선택한 게임의 공략·용어 컨텍스트를 자동 생성합니다 (수십 초 소요).")
+        desc.setStyleSheet("color: #888; font-size: 12px;")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        regen_btn = QPushButton("선택 창 게임 프로필 생성/재생성")
+        regen_btn.setStyleSheet(self._btn_style("#2d1b69", "#4a2fa0"))
+        regen_btn.clicked.connect(self._start_regenerate_profile)
+        layout.addWidget(regen_btn)
+
+        self._start_profile_status = QLabel("현재: 로딩 중...")
+        self._start_profile_status.setStyleSheet("color: #888; font-size: 12px;")
+        self._start_profile_status.setWordWrap(True)
+        layout.addWidget(self._start_profile_status)
+
+    # ── 시작하기 탭 핸들러 (기존 로직 재사용) ───────────────────────────────
+
+    def _start_save_key(self):
+        """시작 탭의 Gemini 키를 AI 탭 입력란에 옮겨 기존 저장 로직을 재사용한다."""
+        key = self._start_gemini_input.text().strip()
+        if not key:
+            self._start_key_status.setText("⚠ 키 입력 필요")
+            self._start_key_status.setStyleSheet("color: #f4b400; font-size: 12px;")
+            return
+        self._gemini_key_input.setText(key)
+        self._save_api_keys()  # .env.local 저장 + 상태/재시작 버튼 처리(AI 탭)
+        self._start_gemini_input.clear()
+        self._start_key_status.setText("✓ 저장됨")
+        self._start_key_status.setStyleSheet("color: #6BCB77; font-size: 12px;")
+        if getattr(self, "_start_restart_btn", None) is not None:
+            self._start_restart_btn.setVisible(True)
+
+    def _start_apply_window(self):
+        title = self._start_window_combo.currentText()
+        if not title:
+            return
+        self._settings_queue.put({"target_window": title})
+        # 게임 프로필이 자동 감지되도록 게임명도 함께 전달
+        self._settings_queue.put({"game_name": _extract_game_name(title)})
+        self._start_window_status.setText("✓ 적용됨")
+        self._start_window_status.setStyleSheet("color: #6BCB77; font-size: 12px;")
+        self._start_profile_status.setText(f"적용 중: {title}\n게임 프로필 자동 감지 중...")
+        logger.info(f"[시작탭] 창 변경 적용: {title}")
+
+    def _start_regenerate_profile(self):
+        title = self._start_window_combo.currentText()
+        if not title:
+            self._start_profile_status.setText("먼저 ② 에서 게임 창을 선택하세요.")
+            self._start_profile_status.setStyleSheet("color: #f4b400; font-size: 12px;")
+            return
+        game_name = _extract_game_name(title)
+        import re
+        profile_dir = paths.user_data_dir() / "game_profiles"
+        safe = re.sub(r'[\\/:*?"<>|]', "", game_name).strip().lower().replace(" ", "_")[:64]
+        profile_path = profile_dir / f"{safe}.yaml"
+        if profile_path.exists():
+            profile_path.unlink()
+            logger.info(f"[시작탭] 기존 프로필 삭제: {profile_path.name}")
+        self._settings_queue.put({"game_name": game_name})
+        self._start_profile_status.setText(f"재생성 중: {game_name}...")
+        self._start_profile_status.setStyleSheet("color: #f4b400; font-size: 12px;")
+
+    def _refresh_start_status(self):
+        """시작 탭 ①②③ 상태 표시 갱신. 위젯이 아직 없으면 무시."""
+        # ① 키: 실행 중 저장한 키는 os.getenv에 안 잡히므로 .env.local 파일을 직접 본다.
+        if getattr(self, "_start_key_status", None) is not None:
+            has_key = self._env_has_gemini_key()
+            if has_key:
+                self._start_key_status.setText("✓ Gemini 키 감지됨")
+                self._start_key_status.setStyleSheet("color: #6BCB77; font-size: 12px;")
+            else:
+                self._start_key_status.setText("⚠ 미설정")
+                self._start_key_status.setStyleSheet("color: #f4b400; font-size: 12px;")
+        # ② 창: 적용 여부는 사용자가 누른 뒤에만 ✓ 로 바뀐다(여기선 초기 상태만).
+        if getattr(self, "_start_window_status", None) is not None:
+            if not self._start_window_status.text().startswith("✓"):
+                self._start_window_status.setText("⚠ 미선택")
+                self._start_window_status.setStyleSheet("color: #f4b400; font-size: 12px;")
+
+    def _env_has_gemini_key(self) -> bool:
+        try:
+            env_path = paths.user_data_dir() / ".env.local"
+            if not env_path.exists():
+                import os
+                return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API"))
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("GEMINI_API_KEY=") or line.startswith("GEMINI_API="):
+                        return bool(line.split("=", 1)[1].strip())
+            return False
+        except Exception:
+            return False
+
     # ── 게임 탭 섹션 ─────────────────────────────────────────────────────
 
     def _build_section_window(self, layout: QVBoxLayout):
@@ -352,6 +551,7 @@ class SettingsPanel(QWidget):
                 selection-background-color: #333;
             }
         """)
+        self._constrain_combo(self._window_combo)
         layout.addWidget(self._window_combo)
 
         win_btns = QHBoxLayout()
@@ -654,6 +854,7 @@ class SettingsPanel(QWidget):
                 selection-background-color: #333;
             }
         """)
+        self._constrain_combo(self._profile_combo)
         layout.addWidget(self._profile_combo)
         self._refresh_profiles()
 
@@ -1204,6 +1405,23 @@ class SettingsPanel(QWidget):
             f"QPushButton:hover {{ background: {hover}; }}"
         )
 
+    @staticmethod
+    def _constrain_combo(combo: QComboBox):
+        """긴 창/게임 이름이 콤보를 좌우로 늘려 가로 스크롤이 생기는 것을 막는다.
+        - 콤보 폭을 패널 폭에 맞추되 최장 항목에 맞춰 늘어나지 않게 한다.
+        - 닫힌 상태의 현재 항목 텍스트는 폭에 맞춰 자동으로 '...' 말줄임된다.
+        - 전체 이름은 드롭다운 목록과 툴팁에서 확인할 수 있다.
+        """
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        combo.setMinimumContentsLength(10)
+        # 가로로 남는 공간은 채우되, 내용 길이로 폭을 강제하지 않는다.
+        combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        # 현재 선택 항목 전체 이름을 툴팁으로 (말줄임돼도 마우스 올리면 확인 가능)
+        combo.currentTextChanged.connect(lambda t, c=combo: c.setToolTip(t))
+        combo.setToolTip(combo.currentText())
+
     def _add_exclude(self):
         pat = self._excl_input.text().strip()
         if not pat:
@@ -1240,13 +1458,18 @@ class SettingsPanel(QWidget):
             logger.error(f"제외 패턴 저장 실패: {e}")
 
     def _refresh_windows(self):
-        current = self._window_combo.currentText()
-        self._window_combo.clear()
         windows = _list_windows(excludes=self._excludes)
-        self._window_combo.addItems(windows)
-        idx = self._window_combo.findText(current)
-        if idx >= 0:
-            self._window_combo.setCurrentIndex(idx)
+        # 게임 탭 콤보 + 시작 탭 콤보를 함께 갱신 (선택값은 각각 보존)
+        for combo in (getattr(self, "_window_combo", None),
+                      getattr(self, "_start_window_combo", None)):
+            if combo is None:
+                continue
+            current = combo.currentText()
+            combo.clear()
+            combo.addItems(windows)
+            idx = combo.findText(current)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
 
     def _refresh_profiles(self):
         from pathlib import Path
@@ -1512,6 +1735,13 @@ class SettingsPanel(QWidget):
 
     def set_profile_name(self, name: str):
         self._profile_status.setText(f"현재 프로필: {name}")
+        # 시작 탭 ③ 상태도 갱신 (프로필 로드 완료 통지로 들어옴)
+        if getattr(self, "_start_profile_status", None) is not None:
+            self._start_profile_status.setText(f"현재 프로필: {name}")
+            self._start_profile_status.setStyleSheet("color: #6BCB77; font-size: 12px;")
+        if getattr(self, "_start_profile_status_dot", None) is not None:
+            self._start_profile_status_dot.setText("✓ 생성됨")
+            self._start_profile_status_dot.setStyleSheet("color: #6BCB77; font-size: 12px;")
         # 콤보박스에서 해당 프로필 선택 (있으면)
         for i in range(self._profile_combo.count()):
             if self._profile_combo.itemText(i) == name or self._profile_combo.itemData(i) == name:
