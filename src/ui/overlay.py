@@ -168,7 +168,7 @@ class SettingsPanel(QWidget):
             border: 1px solid #444;
             border-radius: 4px;
             padding: 4px 8px;
-            font-size: 11px;
+            font-size: 13px;
         }
         QComboBox::drop-down { border: none; }
         QComboBox QAbstractItemView {
@@ -225,6 +225,13 @@ class SettingsPanel(QWidget):
         self._config = config
         self._onboarding = onboarding
         self._excludes: list[str] = list(config.get("ui", {}).get("window_excludes", []))
+        # 가시성: 패널 전체에 기준 폰트를 키워 둔다. 개별 위젯의 인라인 font-size가
+        # 이를 덮어쓰는 경우가 많아, 인라인 px 값들도 한 단계씩 상향했다.
+        base_font = QFont()
+        base_font.setPointSize(11)
+        self.setFont(base_font)
+        # 글자를 키운 만큼 버튼/콤보가 잘리지 않도록 설정 패널 최소 폭을 보장한다.
+        self.setMinimumWidth(420)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -248,7 +255,7 @@ class SettingsPanel(QWidget):
                 border-bottom: none;
                 border-top-left-radius: 4px;
                 border-top-right-radius: 4px;
-                font-size: 11px;
+                font-size: 13px;
                 margin-right: 2px;
             }
             QTabBar::tab:selected {
@@ -325,7 +332,7 @@ class SettingsPanel(QWidget):
     def _build_section_window(self, layout: QVBoxLayout):
         # 창 선택
         win_label = QLabel("캡처 창 선택")
-        win_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        win_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(win_label)
 
         self._window_combo = QComboBox()
@@ -336,7 +343,7 @@ class SettingsPanel(QWidget):
                 border: 1px solid #444;
                 border-radius: 4px;
                 padding: 4px 8px;
-                font-size: 11px;
+                font-size: 13px;
             }
             QComboBox::drop-down { border: none; }
             QComboBox QAbstractItemView {
@@ -368,11 +375,11 @@ class SettingsPanel(QWidget):
 
         # 창 제외 패턴
         excl_label = QLabel("창 목록 제외 패턴")
-        excl_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        excl_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(excl_label)
 
         hint = QLabel("%단어% 포함  /  단어% 시작  /  %단어 끝")
-        hint.setStyleSheet("color: #666; font-size: 9px;")
+        hint.setStyleSheet("color: #666; font-size: 11px;")
         layout.addWidget(hint)
 
         self._exclude_list = QListWidget()
@@ -383,7 +390,7 @@ class SettingsPanel(QWidget):
                 color: #ccc;
                 border: 1px solid #444;
                 border-radius: 4px;
-                font-size: 10px;
+                font-size: 12px;
             }
             QListWidget::item:selected { background: #2a2a4a; }
         """)
@@ -397,7 +404,7 @@ class SettingsPanel(QWidget):
         self._excl_input.setPlaceholderText("%Discord%  또는  C:\\Users%")
         self._excl_input.setStyleSheet(
             "QLineEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
-            "border-radius: 4px; padding: 3px 6px; font-size: 10px; }"
+            "border-radius: 4px; padding: 3px 6px; font-size: 12px; }"
         )
         self._excl_input.returnPressed.connect(self._add_exclude)
         excl_input_row.addWidget(self._excl_input)
@@ -420,13 +427,13 @@ class SettingsPanel(QWidget):
     def _build_section_vision_model(self, layout: QVBoxLayout):
         # 이미지 분석 모델 선택
         ai_label = QLabel("이미지 분석 모델")
-        ai_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        ai_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(ai_label)
 
         # provider 행
         provider_row = QHBoxLayout()
         provider_lbl = QLabel("Provider")
-        provider_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        provider_lbl.setStyleSheet("color: #888; font-size: 12px;")
         provider_lbl.setFixedWidth(52)
         provider_row.addWidget(provider_lbl)
 
@@ -443,7 +450,7 @@ class SettingsPanel(QWidget):
         # model 행
         model_row = QHBoxLayout()
         model_lbl = QLabel("Model")
-        model_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        model_lbl.setStyleSheet("color: #888; font-size: 12px;")
         model_lbl.setFixedWidth(52)
         model_row.addWidget(model_lbl)
 
@@ -481,12 +488,12 @@ class SettingsPanel(QWidget):
 
         # 채팅 생성 모델 선택
         chat_model_label = QLabel("채팅 생성 모델")
-        chat_model_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        chat_model_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(chat_model_label)
 
         chat_provider_row = QHBoxLayout()
         chat_provider_lbl = QLabel("Provider")
-        chat_provider_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        chat_provider_lbl.setStyleSheet("color: #888; font-size: 12px;")
         chat_provider_lbl.setFixedWidth(52)
         chat_provider_row.addWidget(chat_provider_lbl)
 
@@ -502,7 +509,7 @@ class SettingsPanel(QWidget):
 
         chat_model_row = QHBoxLayout()
         chat_model_lbl = QLabel("Model")
-        chat_model_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        chat_model_lbl.setStyleSheet("color: #888; font-size: 12px;")
         chat_model_lbl.setFixedWidth(52)
         chat_model_row.addWidget(chat_model_lbl)
 
@@ -539,7 +546,7 @@ class SettingsPanel(QWidget):
 
         # API 키 입력
         api_label = QLabel("API 키 설정")
-        api_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        api_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(api_label)
 
         # 첫 실행 온보딩 안내 배너 (키 미설정으로 AI/STT 비활성 상태).
@@ -552,13 +559,13 @@ class SettingsPanel(QWidget):
             onboard.setWordWrap(True)
             onboard.setStyleSheet(
                 "QLabel { background: #3a2a1a; color: #ffcf8a; border: 1px solid #6a4a2a; "
-                "border-radius: 4px; padding: 6px 8px; font-size: 10px; }"
+                "border-radius: 4px; padding: 6px 8px; font-size: 12px; }"
             )
             layout.addWidget(onboard)
 
         gemini_row = QHBoxLayout()
         gemini_lbl = QLabel("Gemini")
-        gemini_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        gemini_lbl.setStyleSheet("color: #888; font-size: 12px;")
         gemini_lbl.setFixedWidth(42)
         gemini_row.addWidget(gemini_lbl)
         self._gemini_key_input = QLineEdit()
@@ -566,14 +573,14 @@ class SettingsPanel(QWidget):
         self._gemini_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._gemini_key_input.setStyleSheet(
             "QLineEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
-            "border-radius: 4px; padding: 3px 6px; font-size: 10px; }"
+            "border-radius: 4px; padding: 3px 6px; font-size: 12px; }"
         )
         gemini_row.addWidget(self._gemini_key_input)
         layout.addLayout(gemini_row)
 
         claude_row = QHBoxLayout()
         claude_lbl = QLabel("Claude")
-        claude_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        claude_lbl.setStyleSheet("color: #888; font-size: 12px;")
         claude_lbl.setFixedWidth(42)
         claude_row.addWidget(claude_lbl)
         self._claude_key_input = QLineEdit()
@@ -581,14 +588,14 @@ class SettingsPanel(QWidget):
         self._claude_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._claude_key_input.setStyleSheet(
             "QLineEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
-            "border-radius: 4px; padding: 3px 6px; font-size: 10px; }"
+            "border-radius: 4px; padding: 3px 6px; font-size: 12px; }"
         )
         claude_row.addWidget(self._claude_key_input)
         layout.addLayout(claude_row)
 
         openai_row = QHBoxLayout()
         openai_lbl = QLabel("OpenAI")
-        openai_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        openai_lbl.setStyleSheet("color: #888; font-size: 12px;")
         openai_lbl.setFixedWidth(42)
         openai_row.addWidget(openai_lbl)
         self._openai_key_input = QLineEdit()
@@ -596,7 +603,7 @@ class SettingsPanel(QWidget):
         self._openai_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._openai_key_input.setStyleSheet(
             "QLineEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
-            "border-radius: 4px; padding: 3px 6px; font-size: 10px; }"
+            "border-radius: 4px; padding: 3px 6px; font-size: 12px; }"
         )
         openai_row.addWidget(self._openai_key_input)
         layout.addLayout(openai_row)
@@ -608,7 +615,7 @@ class SettingsPanel(QWidget):
 
         self._api_key_status = QLabel("")
         self._api_key_status.setWordWrap(True)
-        self._api_key_status.setStyleSheet("color: #888; font-size: 10px;")
+        self._api_key_status.setStyleSheet("color: #888; font-size: 12px;")
         layout.addWidget(self._api_key_status)
 
         # 키 저장 후 적용하려면 재시작이 필요하다. 저장 성공 시에만 노출.
@@ -627,7 +634,7 @@ class SettingsPanel(QWidget):
 
         # 게임 프로필
         game_label = QLabel("게임 프로필")
-        game_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        game_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(game_label)
 
         self._profile_combo = QComboBox()
@@ -638,7 +645,7 @@ class SettingsPanel(QWidget):
                 border: 1px solid #444;
                 border-radius: 4px;
                 padding: 4px 8px;
-                font-size: 11px;
+                font-size: 13px;
             }
             QComboBox::drop-down { border: none; }
             QComboBox QAbstractItemView {
@@ -663,7 +670,7 @@ class SettingsPanel(QWidget):
         layout.addLayout(profile_btns)
 
         self._profile_status = QLabel("현재: 로딩 중...")
-        self._profile_status.setStyleSheet("color: #888; font-size: 10px;")
+        self._profile_status.setStyleSheet("color: #888; font-size: 12px;")
         self._profile_status.setWordWrap(True)
         layout.addWidget(self._profile_status)
 
@@ -679,12 +686,12 @@ class SettingsPanel(QWidget):
         layout.addWidget(sep)
 
         log_label = QLabel("로그")
-        log_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        log_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(log_label)
 
         self._log_save_chk = QCheckBox("로그 파일 저장 (logs/session_날짜.log · chat_날짜.log)")
         self._log_save_chk.setStyleSheet(
-            "QCheckBox { color: #ddd; font-size: 11px; spacing: 6px; }"
+            "QCheckBox { color: #ddd; font-size: 13px; spacing: 6px; }"
             "QCheckBox::indicator { width: 14px; height: 14px; }"
             "QCheckBox::indicator:unchecked { background: #1e1e2e; border: 1px solid #555; border-radius: 3px; }"
             "QCheckBox::indicator:checked { background: #2d6a4f; border: 1px solid #4f8a6f; border-radius: 3px; }"
@@ -696,12 +703,12 @@ class SettingsPanel(QWidget):
 
         hint = QLabel("하루 1개 파일에 append, 7일 지난 로그는 실행 시 자동 삭제. 끄면 콘솔에만 출력.\n"
                       "변경은 다음 실행부터 적용됩니다.")
-        hint.setStyleSheet("color: #666; font-size: 9px;")
+        hint.setStyleSheet("color: #666; font-size: 11px;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
         self._log_status = QLabel("")
-        self._log_status.setStyleSheet("color: #888; font-size: 10px;")
+        self._log_status.setStyleSheet("color: #888; font-size: 12px;")
         self._log_status.setWordWrap(True)
         layout.addWidget(self._log_status)
 
@@ -709,14 +716,14 @@ class SettingsPanel(QWidget):
         open_data_btn = QPushButton("데이터 폴더 열기 (설정·키·로그)")
         open_data_btn.setStyleSheet(
             "QPushButton { color: #ddd; background: rgba(40,40,55,180); border: 1px solid #555; "
-            "border-radius: 4px; padding: 5px 10px; font-size: 11px; }"
+            "border-radius: 4px; padding: 5px 10px; font-size: 13px; }"
             "QPushButton:hover { background: rgba(60,60,80,200); }"
         )
         open_data_btn.clicked.connect(self._open_user_data_dir)
         layout.addWidget(open_data_btn)
 
         data_hint = QLabel(f"위치: {paths.user_data_dir()}")
-        data_hint.setStyleSheet("color: #666; font-size: 9px;")
+        data_hint.setStyleSheet("color: #666; font-size: 11px;")
         data_hint.setWordWrap(True)
         layout.addWidget(data_hint)
 
@@ -735,11 +742,11 @@ class SettingsPanel(QWidget):
                 subprocess.Popen(["xdg-open", str(udir)])
             logger.info(f"데이터 폴더 열기: {udir}")
             self._log_status.setText(f"데이터 폴더를 열었습니다: {udir}")
-            self._log_status.setStyleSheet("color: #888; font-size: 10px;")
+            self._log_status.setStyleSheet("color: #888; font-size: 12px;")
         except Exception as e:
             logger.error(f"데이터 폴더 열기 실패: {e}")
             self._log_status.setText(f"폴더 열기 실패: {e}")
-            self._log_status.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+            self._log_status.setStyleSheet("color: #ff6b6b; font-size: 12px;")
 
     def _save_logging_setting(self, checked: bool):
         try:
@@ -754,12 +761,12 @@ class SettingsPanel(QWidget):
             self._config.setdefault("logging", {})["save_to_file"] = bool(checked)
             state = "저장 ON" if checked else "저장 OFF"
             self._log_status.setText(f"로그 파일 {state} — 다음 실행부터 적용됩니다.")
-            self._log_status.setStyleSheet("color: #f4b400; font-size: 10px;")
+            self._log_status.setStyleSheet("color: #f4b400; font-size: 12px;")
             logger.info(f"로그 파일 저장 설정 변경: save_to_file={checked}")
         except Exception as e:
             logger.error(f"로그 설정 저장 실패: {e}")
             self._log_status.setText(f"저장 실패: {e}")
-            self._log_status.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+            self._log_status.setStyleSheet("color: #ff6b6b; font-size: 12px;")
 
     def _build_section_about(self, layout: QVBoxLayout):
         # 구분선
@@ -768,11 +775,11 @@ class SettingsPanel(QWidget):
         layout.addWidget(sep)
 
         about = QLabel(f"Solo Stream  ·  v{APP_VERSION}")
-        about.setStyleSheet("color: #777; font-size: 10px;")
+        about.setStyleSheet("color: #777; font-size: 12px;")
         layout.addWidget(about)
 
         contact = QLabel("문의: contact.team8889@gmail.com")
-        contact.setStyleSheet("color: #555; font-size: 9px;")
+        contact.setStyleSheet("color: #555; font-size: 11px;")
         layout.addWidget(contact)
 
     # ── 음성(STT) 탭 섹션 ───────────────────────────────────────────────
@@ -783,18 +790,18 @@ class SettingsPanel(QWidget):
         _input_style = (
             "QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit { "
             "background: #1e1e2e; color: #ddd; border: 1px solid #444; "
-            "border-radius: 4px; padding: 3px 6px; font-size: 11px; }"
+            "border-radius: 4px; padding: 3px 6px; font-size: 13px; }"
         )
         _combo_style = self._COMBO_STYLE
 
         # enabled 토글
         title = QLabel("음성 인식 (STT)")
-        title.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        title.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(title)
 
         self._stt_enabled_chk = QCheckBox("마이크 음성을 채팅 컨텍스트로 사용")
         self._stt_enabled_chk.setStyleSheet(
-            "QCheckBox { color: #ddd; font-size: 11px; spacing: 6px; }"
+            "QCheckBox { color: #ddd; font-size: 13px; spacing: 6px; }"
             "QCheckBox::indicator { width: 14px; height: 14px; }"
             "QCheckBox::indicator:unchecked { background: #1e1e2e; border: 1px solid #555; border-radius: 3px; }"
             "QCheckBox::indicator:checked { background: #2d6a4f; border: 1px solid #4f8a6f; border-radius: 3px; }"
@@ -804,7 +811,7 @@ class SettingsPanel(QWidget):
 
         hint = QLabel("변경 후 'STT 설정 저장'을 누르면 config.yaml에 기록됩니다.\n"
                       "enabled 변경은 다음 실행부터 적용됩니다.")
-        hint.setStyleSheet("color: #666; font-size: 9px;")
+        hint.setStyleSheet("color: #666; font-size: 11px;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -816,7 +823,7 @@ class SettingsPanel(QWidget):
         # default_weight
         weight_row = QHBoxLayout()
         weight_lbl = QLabel("기본 반응 강도")
-        weight_lbl.setStyleSheet("color: #bbb; font-size: 11px;")
+        weight_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
         weight_lbl.setFixedWidth(110)
         weight_row.addWidget(weight_lbl)
         self._stt_weight_combo = QComboBox()
@@ -829,14 +836,14 @@ class SettingsPanel(QWidget):
         layout.addLayout(weight_row)
 
         w_hint = QLabel("페르소나에 user_speech_weight가 없는 봇이 사용하는 기본값")
-        w_hint.setStyleSheet("color: #666; font-size: 9px;")
+        w_hint.setStyleSheet("color: #666; font-size: 11px;")
         w_hint.setWordWrap(True)
         layout.addWidget(w_hint)
 
         # lookback_seconds
         lb_row = QHBoxLayout()
         lb_lbl = QLabel("lookback (초)")
-        lb_lbl.setStyleSheet("color: #bbb; font-size: 11px;")
+        lb_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
         lb_lbl.setFixedWidth(110)
         lb_row.addWidget(lb_lbl)
         self._stt_lookback_spin = QDoubleSpinBox()
@@ -849,14 +856,14 @@ class SettingsPanel(QWidget):
         layout.addLayout(lb_row)
 
         lb_hint = QLabel("vision 라운드 직전 N초 안의 발화만 채팅 컨텍스트로 사용")
-        lb_hint.setStyleSheet("color: #666; font-size: 9px;")
+        lb_hint.setStyleSheet("color: #666; font-size: 11px;")
         lb_hint.setWordWrap(True)
         layout.addWidget(lb_hint)
 
         # min_transcript_chars
         mc_row = QHBoxLayout()
         mc_lbl = QLabel("최소 글자 수")
-        mc_lbl.setStyleSheet("color: #bbb; font-size: 11px;")
+        mc_lbl.setStyleSheet("color: #bbb; font-size: 13px;")
         mc_lbl.setFixedWidth(110)
         mc_row.addWidget(mc_lbl)
         self._stt_min_chars_spin = QSpinBox()
@@ -873,13 +880,13 @@ class SettingsPanel(QWidget):
 
         # VAD 파라미터
         vad_label = QLabel("VAD 파라미터")
-        vad_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        vad_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(vad_label)
 
         # threshold
         th_row = QHBoxLayout()
         th_lbl = QLabel("threshold")
-        th_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        th_lbl.setStyleSheet("color: #888; font-size: 12px;")
         th_lbl.setFixedWidth(110)
         th_row.addWidget(th_lbl)
         self._stt_threshold_spin = QDoubleSpinBox()
@@ -899,7 +906,7 @@ class SettingsPanel(QWidget):
         ]:
             row = QHBoxLayout()
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("color: #888; font-size: 10px;")
+            lbl.setStyleSheet("color: #888; font-size: 12px;")
             lbl.setFixedWidth(110)
             row.addWidget(lbl)
             spin = QSpinBox()
@@ -915,7 +922,7 @@ class SettingsPanel(QWidget):
         # max_utterance_seconds
         mu_row = QHBoxLayout()
         mu_lbl = QLabel("max 발화 (초)")
-        mu_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        mu_lbl.setStyleSheet("color: #888; font-size: 12px;")
         mu_lbl.setFixedWidth(110)
         mu_row.addWidget(mu_lbl)
         self._stt_max_utt_spin = QDoubleSpinBox()
@@ -934,13 +941,13 @@ class SettingsPanel(QWidget):
 
         # 모델 + 언어
         stt_model_label = QLabel("Transcribe 모델")
-        stt_model_label.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        stt_model_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(stt_model_label)
 
         # provider 행 (gemini | openai) — 변경 시 모델 목록 교체
         provider_row = QHBoxLayout()
         provider_lbl = QLabel("provider")
-        provider_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        provider_lbl.setStyleSheet("color: #888; font-size: 12px;")
         provider_lbl.setFixedWidth(110)
         provider_row.addWidget(provider_lbl)
         self._stt_provider_combo = QComboBox()
@@ -955,7 +962,7 @@ class SettingsPanel(QWidget):
 
         model_row = QHBoxLayout()
         model_lbl = QLabel("model")
-        model_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        model_lbl.setStyleSheet("color: #888; font-size: 12px;")
         model_lbl.setFixedWidth(110)
         model_row.addWidget(model_lbl)
         self._stt_model_combo = QComboBox()
@@ -983,7 +990,7 @@ class SettingsPanel(QWidget):
 
         lang_row = QHBoxLayout()
         lang_lbl = QLabel("language")
-        lang_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        lang_lbl.setStyleSheet("color: #888; font-size: 12px;")
         lang_lbl.setFixedWidth(110)
         lang_row.addWidget(lang_lbl)
         self._stt_language_input = QLineEdit()
@@ -994,7 +1001,7 @@ class SettingsPanel(QWidget):
 
         device_row = QHBoxLayout()
         device_lbl = QLabel("device")
-        device_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        device_lbl.setStyleSheet("color: #888; font-size: 12px;")
         device_lbl.setFixedWidth(110)
         device_row.addWidget(device_lbl)
         self._stt_device_input = QLineEdit()
@@ -1006,7 +1013,7 @@ class SettingsPanel(QWidget):
 
         # transcribe_prompt
         prompt_label = QLabel("Transcribe 프롬프트")
-        prompt_label.setStyleSheet("color: #bbb; font-size: 11px;")
+        prompt_label.setStyleSheet("color: #bbb; font-size: 13px;")
         layout.addWidget(prompt_label)
 
         self._stt_prompt_text = QPlainTextEdit()
@@ -1022,7 +1029,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(save_stt_btn)
 
         self._stt_status = QLabel("")
-        self._stt_status.setStyleSheet("color: #888; font-size: 10px;")
+        self._stt_status.setStyleSheet("color: #888; font-size: 12px;")
         self._stt_status.setWordWrap(True)
         layout.addWidget(self._stt_status)
 
@@ -1033,18 +1040,18 @@ class SettingsPanel(QWidget):
 
         _input_style = (
             "QSpinBox, QDoubleSpinBox { background: #1e1e2e; color: #ddd; "
-            "border: 1px solid #444; border-radius: 4px; padding: 3px 6px; font-size: 11px; }"
+            "border: 1px solid #444; border-radius: 4px; padding: 3px 6px; font-size: 13px; }"
         )
 
         title = QLabel("예상 비용 (현재 선택 모델 기준)")
-        title.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        title.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(title)
 
         note = QLabel(
             f"AI/음성 탭에서 고른 모델 기준으로 대략 비용을 추정합니다(저장 안 해도 반영). "
             f"단가 {pricing.PRICING_AS_OF} 공개가, 토큰량은 추정치라 실제 청구액과 다를 수 있습니다."
         )
-        note.setStyleSheet("color: #666; font-size: 9px;")
+        note.setStyleSheet("color: #666; font-size: 11px;")
         note.setWordWrap(True)
         layout.addWidget(note)
 
@@ -1054,7 +1061,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(sep)
 
         usage_lbl = QLabel("사용량 가정")
-        usage_lbl.setStyleSheet("color: #bbb; font-size: 11px; font-weight: bold;")
+        usage_lbl.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
         layout.addWidget(usage_lbl)
 
         d = pricing.USAGE_DEFAULTS
@@ -1062,7 +1069,7 @@ class SettingsPanel(QWidget):
         def _spin(label_text, default, lo, hi, step, decimals, hint):
             row = QHBoxLayout()
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("color: #888; font-size: 10px;")
+            lbl.setStyleSheet("color: #888; font-size: 12px;")
             lbl.setFixedWidth(130)
             row.addWidget(lbl)
             spin = QDoubleSpinBox()
@@ -1076,7 +1083,7 @@ class SettingsPanel(QWidget):
             layout.addLayout(row)
             if hint:
                 h = QLabel(hint)
-                h.setStyleSheet("color: #666; font-size: 9px;")
+                h.setStyleSheet("color: #666; font-size: 11px;")
                 h.setWordWrap(True)
                 layout.addWidget(h)
             return spin
@@ -1101,7 +1108,7 @@ class SettingsPanel(QWidget):
         self._cost_output = QLabel()
         self._cost_output.setTextFormat(Qt.TextFormat.RichText)
         self._cost_output.setWordWrap(True)
-        self._cost_output.setStyleSheet("color: #ddd; font-size: 11px;")
+        self._cost_output.setStyleSheet("color: #ddd; font-size: 13px;")
         layout.addWidget(self._cost_output)
 
         # 모델 콤보가 바뀌면 비용도 갱신 (AI/음성 탭에서 선택만 바꿔도 반영)
@@ -1173,13 +1180,13 @@ class SettingsPanel(QWidget):
         if est["unknown"]:
             models = ", ".join(sorted(set(est["unknown"])))
             warn = (
-                f"<p style='color:#f4b400;font-size:10px;margin-top:8px;'>"
+                f"<p style='color:#f4b400;font-size:12px;margin-top:8px;'>"
                 f"⚠ 공개 단가가 없는 모델: {models} — 합계에서 제외됨</p>"
             )
 
         html = (
             "<table style='border-collapse:collapse;width:100%;'>"
-            "<tr style='color:#777;font-size:10px;'>"
+            "<tr style='color:#777;font-size:12px;'>"
             "<td style='padding:0 8px 4px 0;'>항목</td>"
             "<td style='padding:0 8px 4px;'>모델</td>"
             "<td style='padding:0 8px 4px;'>사용량</td>"
@@ -1193,7 +1200,7 @@ class SettingsPanel(QWidget):
     def _btn_style(self, bg: str, hover: str) -> str:
         return (
             f"QPushButton {{ background: {bg}; color: #ddd; border: 1px solid #555; "
-            f"border-radius: 4px; padding: 5px; font-size: 11px; }}"
+            f"border-radius: 4px; padding: 5px; font-size: 13px; }}"
             f"QPushButton:hover {{ background: {hover}; }}"
         )
 
@@ -1408,7 +1415,7 @@ class SettingsPanel(QWidget):
         if status is None:
             return
         color = "#6bcb77" if ok else "#f4b400"
-        status.setStyleSheet(f"color: {color}; font-size: 10px;")
+        status.setStyleSheet(f"color: {color}; font-size: 12px;")
         status.setText(text)
 
     def _restart_app(self):
@@ -1487,21 +1494,21 @@ class SettingsPanel(QWidget):
                 self._stt_status.setText(
                     f"저장 완료. enabled {old_enabled} → {new_enabled} 변경은 재시작 후 적용됩니다."
                 )
-                self._stt_status.setStyleSheet("color: #f4b400; font-size: 10px;")
+                self._stt_status.setStyleSheet("color: #f4b400; font-size: 12px;")
             elif transcriber_changed:
                 self._stt_status.setText(
                     f"저장 완료. provider/model({new_stt['provider']} · {new_stt['model']}) "
                     "변경은 재시작 후 적용됩니다."
                 )
-                self._stt_status.setStyleSheet("color: #f4b400; font-size: 10px;")
+                self._stt_status.setStyleSheet("color: #f4b400; font-size: 12px;")
             else:
                 self._stt_status.setText("저장 완료. 런타임 항목은 즉시 적용됩니다.")
-                self._stt_status.setStyleSheet("color: #6BCB77; font-size: 10px;")
+                self._stt_status.setStyleSheet("color: #6BCB77; font-size: 12px;")
             logger.info(f"STT 설정 저장: {new_stt}")
         except Exception as e:
             logger.error(f"STT 설정 저장 실패: {e}", exc_info=True)
             self._stt_status.setText(f"저장 실패: {e}")
-            self._stt_status.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+            self._stt_status.setStyleSheet("color: #ff6b6b; font-size: 12px;")
 
     def set_profile_name(self, name: str):
         self._profile_status.setText(f"현재 프로필: {name}")
@@ -1650,6 +1657,11 @@ class ChatOverlay(QWidget):
 
     def _toggle_settings(self):
         self._settings_visible = not self._settings_visible
+        # 기존 사용자의 저장된 폭(392)이 좁아 설정 버튼이 잘리는 걸 방지:
+        # 설정을 열 때 창이 너무 좁으면 자동으로 넓힌다.
+        if self._settings_visible and self.width() < 450:
+            self.resize(450, self.height())
+            self._position_resize_hint()
         self._stack.setCurrentIndex(1 if self._settings_visible else 0)
         self._titlebar.settings_btn.setStyleSheet(
             "QPushButton { color: %s; background: transparent; border: none; font-size: 14px; }"
