@@ -618,7 +618,10 @@ class SettingsPanel(QWidget):
             return
         self._settings_queue.put({"target_window": title})
         # 게임 프로필이 자동 감지되도록 게임명도 함께 전달
-        self._settings_queue.put({"game_name": _extract_game_name(title)})
+        game_name = _extract_game_name(title)
+        self._settings_queue.put({"game_name": game_name})
+        # 재시작 시 복원되도록 마지막 선택을 디스크에 저장.
+        paths.save_last_session(target_window=title, game_name=game_name)
         self._start_window_status.setText("✓ 적용됨")
         self._start_window_status.setStyleSheet("color: #6BCB77; font-size: 12px;")
         self._start_profile_status.setText(f"적용 중: {title}\n게임 프로필 자동 감지 중...")
@@ -639,6 +642,7 @@ class SettingsPanel(QWidget):
             profile_path.unlink()
             logger.info(f"[시작탭] 기존 프로필 삭제: {profile_path.name}")
         self._settings_queue.put({"game_name": game_name})
+        paths.save_last_session(game_name=game_name)
         self._start_profile_status.setText(f"재생성 중: {game_name}...")
         self._start_profile_status.setStyleSheet("color: #f4b400; font-size: 12px;")
 
@@ -1775,6 +1779,8 @@ class SettingsPanel(QWidget):
         else:
             game_name = self._profile_combo.currentData() or self._profile_combo.currentText()
         self._settings_queue.put({"game_name": game_name})
+        # 재시작 시 복원되도록 마지막 선택을 디스크에 저장.
+        paths.save_last_session(game_name=game_name)
         self._profile_status.setText(f"적용 중: {game_name}...")
         logger.info(f"게임 프로필 적용: {game_name}")
 
@@ -1783,9 +1789,12 @@ class SettingsPanel(QWidget):
         if not window_title:
             return
         self._settings_queue.put({"target_window": window_title})
+        paths.save_last_session(target_window=window_title)
         # 프로필 콤보가 "자동"이면 창 타이틀에서 게임명 추출해서 적용
         if self._profile_combo.currentIndex() == 0:
-            self._settings_queue.put({"game_name": _extract_game_name(window_title)})
+            game_name = _extract_game_name(window_title)
+            self._settings_queue.put({"game_name": game_name})
+            paths.save_last_session(game_name=game_name)
             self._profile_status.setText(f"적용 중: {window_title}\n게임 프로필 자동 감지 중...")
         logger.info(f"창 변경 적용: {window_title}")
 
@@ -1804,6 +1813,7 @@ class SettingsPanel(QWidget):
             profile_path.unlink()
             logger.info(f"기존 프로필 삭제: {profile_path.name}")
         self._settings_queue.put({"game_name": game_name})
+        paths.save_last_session(game_name=game_name)
         self._profile_status.setText(f"재생성 중: {game_name}...")
 
     def _apply_vision_provider(self):

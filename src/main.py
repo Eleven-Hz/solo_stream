@@ -277,13 +277,36 @@ def ai_process(
     # (게임 프로필 변경 시 settings_queue 핸들러에서 다시 호출됨)
 
     # 초기 게임 프로필 로드
-    initial_game = config["capture"].get("target_window") or ""
-    # 창 타이틀에서 게임명 추출 (예: "CrossCode Min v1.4.2-4" → "CrossCode")
-    game_name = _extract_game_name(initial_game)
+    # 마지막 세션에서 명시적으로 적용한 게임명이 있으면 그것을 우선 사용한다.
+    # (자동 감지/추출보다 사용자가 "프로필 적용"한 선택이 우선)
+    restored_game = config["capture"].get("game_name")
+    if restored_game:
+        game_name = restored_game
+    else:
+        initial_game = config["capture"].get("target_window") or ""
+        # 창 타이틀에서 게임명 추출 (예: "CrossCode Min v1.4.2-4" → "CrossCode")
+        game_name = _extract_game_name(initial_game)
+
+    # 캡처 대상 창 타이틀. 프로필명과 비교해 불일치 경고를 띄우는 데 쓴다.
+    # settings_queue 의 target_window 변경 시 갱신된다(아래 루프). 닫힘 변수로 공유.
+    _current_window = {"title": config["capture"].get("target_window") or ""}
+
     def _notify_profile_loaded(profile: dict):
         """프로필 로드 완료를 UI에 통지. 생성 중 단계 실패가 있으면 채팅창에도 표시."""
         ui_queue.put({"system": True, "type": "profile_loaded",
                       "name": profile.get("name", "?")})
+        # 캡처 창 ↔ 적용 프로필 이름이 많이 다르면 경고 (엉뚱한 프로필 적용 감지).
+        win_title = _current_window["title"]
+        prof_name = profile.get("name", "")
+        if _profile_name_mismatch(win_title, prof_name):
+            ui_queue.put({
+                "name": "시스템",
+                "message": (
+                    f"⚠ 캡처 중인 창('{_extract_game_name(win_title)}')과 적용된 게임 "
+                    f"프로필('{prof_name}')이 많이 다릅니다. 프로필이 잘못 적용됐을 수 "
+                    f"있으니 '게임 프로필' 탭에서 확인하세요."
+                ),
+            })
         gen_errors = profile.get("_generation_errors") or []
         if gen_errors:
             summary = " / ".join(gen_errors[:3])
@@ -376,6 +399,10 @@ def ai_process(
                         ai_cfg["chat_model"] = new_model
                 log.info(f"chat 모델 변경: {new_provider} / {new_model or '(모델 유지)'}")
                 chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+            elif "target_window" in setting:
+                # 캡처는 별도 프로세스가 처리하지만, AI 프로세스도 프로필 불일치
+                # 경고를 위해 현재 창 타이틀을 추적해 둔다.
+                _current_window["title"] = setting["target_window"] or ""
             elif "game_name" in setting:
                 new_game = setting["game_name"]
                 log.info(f"게임 프로필 변경 요청: {new_game}")
@@ -607,6 +634,39 @@ def _extract_game_name(window_title: str) -> str:
     return name or "Unknown Game"
 
 
+def _normalize_for_match(s: str) -> str:
+    """이름 비교용 정규화: 괄호 주석 제거, 소문자, 공백/기호 제거.
+
+    예: "CrossCode (크로스코드)" → "crosscode",
+        "Stellaris - Steam" → "stellaris".
+    """
+    import re
+    s = s or ""
+    s = re.sub(r"\([^)]*\)", "", s)          # 괄호 주석 제거 (한국어 병기 등)
+    s = re.sub(r"[^0-9a-z가-힣]", "", s.lower())  # 영문/숫자/한글만 남김
+    return s
+
+
+def _profile_name_mismatch(window_title: str, profile_name: str) -> bool:
+    """캡처 창에서 추출한 게임명과 적용된 프로필 이름이 '많이 다르면' True.
+
+    재시작 복원/자동 감지가 엇나가 엉뚱한 프로필이 적용된 경우(예: 창은
+    Stellaris 인데 프로필은 CrossCode)를 사용자에게 경고하기 위한 휴리스틱.
+    한쪽이 다른 쪽에 포함되면 일치로 보고, 아니면 유사도로 판정한다.
+    """
+    import difflib
+
+    win = _normalize_for_match(_extract_game_name(window_title))
+    prof = _normalize_for_match(profile_name)
+    # 비교 불가하거나 자동 감지 실패 표식이면 경고하지 않는다(오탐 방지).
+    if not win or not prof or win == "unknowngame":
+        return False
+    if win in prof or prof in win:
+        return False
+    ratio = difflib.SequenceMatcher(None, win, prof).ratio()
+    return ratio < 0.5
+
+
 # ── STT 프로세스 ─────────────────────────────────────────────────────────────
 
 def stt_process(
@@ -705,6 +765,22 @@ def main():
     paths.ensure_user_data()
 
     config = load_config()
+
+    # 마지막 세션에 적용한 창/게임명을 복원한다 (config.yaml 의 하드코딩 기본값보다 우선).
+    # 이게 없으면 재시작마다 config 기본 target_window(예: CrossCode)로 폴백한다.
+    # → 캡처 대상과 게임 프로필이 모두 마지막 선택으로 복원되도록 config 에 주입한다.
+    last_session = paths.load_last_session()
+    if last_session.get("target_window"):
+        config.setdefault("capture", {})["target_window"] = last_session["target_window"]
+    if last_session.get("game_name"):
+        # ai_process 가 target_window 추출 대신 이 값을 우선 사용한다.
+        config.setdefault("capture", {})["game_name"] = last_session["game_name"]
+    if last_session:
+        logger.info(
+            f"마지막 세션 복원: 창='{last_session.get('target_window', '(없음)')}' "
+            f"게임='{last_session.get('game_name', '(자동)')}'"
+        )
+
     api_key = get_api_key(config)
     claude_api_key = get_claude_api_key(config)
     openai_api_key = get_openai_api_key(config)

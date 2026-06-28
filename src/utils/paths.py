@@ -121,6 +121,59 @@ def ensure_user_data() -> Path:
     return udir
 
 
+def _last_session_path() -> Path:
+    """마지막 세션 선택(창/게임명)을 저장하는 상태 파일 경로.
+
+    config.yaml(사용자 기본설정·번들 시딩 대상)과 분리해, 매 실행이 바뀌는
+    '마지막에 적용한 창/프로필'만 따로 보관한다.
+    """
+    return user_data_dir() / "last_session.yaml"
+
+
+def load_last_session() -> dict:
+    """마지막 세션 상태를 읽는다. 없거나 손상되면 빈 dict.
+
+    반환 키(있을 때만): ``target_window``(str), ``game_name``(str).
+    """
+    import yaml
+
+    path = _last_session_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        # 손상 파일은 기본값 폴백을 막지 않도록 조용히 무시.
+        return {}
+
+
+def save_last_session(*, target_window: str | None = None,
+                      game_name: str | None = None) -> None:
+    """마지막 세션 선택을 병합 저장한다. None 인 인자는 기존 값을 유지한다.
+
+    호출 예: 창만 바꿨으면 ``save_last_session(target_window=...)``,
+    프로필만 적용했으면 ``save_last_session(game_name=...)``.
+    """
+    import yaml
+
+    data = load_last_session()
+    if target_window is not None:
+        data["target_window"] = target_window
+    if game_name is not None:
+        data["game_name"] = game_name
+
+    path = _last_session_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    except Exception:
+        # 저장 실패가 앱 동작을 막지 않게 한다 (다음 실행에 기본값으로 복귀할 뿐).
+        pass
+
+
 def relaunch_command() -> list[str]:
     """앱을 새 프로세스로 다시 실행하기 위한 커맨드(argv) 리스트.
 
