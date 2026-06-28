@@ -16,7 +16,6 @@ DEV 모드: 환경변수 ``SOLO_STREAM_DEV=1`` 이면 ``user_data_dir()`` 가 ``
 직접 읽고 쓴다. ("기본값 바꿨는데 안 보임" 캐시 함정 제거.)
 """
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -80,43 +79,30 @@ def resolve_resource(rel: str) -> Path:
 
 
 def ensure_user_data() -> Path:
-    """최초 실행 시딩. 사용자 데이터 폴더와 필수 하위 디렉터리를 만들고
-    번들 기본 config.yaml / personas/ 를 user_data 로 복사한다.
+    """최초 실행 시딩. 사용자 데이터 폴더와 필수 하위 디렉터리만 만든다.
 
-    DEV 모드면 user_data == 프로젝트 루트라 시딩이 사실상 no-op (이미 존재).
+    **번들 기본(config.yaml / personas/default_bots.yaml / game_profiles/default.yaml)은
+    user_data 로 복사하지 않는다.** 복사해두면 그 복사본이 '사용자 것인지 번들 기본인지'
+    구분이 사라져, 앱 업데이트로 기본값이 바뀌어도 사용자에게 영원히 반영되지 않는
+    원복/스테일 문제가 생긴다.
+
+    대신 각 로더가 **번들 기본(읽기전용, 항상 최신) + 사용자 오버라이드** 를 합쳐 읽는다.
+      - config: ``config.yaml``(번들) + ``config.local.yaml``(사용자)  — config_loader
+      - 페르소나: 번들 ``personas/*.yaml`` + 사용자 ``personas/*.yaml`` — persona_loader
+    사용자는 user_data 의 ``personas/`` 빈 폴더에 자기 파일만 두면 된다.
+
+    빈 ``personas/`` 폴더는 만들어 둬서 "여기에 내 봇 파일을 넣으면 되는구나" 를
+    사용자가 발견할 수 있게 한다.
+
+    DEV 모드면 user_data == 프로젝트 루트라 사실상 no-op (이미 존재).
     반환값은 ``user_data_dir()``.
     """
     udir = user_data_dir()
     udir.mkdir(parents=True, exist_ok=True)
     (udir / "game_profiles").mkdir(exist_ok=True)
     (udir / "logs").mkdir(exist_ok=True)
-
-    # DEV 모드면 원본을 덮어쓰지 않도록 시딩 스킵 (user_data == 프로젝트 루트).
-    if is_dev():
-        return udir
-
-    res = resource_dir()
-
-    # 기본 config.yaml 시딩 (사용자가 아직 안 만든 경우만).
-    src_config = res / "config.yaml"
-    dst_config = udir / "config.yaml"
-    if src_config.exists() and not dst_config.exists():
-        shutil.copy2(src_config, dst_config)
-
-    # personas/ 시딩 — 사용자 커스텀 가능해야 하므로 파일로 복사해둔다.
-    # 폴더가 비어있을 때만 번들 기본을 복사 (사용자 편집본은 보존).
-    src_personas = res / "personas"
-    dst_personas = udir / "personas"
-    dst_personas.mkdir(exist_ok=True)
-    if src_personas.exists() and not any(dst_personas.glob("*.yaml")):
-        for f in src_personas.glob("*.yaml"):
-            shutil.copy2(f, dst_personas / f.name)
-
-    # game_profiles/default.yaml 시딩 (있으면).
-    src_default_profile = res / "game_profiles" / "default.yaml"
-    dst_default_profile = udir / "game_profiles" / "default.yaml"
-    if src_default_profile.exists() and not dst_default_profile.exists():
-        shutil.copy2(src_default_profile, dst_default_profile)
+    # 사용자가 자기 봇 파일을 둘 위치 (빈 폴더로만 생성, 번들 기본은 복사 안 함).
+    (udir / "personas").mkdir(exist_ok=True)
 
     return udir
 
