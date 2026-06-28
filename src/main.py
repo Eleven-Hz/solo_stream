@@ -386,6 +386,11 @@ def ai_process(
                         ai_cfg["vision_model"] = new_model
                 log.info(f"vision 변경: {new_provider} / {new_model or '(모델 유지)'}")
                 client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+            elif "vision_prompt" in setting:
+                ai_cfg = config.setdefault("ai", {})
+                ai_cfg["vision_prompt"] = setting["vision_prompt"]
+                log.info("vision 프롬프트 변경 — vision client 재생성")
+                client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
             elif "chat_provider" in setting:
                 new_provider = setting["chat_provider"]
                 new_model = setting.get("chat_model")

@@ -18,7 +18,11 @@ _VISION_SYSTEM = "당신은 게임 방송 전문 해설 AI입니다. 주어진 �
 # 채팅 프롬프트 빌드 시 이 값이면 "화면 정보 없음"으로 치환해 봇이 발화/채팅에 집중하게 한다.
 VISION_ERROR_MARKER = "게임 화면 분석 중 오류가 발생했습니다."
 
-_VISION_PROMPT_TEMPLATE = """{game_profile_section}{prev_location_section}스크린샷을 분석해 아래 형식으로만 답하세요.
+# 사용자가 설정에서 편집하는 vision 프롬프트 본문(형식/분량 규칙).
+# config["ai"]["vision_prompt"] 가 있으면 그 값으로 대체된다.
+# {vision_focus_hint} 자리는 게임 프로필의 '주목할 항목'으로 코드가 채운다(없으면 빈 문자열).
+# 게임 정보/이전 위치 섹션은 코드가 본문 앞에 자동으로 붙이므로 여기 넣지 않는다.
+_DEFAULT_VISION_BODY = """스크린샷을 분석해 아래 형식으로만 답하세요.
 
 묘사: <화면에 보이는 것을 2~3줄로 서술{vision_focus_hint}>
 위치: <게임 내 지명 — 게임 정보의 지명을 우선 사용. 화면에 지명 UI가 없으면 이전 위치를 유지. 정말 모르면 "알 수 없음">
@@ -28,33 +32,43 @@ _VISION_PROMPT_TEMPLATE = """{game_profile_section}{prev_location_section}스크
 규칙: 각 항목은 1~2줄. 항목 레이블("묘사:", "위치:", "상황:", "이벤트:") 유지. 추가 설명 금지."""
 
 
-def _build_vision_prompt(game_profile_context: str = "", previous_location: str = "") -> str:
+def _extract_focus_hint(game_profile_context: str) -> str:
+    """게임 프로필의 '화면 묘사 시 주목할 항목'을 묘사 힌트 문자열로 추출."""
+    if not game_profile_context:
+        return ""
+    lines = game_profile_context.splitlines()
+    focus_items = []
+    in_focus = False
+    for line in lines:
+        if "화면 묘사 시 주목할 항목:" in line:
+            in_focus = True
+            continue
+        if in_focus:
+            if line.startswith("  - "):
+                focus_items.append(line.strip("- ").strip())
+            else:
+                break
+    if focus_items:
+        return " — 특히: " + " / ".join(focus_items)
+    return ""
+
+
+def _build_vision_prompt(
+    game_profile_context: str = "",
+    previous_location: str = "",
+    body_template: str | None = None,
+) -> str:
     profile_section = f"[게임 정보]\n{game_profile_context}\n\n" if game_profile_context else ""
     prev_section = f"[이전 위치] {previous_location}\n\n" if previous_location else ""
 
-    # vision_focus 항목이 게임 정보에 있으면 묘사 힌트로 추출
-    focus_hint = ""
-    if game_profile_context:
-        lines = game_profile_context.splitlines()
-        focus_items = []
-        in_focus = False
-        for line in lines:
-            if "화면 묘사 시 주목할 항목:" in line:
-                in_focus = True
-                continue
-            if in_focus:
-                if line.startswith("  - "):
-                    focus_items.append(line.strip("- ").strip())
-                else:
-                    break
-        if focus_items:
-            focus_hint = " — 특히: " + " / ".join(focus_items)
+    focus_hint = _extract_focus_hint(game_profile_context)
 
-    return _VISION_PROMPT_TEMPLATE.format(
-        game_profile_section=profile_section,
-        prev_location_section=prev_section,
-        vision_focus_hint=focus_hint,
-    )
+    body = body_template if body_template else _DEFAULT_VISION_BODY
+    # 사용자가 본문에서 {vision_focus_hint} 를 지웠어도 안전하게 동작하도록
+    # 해당 플레이스홀더만 치환한다(다른 중괄호는 .format 대상이 아님).
+    body = body.replace("{vision_focus_hint}", focus_hint)
+
+    return f"{profile_section}{prev_section}{body}"
 
 _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇들입니다.
 아래 게임 정보와 현재 상황을 바탕으로 각 봇이 채팅을 칩니다.
@@ -238,6 +252,7 @@ class GeminiClient:
         self._client = genai.Client(api_key=api_key)
         self._vision_model = config["ai"]["vision_model"]
         self._chat_model = config["ai"]["chat_model"]
+        self._vision_prompt = (config["ai"].get("vision_prompt") or "").strip() or None
         # 마지막 chat 호출의 prompt/원본응답/소요시간 — ai_process 가 라운드 블록에 합쳐 찍는 용도
         self.last_chat_call = ChatCallDebug()
 
@@ -258,7 +273,7 @@ class GeminiClient:
 
     def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
         from google.genai import types
-        prompt = _build_vision_prompt(game_profile_context, previous_location)
+        prompt = _build_vision_prompt(game_profile_context, previous_location, self._vision_prompt)
         try:
             def _call():
                 return self._client.models.generate_content(
@@ -333,10 +348,11 @@ class ClaudeClient:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._vision_model = config["ai"].get("claude_vision_model", "claude-opus-4-7")
         self._chat_model = config["ai"].get("claude_chat_model", "claude-sonnet-4-6")
+        self._vision_prompt = (config["ai"].get("vision_prompt") or "").strip() or None
         self.last_chat_call = ChatCallDebug()
 
     def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
-        prompt = _build_vision_prompt(game_profile_context, previous_location)
+        prompt = _build_vision_prompt(game_profile_context, previous_location, self._vision_prompt)
         try:
             image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
             response = self._client.messages.create(

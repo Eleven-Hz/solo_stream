@@ -859,6 +859,58 @@ class SettingsPanel(QWidget):
         apply_ai_btn.clicked.connect(self._apply_vision_provider)
         layout.addWidget(apply_ai_btn)
 
+        self._build_section_vision_prompt(layout)
+
+    def _build_section_vision_prompt(self, layout: QVBoxLayout):
+        """이미지 분석 프롬프트(묘사/위치/상황/이벤트 형식·분량 규칙) 편집 영역."""
+        from src.ai.model_client import _DEFAULT_VISION_BODY
+
+        # 구분선
+        sep = QLabel(); sep.setFixedHeight(1)
+        sep.setStyleSheet("background: rgba(255,255,255,20);")
+        layout.addWidget(sep)
+
+        title = QLabel("이미지 분석 프롬프트")
+        title.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "화면 분석 결과의 항목과 분량을 정하는 프롬프트입니다. "
+            "각 항목을 더 길게 쓰고 싶으면 '한 줄'·'1~2줄' 같은 분량 규칙을 늘리세요.\n"
+            "• [게임 정보]/[이전 위치]는 자동으로 앞에 붙으니 넣지 마세요.\n"
+            "• {vision_focus_hint} 자리는 게임 프로필의 '주목할 항목'으로 자동 치환됩니다(지워도 됨)."
+        )
+        hint.setStyleSheet("color: #666; font-size: 11px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self._vision_prompt_text = QPlainTextEdit()
+        self._vision_prompt_text.setStyleSheet(
+            "QPlainTextEdit { background: #1e1e2e; color: #ddd; border: 1px solid #444; "
+            "border-radius: 4px; padding: 4px 6px; font-size: 12px; }"
+        )
+        self._vision_prompt_text.setFixedHeight(180)
+        cur_prompt = (self._config.get("ai", {}).get("vision_prompt") or "").strip()
+        self._vision_prompt_text.setPlainText(cur_prompt or _DEFAULT_VISION_BODY)
+        layout.addWidget(self._vision_prompt_text)
+
+        btn_row = QHBoxLayout()
+        save_prompt_btn = QPushButton("프롬프트 적용")
+        save_prompt_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
+        save_prompt_btn.clicked.connect(self._apply_vision_prompt)
+        btn_row.addWidget(save_prompt_btn)
+
+        reset_prompt_btn = QPushButton("기본값 복원")
+        reset_prompt_btn.setStyleSheet(self._btn_style("#3a2a1a", "#6a4a2a"))
+        reset_prompt_btn.clicked.connect(self._reset_vision_prompt)
+        btn_row.addWidget(reset_prompt_btn)
+        layout.addLayout(btn_row)
+
+        self._vision_prompt_status = QLabel("")
+        self._vision_prompt_status.setStyleSheet("color: #6bcb77; font-size: 11px;")
+        self._vision_prompt_status.setWordWrap(True)
+        layout.addWidget(self._vision_prompt_status)
+
     def _build_section_chat_model(self, layout: QVBoxLayout):
         # 구분선
         sep4 = QLabel()
@@ -1899,6 +1951,44 @@ class SettingsPanel(QWidget):
             paths.update_user_config("ai", values)
         except Exception as e:
             logger.error(f"vision_provider 저장 실패: {e}")
+
+    def _apply_vision_prompt(self):
+        """편집한 이미지 분석 프롬프트를 저장 + ai_process에 즉시 반영.
+
+        기본값과 동일하면 config에 빈 값으로 저장해(오버라이드 제거) 이후 기본
+        프롬프트 개선이 자동 반영되게 한다."""
+        from src.ai.model_client import _DEFAULT_VISION_BODY
+
+        text = self._vision_prompt_text.toPlainText().strip()
+        # 기본값과 같으면 오버라이드를 두지 않는다(빈 문자열 = 기본 사용).
+        store_value = "" if text == _DEFAULT_VISION_BODY.strip() else text
+        try:
+            paths.update_user_config("ai", {"vision_prompt": store_value})
+            self._config.setdefault("ai", {})["vision_prompt"] = store_value
+            self._settings_queue.put({"vision_prompt": store_value})
+            logger.info("이미지 분석 프롬프트 적용")
+            self._set_vision_prompt_status(
+                "✓ 적용했습니다. 다음 화면 분석부터 반영됩니다.", ok=True
+            )
+        except Exception as e:
+            logger.error(f"vision_prompt 저장 실패: {e}")
+            self._set_vision_prompt_status(f"저장 실패: {e}", ok=False)
+
+    def _reset_vision_prompt(self):
+        """편집창을 기본 프롬프트로 되돌린다(저장은 '프롬프트 적용'을 눌러야 함)."""
+        from src.ai.model_client import _DEFAULT_VISION_BODY
+        self._vision_prompt_text.setPlainText(_DEFAULT_VISION_BODY)
+        self._set_vision_prompt_status(
+            "기본값으로 되돌렸습니다. '프롬프트 적용'을 눌러 저장하세요.", ok=True
+        )
+
+    def _set_vision_prompt_status(self, text: str, ok: bool):
+        status = getattr(self, "_vision_prompt_status", None)
+        if status is None:
+            return
+        color = "#6bcb77" if ok else "#f4b400"
+        status.setStyleSheet(f"color: {color}; font-size: 11px;")
+        status.setText(text)
 
     def _save_config_chat_model(self, provider: str, model: str):
         try:

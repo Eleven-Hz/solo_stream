@@ -7,6 +7,9 @@ ai:
   claude_api_key_env: CLAUDE_API_KEY
   claude_vision_model: claude-sonnet-4-6
   claude_chat_model: claude-sonnet-4-6
+  # 이미지 분석 프롬프트(묘사/위치/상황/이벤트 형식·분량 규칙).
+  # 비워두면 코드 기본값을 사용한다. 설정 'AI 모델' 탭에서 편집/저장.
+  vision_prompt: ""
 capture:
   interval_seconds: 15
   ssim_threshold: 0.92
