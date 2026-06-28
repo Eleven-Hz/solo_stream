@@ -293,20 +293,19 @@ def ai_process(
 
     def _notify_profile_loaded(profile: dict):
         """프로필 로드 완료를 UI에 통지. 생성 중 단계 실패가 있으면 채팅창에도 표시."""
-        ui_queue.put({"system": True, "type": "profile_loaded",
-                      "name": profile.get("name", "?")})
-        # 캡처 창 ↔ 적용 프로필 이름이 많이 다르면 경고 (엉뚱한 프로필 적용 감지).
+        # 캡처 창 ↔ 적용 프로필 이름이 많이 다르면 경고 텍스트를 함께 실어 보낸다.
+        # (채팅창이 아니라 상단 타이틀바 아이콘으로 표시 — 채팅 흐름을 방해하지 않음)
         win_title = _current_window["title"]
-        prof_name = profile.get("name", "")
+        prof_name = profile.get("name", "?")
+        warning = None
         if _profile_name_mismatch(win_title, prof_name):
-            ui_queue.put({
-                "name": "시스템",
-                "message": (
-                    f"⚠ 캡처 중인 창('{_extract_game_name(win_title)}')과 적용된 게임 "
-                    f"프로필('{prof_name}')이 많이 다릅니다. 프로필이 잘못 적용됐을 수 "
-                    f"있으니 '게임 프로필' 탭에서 확인하세요."
-                ),
-            })
+            warning = (
+                f"캡처 중인 창('{_extract_game_name(win_title)}')과 적용된 게임 "
+                f"프로필('{prof_name}')이 많이 다릅니다.\n프로필이 잘못 적용됐을 수 "
+                f"있으니 '게임 프로필' 탭에서 확인하세요."
+            )
+        ui_queue.put({"system": True, "type": "profile_loaded",
+                      "name": prof_name, "warning": warning})
         gen_errors = profile.get("_generation_errors") or []
         if gen_errors:
             summary = " / ".join(gen_errors[:3])

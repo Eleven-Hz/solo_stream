@@ -121,8 +121,11 @@
   캡처 창에서 추출한 게임명(`_extract_game_name(target_window)`)과 적용된 프로필
   이름(`profile["name"]`)을 정규화(괄호 한국어 병기 제거·기호 제거·소문자) 후 비교.
   한쪽이 다른 쪽을 포함하면 일치로 보고, 아니면 `difflib` 유사도 < 0.5 일 때 불일치로 판정.
-- `ai_process._notify_profile_loaded()` 가 불일치 시 "시스템" 채팅으로 경고 노출
-  (예: 창은 Stellaris 인데 프로필이 CrossCode 인 경우).
+- `ai_process._notify_profile_loaded()` 가 불일치 시 경고 텍스트를 `profile_loaded`
+  이벤트의 `warning` 필드에 실어 보냄(예: 창은 Stellaris 인데 프로필이 CrossCode).
+  채팅창을 어지럽히지 않도록 **상단 타이틀바의 ⚠ 아이콘**으로 표시한다
+  (`TitleBar.set_warning`): 평소 숨김, 불일치면 노출 + 툴팁으로 상세, 클릭 시
+  설정의 '게임' 탭으로 이동. 일치하는 프로필이 다시 로드되면 자동으로 해제된다.
 - AI 프로세스가 `settings_queue` 의 `target_window` 변경을 추적하도록 분기 추가
   (기존엔 캡처 프로세스만 처리했음) → 경고가 최신 창 기준으로 동작.
 - 오탐 방지: 창 정보 없음/`Unknown Game`/부분 포함(예: "Hades II" ↔ "Hades")은 경고 안 함.

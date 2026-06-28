@@ -113,6 +113,18 @@ class TitleBar(QWidget):
         title = QLabel("Solo Stream")
         title.setStyleSheet("color: #aaa; font-size: 11px;")
         layout.addWidget(title)
+
+        # 프로필 불일치 등 경고 아이콘. 기본 숨김, set_warning()으로 노출.
+        # 채팅창을 어지럽히지 않도록 경고는 여기(타이틀바)에만 띄운다.
+        # 클릭하면 on_warning_click 콜백 실행(설정의 '게임' 탭 열기 등).
+        self.on_warning_click = None
+        self._warning_icon = QLabel("⚠")
+        self._warning_icon.setStyleSheet("color: #f4b400; font-size: 12px;")
+        self._warning_icon.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._warning_icon.setVisible(False)
+        self._warning_icon.mousePressEvent = self._on_warning_clicked
+        layout.addWidget(self._warning_icon)
+
         layout.addStretch()
 
         # 시작/종료 토글 버튼
@@ -160,6 +172,20 @@ class TitleBar(QWidget):
                 "border-radius: 3px; font-size: 10px; padding: 0 6px; }"
                 "QPushButton:hover { background: rgba(50,100,50,200); }"
             )
+
+    def set_warning(self, text: str | None):
+        """경고 아이콘 표시/숨김. text 가 있으면 ⚠ 를 띄우고 툴팁으로 상세 표시,
+        None/빈 문자열이면 숨긴다."""
+        if text:
+            self._warning_icon.setToolTip(text)
+            self._warning_icon.setVisible(True)
+        else:
+            self._warning_icon.setToolTip("")
+            self._warning_icon.setVisible(False)
+
+    def _on_warning_clicked(self, event):
+        if callable(self.on_warning_click):
+            self.on_warning_click()
 
 
 def _parse_device(device: str):
@@ -2167,6 +2193,13 @@ class SettingsPanel(QWidget):
         self._stt_test_btn.setEnabled(True)
         self._stt_test_btn.setText("📝 STT 테스트 (4초 녹음)")
 
+    def show_game_tab(self):
+        """설정의 '게임' 탭을 선택한다(탭 라벨로 찾아 인덱스 변화에 견고하게)."""
+        for i in range(self._tabs.count()):
+            if self._tabs.tabText(i) == "게임":
+                self._tabs.setCurrentIndex(i)
+                return
+
     def set_profile_name(self, name: str):
         self._profile_status.setText(f"현재 프로필: {name}")
         # 시작 탭 ③ 상태도 갱신 (프로필 로드 완료 통지로 들어옴)
@@ -2245,6 +2278,8 @@ class ChatOverlay(QWidget):
         self._titlebar = TitleBar()
         self._titlebar.settings_btn.clicked.connect(self._toggle_settings)
         self._titlebar.toggle_btn.clicked.connect(self._toggle_chat)
+        # 경고 아이콘 클릭 → 설정의 '게임' 탭 열기
+        self._titlebar.on_warning_click = self._open_game_settings
         inner.addWidget(self._titlebar)
 
         # 스택: 0=채팅, 1=설정
@@ -2319,6 +2354,12 @@ class ChatOverlay(QWidget):
         self._titlebar.set_active(new_state)
         self._settings_queue.put({"chat_active": new_state})
 
+    def _open_game_settings(self):
+        """경고 아이콘 클릭 시: 설정 패널을 열고 '게임' 탭으로 이동."""
+        if not self._settings_visible:
+            self._toggle_settings()
+        self._settings_panel.show_game_tab()
+
     def _toggle_settings(self):
         self._settings_visible = not self._settings_visible
         # 기존 사용자의 저장된 폭(392)이 좁아 설정 버튼이 잘리는 걸 방지:
@@ -2346,6 +2387,9 @@ class ChatOverlay(QWidget):
                         # 시스템 메시지 (프로필 로드 완료 등)
                         if chat.get("type") == "profile_loaded":
                             self._settings_panel.set_profile_name(chat["name"])
+                            # 캡처 창↔프로필 불일치 경고는 채팅창이 아니라
+                            # 상단 타이틀바 ⚠ 아이콘으로 표시(없으면 자동 해제).
+                            self._titlebar.set_warning(chat.get("warning"))
                     else:
                         self._add_message(chat["name"], chat["message"])
         except Exception:
