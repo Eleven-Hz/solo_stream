@@ -118,6 +118,9 @@ class TitleBar(QWidget):
         # 채팅창을 어지럽히지 않도록 경고는 여기(타이틀바)에만 띄운다.
         # 클릭하면 on_warning_click 콜백 실행(설정의 '게임' 탭 열기 등).
         self.on_warning_click = None
+        # 경고를 출처(source)별로 보관해 서로 덮어쓰지 않게 한다.
+        # 예: 프로필 불일치(profile_mismatch)와 서버 혼잡(api_503)이 동시에 떠도 유지.
+        self._warnings: dict[str, str] = {}
         self._warning_icon = QLabel("⚠")
         self._warning_icon.setStyleSheet("color: #f4b400; font-size: 12px;")
         self._warning_icon.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -173,11 +176,18 @@ class TitleBar(QWidget):
                 "QPushButton:hover { background: rgba(50,100,50,200); }"
             )
 
-    def set_warning(self, text: str | None):
-        """경고 아이콘 표시/숨김. text 가 있으면 ⚠ 를 띄우고 툴팁으로 상세 표시,
-        None/빈 문자열이면 숨긴다."""
+    def set_warning(self, text: str | None, source: str = "profile_mismatch"):
+        """출처(source)별 경고를 설정/해제하고 아이콘을 갱신한다.
+
+        text 가 있으면 해당 source 경고를 켜고, None/빈 문자열이면 끈다.
+        활성 경고가 하나라도 있으면 ⚠ 를 띄우고, 여러 개면 툴팁에 합쳐 보여준다."""
         if text:
-            self._warning_icon.setToolTip(text)
+            self._warnings[source] = text
+        else:
+            self._warnings.pop(source, None)
+
+        if self._warnings:
+            self._warning_icon.setToolTip("\n\n".join(self._warnings.values()))
             self._warning_icon.setVisible(True)
         else:
             self._warning_icon.setToolTip("")
@@ -2548,7 +2558,15 @@ class ChatOverlay(QWidget):
                             self._settings_panel.set_profile_name(chat["name"])
                             # 캡처 창↔프로필 불일치 경고는 채팅창이 아니라
                             # 상단 타이틀바 ⚠ 아이콘으로 표시(없으면 자동 해제).
-                            self._titlebar.set_warning(chat.get("warning"))
+                            self._titlebar.set_warning(
+                                chat.get("warning"), source="profile_mismatch"
+                            )
+                        elif chat.get("type") == "api_status":
+                            # 채팅/프로필 생성 중 503 등 서버 혼잡 발생/해소를
+                            # 타이틀바 ⚠ 아이콘으로 표시(warning 없으면 해제).
+                            self._titlebar.set_warning(
+                                chat.get("warning"), source="api_503"
+                            )
                     elif "stt_transcript" in chat:
                         # STT 받아쓰기: 설정이 켜져 있을 때만 인라인 회색으로 표시.
                         if self._show_stt:

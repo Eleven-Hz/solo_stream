@@ -198,9 +198,19 @@ def _build_mood_section(mood_hint: str | None) -> str:
     return f"[채팅창 분위기]\n{hint}\n\n"
 
 
+def is_transient_error(err: "Exception | str | None") -> bool:
+    """503/UNAVAILABLE/429 등 서버 혼잡성 일시적 오류면 True.
+
+    UI에서 '서버 혼잡' 경고 아이콘을 띄울지 판단하는 데 쓴다."""
+    if not err:
+        return False
+    msg = str(err).lower()
+    return any(m in msg for m in ("503", "unavailable", "429", "resource_exhausted", "overloaded"))
+
+
 class ChatCallDebug:
     """generate_chats 가 마지막 호출 정보를 보관해 호출자가 라운드 로그에 합쳐쓸 수 있게 함."""
-    __slots__ = ("provider", "model", "prompt", "raw_response", "elapsed_s")
+    __slots__ = ("provider", "model", "prompt", "raw_response", "elapsed_s", "error")
 
     def __init__(self):
         self.provider: str = ""
@@ -208,6 +218,8 @@ class ChatCallDebug:
         self.prompt: str = ""
         self.raw_response: str = ""
         self.elapsed_s: float = 0.0
+        # 마지막 호출이 실패했으면 예외 문자열, 성공이면 "". UI 503 경고 판단용.
+        self.error: str = ""
 
 
 def _parse_chats(text: str) -> list[dict]:
@@ -319,6 +331,7 @@ class GeminiClient:
         )
         raw = ""
         parsed: list[dict] = []
+        err = ""
         t0 = time.perf_counter()
         try:
             def _call():
@@ -331,14 +344,17 @@ class GeminiClient:
             parsed = _parse_chats(raw)
         except json.JSONDecodeError as e:
             logger.error(f"채팅 JSON 파싱 실패: {e}")
+            err = str(e)
         except Exception as e:
             logger.error(f"채팅 생성 실패: {e}")
+            err = str(e)
         finally:
             self.last_chat_call.provider = "gemini"
             self.last_chat_call.model = self._chat_model
             self.last_chat_call.prompt = prompt
             self.last_chat_call.raw_response = raw
             self.last_chat_call.elapsed_s = time.perf_counter() - t0
+            self.last_chat_call.error = err
         return parsed
 
 
@@ -408,6 +424,7 @@ class ClaudeClient:
         )
         raw = ""
         parsed: list[dict] = []
+        err = ""
         t0 = time.perf_counter()
         try:
             response = self._client.messages.create(
@@ -419,14 +436,17 @@ class ClaudeClient:
             parsed = _parse_chats(raw)
         except json.JSONDecodeError as e:
             logger.error(f"Claude 채팅 JSON 파싱 실패: {e}")
+            err = str(e)
         except Exception as e:
             logger.error(f"Claude 채팅 생성 실패: {e}")
+            err = str(e)
         finally:
             self.last_chat_call.provider = "claude"
             self.last_chat_call.model = self._chat_model
             self.last_chat_call.prompt = prompt
             self.last_chat_call.raw_response = raw
             self.last_chat_call.elapsed_s = time.perf_counter() - t0
+            self.last_chat_call.error = err
         return parsed
 
 

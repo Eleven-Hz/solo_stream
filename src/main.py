@@ -257,7 +257,7 @@ def ai_process(
     setup_logger("solo_stream.ai")
     log = logging.getLogger("solo_stream.ai")
 
-    from src.ai.model_client import create_vision_client, create_chat_client, GeminiClient
+    from src.ai.model_client import create_vision_client, create_chat_client, GeminiClient, is_transient_error
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
@@ -319,6 +319,14 @@ def ai_process(
                     f"잠시 후 '게임 프로필 재생성'으로 다시 시도하세요. — {summary}"
                 ),
             })
+            # 실패 사유에 503 등 일시적 오류가 섞여 있으면 타이틀바 ⚠ 아이콘도 켠다.
+            if any(is_transient_error(e) for e in gen_errors):
+                ui_queue.put({
+                    "system": True, "type": "api_status",
+                    "warning": (f"게임 프로필 생성 중 서버 혼잡(503 등)으로 일부 단계가 "
+                                f"실패했습니다.\n잠시 후 '게임 프로필 재생성'으로 다시 "
+                                f"시도하세요."),
+                })
 
     game_profile = load_profile(game_name, ai_client=gemini_client, config=config)
     profile_context = build_profile_context(game_profile)
@@ -563,6 +571,20 @@ def ai_process(
                 mentioned_names=mentioned_names,
                 mood_hint=hype_profile.mood_hint or None,
             )
+
+            # 채팅 생성 호출의 503 등 서버 혼잡 여부를 타이틀바 ⚠ 아이콘에 반영.
+            # 일시적 오류면 경고를 켜고, 정상 응답이면 해제(자동 회복).
+            chat_err = getattr(chat_client, "last_chat_call", None)
+            chat_err = chat_err.error if chat_err else ""
+            if is_transient_error(chat_err):
+                ui_queue.put({
+                    "system": True, "type": "api_status",
+                    "warning": ("AI 서버가 혼잡합니다(503 등). 일부 채팅이 누락될 수 "
+                                "있습니다. 잠시 후 자동 회복됩니다."),
+                })
+            else:
+                # 정상 라운드면 503 경고 해제(없으면 무시됨).
+                ui_queue.put({"system": True, "type": "api_status", "warning": None})
 
             # 직전 라운드 발언을 그대로 복붙한 채팅 드롭 (B). hype delay 축소로 인접
             # 라운드 간격이 짧아지면 같은 메시지가 화면에 거의 동시에 떠 중복으로 보인다.
