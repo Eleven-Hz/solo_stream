@@ -399,6 +399,8 @@ class SettingsPanel(QWidget):
         self._settings_queue = settings_queue
         self._config = config
         self._onboarding = onboarding
+        # STT 인라인 표시 토글 변경을 ChatOverlay로 알리는 콜백(런타임 즉시 반영).
+        self.on_show_stt_changed = None
         self._excludes: list[str] = list(config.get("ui", {}).get("window_excludes", []))
         # 가시성: 패널 전체에 기준 폰트를 키워 둔다. 개별 위젯의 인라인 font-size가
         # 이를 덮어쓰는 경우가 많아, 인라인 px 값들도 한 단계씩 상향했다.
@@ -1140,6 +1142,26 @@ class SettingsPanel(QWidget):
             self._log_status.setText(f"저장 실패: {e}")
             self._log_status.setStyleSheet("color: #ff6b6b; font-size: 12px;")
 
+    def _save_show_stt_history(self, checked: bool):
+        """STT 인라인 표시 토글 저장(ui.show_stt_history) + 오버레이 즉시 반영."""
+        try:
+            paths.update_user_config("ui", {"show_stt_history": bool(checked)})
+            self._config.setdefault("ui", {})["show_stt_history"] = bool(checked)
+        except Exception as e:
+            logger.error(f"show_stt_history 저장 실패: {e}")
+        # 런타임 즉시 반영(재시작 불필요).
+        if callable(self.on_show_stt_changed):
+            self.on_show_stt_changed(bool(checked))
+
+    def set_show_stt_checked(self, checked: bool):
+        """우클릭 메뉴에서 토글했을 때 패널 체크박스를 맞춰주기 위한 동기화용.
+        시그널 재발화로 무한 루프가 나지 않도록 blockSignals로 감싼다."""
+        chk = getattr(self, "_stt_show_history_chk", None)
+        if chk is not None:
+            chk.blockSignals(True)
+            chk.setChecked(bool(checked))
+            chk.blockSignals(False)
+
     def _build_section_about(self, layout: QVBoxLayout):
         # 구분선
         sep = QLabel(); sep.setFixedHeight(1)
@@ -1494,6 +1516,31 @@ class SettingsPanel(QWidget):
         self._stt_prompt_text.setFixedHeight(70)
         self._stt_prompt_text.setPlainText(str(stt_cfg.get("transcribe_prompt", "")))
         layout.addWidget(self._stt_prompt_text)
+
+        # 부가기능: STT 받아쓰기를 채팅창에 항상 회색 인라인으로 표시.
+        # 표시는 UI 설정이라 ui.show_stt_history 에 저장한다(STT 파이프라인과 무관).
+        self._stt_sep(layout)
+        addon_label = QLabel("부가기능")
+        addon_label.setStyleSheet("color: #bbb; font-size: 13px; font-weight: bold;")
+        layout.addWidget(addon_label)
+
+        self._stt_show_history_chk = QCheckBox("STT 받아쓰기 항상 보기")
+        self._stt_show_history_chk.setStyleSheet(
+            "QCheckBox { color: #ddd; font-size: 13px; spacing: 6px; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; }"
+            "QCheckBox::indicator:unchecked { background: #1e1e2e; border: 1px solid #555; border-radius: 3px; }"
+            "QCheckBox::indicator:checked { background: #2d6a4f; border: 1px solid #4f8a6f; border-radius: 3px; }"
+        )
+        cur_show = bool((self._config.get("ui") or {}).get("show_stt_history", False))
+        self._stt_show_history_chk.setChecked(cur_show)
+        self._stt_show_history_chk.toggled.connect(self._save_show_stt_history)
+        layout.addWidget(self._stt_show_history_chk)
+
+        sh_hint = QLabel("불안정한 받아쓰기를 즉시 보고 잘못 들렸는지 확인할 때 켜세요.\n"
+                         "채팅창 우클릭 메뉴에서도 켜고 끌 수 있습니다.")
+        sh_hint.setStyleSheet("color: #666; font-size: 11px;")
+        sh_hint.setWordWrap(True)
+        layout.addWidget(sh_hint)
 
     # ── 입력 장치 콤보 ──────────────────────────────────────────────────────
 
@@ -2207,6 +2254,9 @@ class ChatOverlay(QWidget):
         self._resize_start_size = QSize()
         self._opacity = self._config.get("opacity", 0.85)
         self._settings_visible = False
+        # STT 받아쓰기를 채팅창에 인라인 회색으로 항상 보일지 여부.
+        # 불안정한 한국어 STT가 '실제로 뭐라고 들렸는지' 확인용. 설정/우클릭으로 토글.
+        self._show_stt = bool(self._config.get("show_stt_history", False))
 
         self._setup_window()
         self._setup_ui()
@@ -2291,6 +2341,8 @@ class ChatOverlay(QWidget):
         # 설정 페이지
         self._settings_panel = SettingsPanel(self._settings_queue, self._config_full, onboarding=self._onboarding)
         self._settings_panel.setStyleSheet("background: transparent;")
+        # STT 인라인 표시 토글을 설정 패널 → 오버레이로 즉시 반영하는 콜백.
+        self._settings_panel.on_show_stt_changed = self.set_show_stt
 
         self._stack.addWidget(chat_page)       # index 0
         self._stack.addWidget(self._settings_panel)  # index 1
@@ -2355,6 +2407,10 @@ class ChatOverlay(QWidget):
                             # 캡처 창↔프로필 불일치 경고는 채팅창이 아니라
                             # 상단 타이틀바 ⚠ 아이콘으로 표시(없으면 자동 해제).
                             self._titlebar.set_warning(chat.get("warning"))
+                    elif "stt_transcript" in chat:
+                        # STT 받아쓰기: 설정이 켜져 있을 때만 인라인 회색으로 표시.
+                        if self._show_stt:
+                            self._add_stt_message(chat.get("text", ""))
                     else:
                         self._add_message(chat["name"], chat["message"])
         except Exception:
@@ -2390,6 +2446,46 @@ class ChatOverlay(QWidget):
             self._list.takeItem(0)
 
         self._list.scrollToBottom()
+
+    def _add_stt_message(self, text: str):
+        """STT 받아쓰기를 채팅창에 흐린 회색 인라인으로 추가('🎤 나: ...').
+        봇 메시지(_add_message)와 같은 리스트/트리밍을 공유하되 시각적으로 죽여
+        실제 채팅과 구분되게 한다."""
+        text = (text or "").strip()
+        if not text:
+            return
+        font_size = self._config.get("font_size", 14)
+
+        label = QLabel()
+        label.setText(
+            '<span style="color:#777;">🎤 나: </span>'
+            f'<span style="color:#888; font-style:italic;">{text}</span>'
+        )
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setStyleSheet(f"font-size: {font_size}pt; background: transparent; padding: 1px 4px;")
+        label.setContentsMargins(0, 0, 0, 0)
+
+        available_w = self._list.viewport().width() - 8
+        label.setFixedWidth(max(available_w, 100))
+        label.adjustSize()
+
+        item = QListWidgetItem()
+        item.setSizeHint(label.sizeHint())
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+
+        self._list.addItem(item)
+        self._list.setItemWidget(item, label)
+
+        max_msgs = self._config.get("max_messages", 50)
+        while self._list.count() > max_msgs:
+            self._list.takeItem(0)
+
+        self._list.scrollToBottom()
+
+    def set_show_stt(self, show: bool):
+        """STT 인라인 표시 on/off (설정 패널·우클릭 메뉴에서 호출)."""
+        self._show_stt = bool(show)
 
     # ── 드래그 & 리사이즈 ───────────────────────────────────────────────────
 
@@ -2448,6 +2544,12 @@ class ChatOverlay(QWidget):
             opacity_menu.addAction(action)
 
         menu.addSeparator()
+        stt_action = QAction("🎤 STT 받아쓰기 보기", self)
+        stt_action.setCheckable(True)
+        stt_action.setChecked(self._show_stt)
+        stt_action.triggered.connect(self._toggle_show_stt)
+        menu.addAction(stt_action)
+
         clear_action = QAction("채팅 지우기", self)
         clear_action.triggered.connect(self._clear_messages)
         menu.addAction(clear_action)
@@ -2462,6 +2564,18 @@ class ChatOverlay(QWidget):
     def _set_opacity(self, value: float):
         self._opacity = max(0.1, min(1.0, value))
         self._apply_style()
+
+    def _toggle_show_stt(self, checked: bool):
+        """우클릭 메뉴 토글: 즉석 on/off + 설정 패널 체크박스 동기화 + 디스크 저장."""
+        self._show_stt = bool(checked)
+        # 설정 패널 체크박스도 맞춰준다(다음에 패널 열었을 때 일관성).
+        if getattr(self, "_settings_panel", None) is not None:
+            self._settings_panel.set_show_stt_checked(self._show_stt)
+        try:
+            paths.update_user_config("ui", {"show_stt_history": self._show_stt})
+            self._config["show_stt_history"] = self._show_stt
+        except Exception:
+            logger.exception("show_stt_history 저장 실패")
 
     def _clear_messages(self):
         self._list.clear()

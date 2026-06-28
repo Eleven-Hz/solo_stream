@@ -22,6 +22,9 @@ ui:
   opacity: 0.85
   max_messages: 50
   font_size: 14
+  # STT 받아쓰기를 채팅창에 회색 인라인으로 항상 표시(불안정한 STT 확인용).
+  # 설정 '음성' 탭 또는 채팅창 우클릭 메뉴로 토글.
+  show_stt_history: false
   width: 450
   height: 875
   window_excludes:

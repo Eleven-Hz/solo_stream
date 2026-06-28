@@ -674,6 +674,7 @@ def stt_process(
     config: dict,
     api_key: str,
     openai_api_key: str | None = None,
+    ui_queue: "multiprocessing.Queue | None" = None,
 ):
     setup_logger("solo_stream")
     setup_logger("solo_stream.stt")
@@ -721,6 +722,14 @@ def stt_process(
             }, timeout=0.5)
         except Exception as e:
             log.warning(f"stt_queue.put 실패: {e}")
+        # 받아쓰기 결과를 오버레이에도 흘려보낸다(채팅창 인라인 회색 표시용).
+        # 항상 push하고 표시 여부는 UI 설정(ui.show_stt_history)에서 판단한다 —
+        # 텍스트라 가볍고, 우클릭 토글로 런타임에 바뀌어도 STT 프로세스는 신경 안 써도 됨.
+        if ui_queue is not None and ev.text:
+            try:
+                ui_queue.put_nowait({"stt_transcript": True, "text": ev.text})
+            except Exception:
+                pass
 
     chat_active = False
     started = False
@@ -834,7 +843,7 @@ def main():
         if stt_enabled:
             processes.append(multiprocessing.Process(
                 target=stt_process,
-                args=(stt_queue, stt_settings_queue, config, api_key, openai_api_key),
+                args=(stt_queue, stt_settings_queue, config, api_key, openai_api_key, ui_queue),
                 name="STTProcess",
                 daemon=True,
             ))
