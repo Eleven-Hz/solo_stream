@@ -403,6 +403,11 @@ def ai_process(
                         ai_cfg["chat_model"] = new_model
                 log.info(f"chat 모델 변경: {new_provider} / {new_model or '(모델 유지)'}")
                 chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+            elif "profile_model" in setting:
+                # 다음 프로필 생성/재생성 때 load_profile(config=...)에서 읽힌다.
+                ai_cfg = config.setdefault("ai", {})
+                ai_cfg["profile_model"] = setting["profile_model"]
+                log.info(f"게임 프로필 생성 모델 변경: {setting['profile_model']}")
             elif "target_window" in setting:
                 # 캡처는 별도 프로세스가 처리하지만, AI 프로세스도 프로필 불일치
                 # 경고를 위해 현재 창 타이틀을 추적해 둔다.

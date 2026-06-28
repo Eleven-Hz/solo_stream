@@ -375,6 +375,15 @@ class SettingsPanel(QWidget):
         "claude-sonnet-4-6",
         "claude-opus-4-7",
     ]
+    # 게임 프로필 생성 모델 후보. Google Search 그라운딩이 필요해 Gemini 전용.
+    # 첫 항목이 기본값. gemini-3.5-flash(2026-05 출시, 그라운딩 내장) 포함.
+    # gemini-3.5-pro는 일반 공개 전이라 API 모델 ID 미확정 — 출시 후 추가.
+    _PROFILE_MODELS = [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+    ]
     # STT provider별 transcribe 모델 후보.
     # gemini는 generate_content(오디오 이해)로 받아쓰기가 되는 멀티모달 모델만 포함.
     # (live/tts/native-audio 변형은 다른 API라 GeminiTranscriber로 동작하지 않아 제외)
@@ -1106,6 +1115,34 @@ class SettingsPanel(QWidget):
         self._profile_status.setStyleSheet("color: #888; font-size: 12px;")
         self._profile_status.setWordWrap(True)
         layout.addWidget(self._profile_status)
+
+        # 프로필 생성 모델 선택 (Gemini 전용 — Google Search 그라운딩 필요)
+        model_row = QHBoxLayout()
+        model_lbl = QLabel("생성 모델")
+        model_lbl.setStyleSheet("color: #888; font-size: 12px;")
+        model_lbl.setFixedWidth(64)
+        model_row.addWidget(model_lbl)
+
+        self._profile_model_combo = QComboBox()
+        self._profile_model_combo.setStyleSheet(self._COMBO_STYLE)
+        self._profile_model_combo.addItems(self._PROFILE_MODELS)
+        cur_model = self._config.get("ai", {}).get("profile_model", self._PROFILE_MODELS[0])
+        idx = self._profile_model_combo.findText(cur_model)
+        if idx < 0:
+            # config에 콤보에 없는 모델명이 있으면(직접 편집 등) 항목으로 추가해 유지
+            self._profile_model_combo.addItem(cur_model)
+            idx = self._profile_model_combo.findText(cur_model)
+        self._profile_model_combo.setCurrentIndex(max(idx, 0))
+        self._profile_model_combo.currentTextChanged.connect(self._save_profile_model)
+        self._constrain_combo(self._profile_model_combo)
+        model_row.addWidget(self._profile_model_combo)
+        layout.addLayout(model_row)
+
+        model_hint = QLabel("프로필을 검색·생성할 때 쓰는 모델. 더 정확한 결과는 상위 모델일수록 좋지만 느리고 비쌉니다.\n"
+                            "Google 검색 그라운딩이 필요해 Gemini만 지원합니다. 변경은 다음 생성/재생성부터 적용.")
+        model_hint.setStyleSheet("color: #666; font-size: 11px;")
+        model_hint.setWordWrap(True)
+        layout.addWidget(model_hint)
 
         regen_btn = QPushButton("선택 창 게임 프로필 재생성")
         regen_btn.setStyleSheet(self._btn_style("#2d1b69", "#4a2fa0"))
@@ -1940,6 +1977,21 @@ class SettingsPanel(QWidget):
         self._settings_queue.put({"chat_provider": provider, "chat_model": model})
         self._save_config_chat_model(provider, model)
         logger.info(f"채팅 생성 모델 변경: {provider} / {model}")
+
+    def _save_profile_model(self, model: str):
+        """게임 프로필 생성 모델을 config.local.yaml에 저장 + ai_process에 즉시 반영.
+
+        다음 프로필 생성/재생성부터 적용된다(이미 생성된 프로필 파일은 영향 없음)."""
+        model = (model or "").strip()
+        if not model:
+            return
+        try:
+            paths.update_user_config("ai", {"profile_model": model})
+            self._config.setdefault("ai", {})["profile_model"] = model
+            self._settings_queue.put({"profile_model": model})
+            logger.info(f"게임 프로필 생성 모델 변경: {model}")
+        except Exception as e:
+            logger.error(f"profile_model 저장 실패: {e}")
 
     def _save_config_vision_provider(self, provider: str, model: str):
         try:
