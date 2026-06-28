@@ -319,14 +319,6 @@ def ai_process(
                     f"잠시 후 '게임 프로필 재생성'으로 다시 시도하세요. — {summary}"
                 ),
             })
-            # 실패 사유에 503 등 일시적 오류가 섞여 있으면 타이틀바 ⚠ 아이콘도 켠다.
-            if any(is_transient_error(e) for e in gen_errors):
-                ui_queue.put({
-                    "system": True, "type": "api_status",
-                    "warning": (f"게임 프로필 생성 중 서버 혼잡(503 등)으로 일부 단계가 "
-                                f"실패했습니다.\n잠시 후 '게임 프로필 재생성'으로 다시 "
-                                f"시도하세요."),
-                })
 
     game_profile = load_profile(game_name, ai_client=gemini_client, config=config)
     profile_context = build_profile_context(game_profile)
@@ -359,6 +351,9 @@ def ai_process(
     round_num = 0
     chat_active = False  # 시작/종료 버튼으로 제어
     last_location = ""  # 직전 라운드에서 확인된 위치
+    # 직전 채팅 생성이 503 등 서버 혼잡이었는지. 상태가 바뀔 때만 채팅창에 안내해
+    # (혼잡 시작 1회 / 회복 1회) 매 라운드 같은 메시지가 쌓이지 않게 한다.
+    api_busy = False
     # 직전 라운드 흥분 발동 여부. 발동이면 그 라운드 봇 채팅(mood_hint로 ㅋㅋ/ㅠㅠ 대량
     # 생성)이 이번 hype 입력으로 되먹임돼 분위기가 봇 메아리만으로 눈덩이처럼 커진다
     # (부정 자가발전 루프). 발동 직후 라운드는 채팅 신호를 감쇠해 메아리를 끊는다.
@@ -572,19 +567,23 @@ def ai_process(
                 mood_hint=hype_profile.mood_hint or None,
             )
 
-            # 채팅 생성 호출의 503 등 서버 혼잡 여부를 타이틀바 ⚠ 아이콘에 반영.
-            # 일시적 오류면 경고를 켜고, 정상 응답이면 해제(자동 회복).
+            # 채팅 생성이 503 등 서버 혼잡이면 채팅창에 안내. 매 라운드 반복되지
+            # 않도록 상태가 바뀔 때만(혼잡 시작 1회 / 회복 1회) 띄운다.
             chat_err = getattr(chat_client, "last_chat_call", None)
             chat_err = chat_err.error if chat_err else ""
-            if is_transient_error(chat_err):
+            now_busy = is_transient_error(chat_err)
+            if now_busy and not api_busy:
                 ui_queue.put({
-                    "system": True, "type": "api_status",
-                    "warning": ("AI 서버가 혼잡합니다(503 등). 일부 채팅이 누락될 수 "
-                                "있습니다. 잠시 후 자동 회복됩니다."),
+                    "name": "시스템",
+                    "message": ("⚠ AI 서버가 혼잡합니다(503 등). 잠시 동안 채팅이 "
+                                "끊기거나 누락될 수 있습니다. 자동으로 다시 시도합니다."),
                 })
-            else:
-                # 정상 라운드면 503 경고 해제(없으면 무시됨).
-                ui_queue.put({"system": True, "type": "api_status", "warning": None})
+            elif api_busy and not now_busy:
+                ui_queue.put({
+                    "name": "시스템",
+                    "message": "✓ AI 서버 연결이 회복됐습니다. 채팅을 다시 생성합니다.",
+                })
+            api_busy = now_busy
 
             # 직전 라운드 발언을 그대로 복붙한 채팅 드롭 (B). hype delay 축소로 인접
             # 라운드 간격이 짧아지면 같은 메시지가 화면에 거의 동시에 떠 중복으로 보인다.
