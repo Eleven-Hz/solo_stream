@@ -241,8 +241,8 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None) -> 
         return profile
 
     if ai_client is None:
-        logger.warning(f"프로필 없음, AI 클라이언트 없어서 default 사용: {game_name}")
-        return _load_default()
+        logger.warning(f"프로필 없음, AI 클라이언트 없어서 빈 프로필 사용: {game_name}")
+        return _empty_profile(game_name)
 
     model = (config or {}).get("ai", {}).get("profile_model", _DEFAULT_PROFILE_MODEL)
     logger.info(f"게임 프로필 없음. 멀티턴 검색으로 자동 생성 중: {game_name} (모델: {model})")
@@ -415,20 +415,25 @@ def _clean_list(items: list) -> list[str]:
     return result
 
 
-def _load_default() -> dict:
-    # default.yaml 은 번들 기본 (사용자 오버라이드 우선 → 번들).
-    default_path = paths.resolve_resource("game_profiles/default.yaml")
-    if default_path.exists():
-        with open(default_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+def _empty_profile(game_name: str = "Unknown") -> dict:
+    """프로필 파일도 없고 AI 클라이언트도 없을 때 쓰는 최소 빈 프로필.
+
+    번들 ``default.yaml`` 의존을 없앴다(별도 기본 프로필 파일 불필요 — 프로필은
+    게임명별로 런타임 자동 생성되며, 생성 불가 시 이 빈 골격으로 충분).
+    """
     return {
-        "name": "Unknown",
-        "description": "",
+        "name": game_name or "Unknown",
+        "description": "알 수 없는 게임입니다. 화면을 보고 상황에 맞게 반응하세요.",
+        "vision_focus": [],
         "systems": [],
         "locations": [],
         "enemies": [],
         "skills": [],
-        "chat_tips": [],
+        "chat_tips": [
+            "게임 화면을 보고 자연스럽게 반응하세요",
+            "전투 중이면 응원하거나 긴장감을 표현하세요",
+            "탐험 중이면 풍경이나 다음 목적지에 대해 이야기하세요",
+        ],
     }
 
 

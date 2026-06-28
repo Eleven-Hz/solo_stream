@@ -1129,14 +1129,7 @@ class SettingsPanel(QWidget):
 
     def _save_logging_setting(self, checked: bool):
         try:
-            from pathlib import Path
-            import yaml as _yaml
-            config_path = paths.user_data_dir() / "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = _yaml.safe_load(f) or {}
-            cfg.setdefault("logging", {})["save_to_file"] = bool(checked)
-            with open(config_path, "w", encoding="utf-8") as f:
-                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            paths.update_user_config("logging", {"save_to_file": bool(checked)})
             self._config.setdefault("logging", {})["save_to_file"] = bool(checked)
             state = "저장 ON" if checked else "저장 OFF"
             self._log_status.setText(f"로그 파일 {state} — 다음 실행부터 적용됩니다.")
@@ -1181,7 +1174,7 @@ class SettingsPanel(QWidget):
         self._build_stt_rest(layout, stt_cfg)
 
         # 저장 버튼
-        save_stt_btn = QPushButton("STT 설정 저장 (config.yaml)")
+        save_stt_btn = QPushButton("STT 설정 저장 (config.local.yaml)")
         save_stt_btn.setStyleSheet(self._btn_style("#1a3a5a", "#2a5a8a"))
         save_stt_btn.clicked.connect(self._save_stt_settings)
         layout.addWidget(save_stt_btn)
@@ -1213,7 +1206,7 @@ class SettingsPanel(QWidget):
         self._stt_enabled_chk.setChecked(bool(stt_cfg.get("enabled", False)))
         layout.addWidget(self._stt_enabled_chk)
 
-        hint = QLabel("변경 후 'STT 설정 저장'을 누르면 config.yaml에 기록됩니다.\n"
+        hint = QLabel("변경 후 'STT 설정 저장'을 누르면 config.local.yaml에 기록됩니다.\n"
                       "enabled 변경은 다음 실행부터 적용됩니다.")
         hint.setStyleSheet("color: #666; font-size: 11px;")
         hint.setWordWrap(True)
@@ -1745,16 +1738,9 @@ class SettingsPanel(QWidget):
         self._refresh_windows()
 
     def _save_excludes(self):
-        """제외 패턴을 config.yaml에 저장."""
+        """제외 패턴을 config.local.yaml에 저장."""
         try:
-            from pathlib import Path
-            import yaml as _yaml
-            config_path = paths.user_data_dir() / "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = _yaml.safe_load(f)
-            cfg.setdefault("ui", {})["window_excludes"] = self._excludes
-            with open(config_path, "w", encoding="utf-8") as f:
-                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            paths.update_user_config("ui", {"window_excludes": self._excludes})
         except Exception as e:
             logger.error(f"제외 패턴 저장 실패: {e}")
 
@@ -1858,37 +1844,23 @@ class SettingsPanel(QWidget):
 
     def _save_config_vision_provider(self, provider: str, model: str):
         try:
-            from pathlib import Path
-            import yaml as _yaml
-            config_path = paths.user_data_dir() / "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = _yaml.safe_load(f)
-            ai = cfg.setdefault("ai", {})
-            ai["vision_provider"] = provider
+            values = {"vision_provider": provider}
             if provider == "claude":
-                ai["claude_vision_model"] = model
+                values["claude_vision_model"] = model
             else:
-                ai["vision_model"] = model
-            with open(config_path, "w", encoding="utf-8") as f:
-                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                values["vision_model"] = model
+            paths.update_user_config("ai", values)
         except Exception as e:
             logger.error(f"vision_provider 저장 실패: {e}")
 
     def _save_config_chat_model(self, provider: str, model: str):
         try:
-            from pathlib import Path
-            import yaml as _yaml
-            config_path = paths.user_data_dir() / "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = _yaml.safe_load(f)
-            ai = cfg.setdefault("ai", {})
-            ai["chat_provider"] = provider
+            values = {"chat_provider": provider}
             if provider == "claude":
-                ai["claude_chat_model"] = model
+                values["claude_chat_model"] = model
             else:
-                ai["chat_model"] = model
-            with open(config_path, "w", encoding="utf-8") as f:
-                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                values["chat_model"] = model
+            paths.update_user_config("ai", values)
         except Exception as e:
             logger.error(f"chat_model 저장 실패: {e}")
 
@@ -1963,11 +1935,8 @@ class SettingsPanel(QWidget):
         QApplication.quit()
 
     def _save_stt_settings(self):
-        """UI에서 변경한 STT 설정을 config.yaml에 저장 + 가능한 항목은 ai_process에 브로드캐스트."""
+        """UI에서 변경한 STT 설정을 config.local.yaml에 저장 + 가능한 항목은 ai_process에 브로드캐스트."""
         try:
-            from pathlib import Path
-            import yaml as _yaml
-
             old_stt = self._config.get("stt", {}) or {}
             new_stt = {
                 "enabled": self._stt_enabled_chk.isChecked(),
@@ -1993,18 +1962,14 @@ class SettingsPanel(QWidget):
                 if k in old_stt:
                     new_stt[k] = old_stt[k]
 
-            config_path = paths.user_data_dir() / "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = _yaml.safe_load(f)
-            old_cfg_stt = cfg.get("stt") or {}
-            old_enabled = bool(old_cfg_stt.get("enabled", False))
+            # 변경 판정 기준은 현재 적용 중인(merged) 설정 = self._config["stt"].
+            old_enabled = bool(old_stt.get("enabled", False))
             transcriber_changed = (
-                str(old_cfg_stt.get("provider", "gemini")) != new_stt["provider"]
-                or str(old_cfg_stt.get("model", "")) != new_stt["model"]
+                str(old_stt.get("provider", "gemini")) != new_stt["provider"]
+                or str(old_stt.get("model", "")) != new_stt["model"]
             )
-            cfg["stt"] = new_stt
-            with open(config_path, "w", encoding="utf-8") as f:
-                _yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            # stt 섹션 전체를 config.local.yaml 에 저장(다른 사용자 설정은 보존).
+            paths.update_user_config("stt", new_stt)
 
             # 인-메모리 config도 동기화 (다음 패널 오픈 시 일관성)
             self._config["stt"] = new_stt

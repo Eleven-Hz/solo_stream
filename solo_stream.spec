@@ -7,7 +7,7 @@
 설계 메모:
 - 진입점은 src/main.py 이지만 코드가 `from src.utils...` 패키지 절대 import 를 쓰므로
   pathex 에 프로젝트 루트를 넣어 `src` 패키지를 import 가능하게 한다.
-- 번들 리소스(config.yaml, personas/, game_profiles/default.yaml, silero 모델)는
+- 번들 리소스(config.yaml, personas/, silero 모델)는
   exe 옆(=sys._MEIPASS / paths.resource_dir())에서 읽힌다. paths.py 와 짝.
 - 쓰기 데이터(사용자 config, .env.local, game_profiles 생성물, logs)는 런타임에
   %APPDATA%\\SoloStream 으로 가므로 datas 에 넣지 않는다.
@@ -25,7 +25,6 @@ PROJECT_ROOT = os.path.abspath(os.getcwd())
 datas = [
     ("config.yaml", "."),
     ("personas", "personas"),
-    ("game_profiles/default.yaml", "game_profiles"),
 ]
 
 # silero-vad 모델 파일(.jit/.onnx)은 패키지 내부 data/ 를 참조하므로 함께 수집.

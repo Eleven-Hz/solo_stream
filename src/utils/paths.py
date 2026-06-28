@@ -3,7 +3,7 @@
 두 가지 루트 개념을 분리한다.
 
 - ``resource_dir()`` — 읽기전용 번들 리소스 (기본 config.yaml, personas/*.yaml,
-  game_profiles/default.yaml, silero 모델 등). frozen 이면 exe 옆, 아니면 프로젝트 루트.
+  silero 모델 등). frozen 이면 exe 옆, 아니면 프로젝트 루트.
 - ``user_data_dir()`` — 쓰기 가능한 사용자 폴더 (사용자 config.yaml, .env.local,
   game_profiles/ 자동생성, logs/). 기본 ``%APPDATA%\\SoloStream``.
 
@@ -81,7 +81,7 @@ def resolve_resource(rel: str) -> Path:
 def ensure_user_data() -> Path:
     """최초 실행 시딩. 사용자 데이터 폴더와 필수 하위 디렉터리만 만든다.
 
-    **번들 기본(config.yaml / personas/default_bots.yaml / game_profiles/default.yaml)은
+    **번들 기본(config.yaml / personas/default_bots.yaml)은
     user_data 로 복사하지 않는다.** 복사해두면 그 복사본이 '사용자 것인지 번들 기본인지'
     구분이 사라져, 앱 업데이트로 기본값이 바뀌어도 사용자에게 영원히 반영되지 않는
     원복/스테일 문제가 생긴다.
@@ -105,6 +105,78 @@ def ensure_user_data() -> Path:
     (udir / "personas").mkdir(exist_ok=True)
 
     return udir
+
+
+def user_config_path() -> Path:
+    """사용자 설정 오버라이드 파일 경로 (``user_data_dir()/config.local.yaml``).
+
+    번들 ``config.yaml`` 은 읽기전용 기본값(템플릿)이고, 사용자가 UI/직접 바꾼
+    설정은 전부 이 ``config.local.yaml`` 에만 쌓인다. config_loader 가 로드 시
+    번들 위에 이 파일을 deep-merge 한다. 이렇게 분리하면 앱 업데이트로 번들
+    기본값이 바뀌어도 사용자 설정이 원복되지 않고, 새 기본 키도 자동 반영된다.
+    """
+    return user_data_dir() / "config.local.yaml"
+
+
+_CONFIG_LOCAL_HEADER = """\
+# Solo Stream 사용자 설정 오버라이드 (config.local.yaml)
+#
+# 번들 기본값은 config.yaml(읽기전용)에 있습니다. 직접 수정하지 마세요 —
+# 앱 업데이트 시 덮어써집니다. 바꾸고 싶은 값만 이 파일에 적으면 됩니다.
+# (앱이 UI에서 저장한 설정도 전부 여기에 기록됩니다.)
+#
+# 로딩 시 config.yaml 위에 이 파일을 깊은 병합(deep-merge)하므로,
+# 여기 없는 키는 기본값을 그대로 따릅니다.
+"""
+
+
+def load_user_config() -> dict:
+    """``config.local.yaml`` 을 읽어 dict 로 반환. 없거나 손상되면 빈 dict."""
+    import yaml
+
+    path = user_config_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_user_config(data: dict) -> None:
+    """``config.local.yaml`` 전체를 헤더 주석과 함께 저장(덮어쓰기).
+
+    부분 갱신은 ``update_user_config`` 를 쓴다(기존 값 보존). 이 함수는 호출부가
+    이미 병합한 최종 dict 를 통째로 쓰고 싶을 때만 쓴다.
+    """
+    import yaml
+
+    path = user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_CONFIG_LOCAL_HEADER)
+        yaml.dump(data or {}, f, allow_unicode=True,
+                  default_flow_style=False, sort_keys=False)
+
+
+def update_user_config(section: str, values: dict) -> dict:
+    """``config.local.yaml`` 의 한 섹션(예: ``"stt"``, ``"ai"``)을 부분 갱신 저장.
+
+    기존 ``config.local.yaml`` 을 읽어 ``section`` 아래 ``values`` 의 키만 덮어쓰고
+    다시 저장한다(다른 사용자 설정은 보존). 갱신된 전체 dict 를 반환한다.
+
+    예) ``update_user_config("ai", {"chat_provider": "claude"})``.
+    """
+    data = load_user_config()
+    cur = data.get(section)
+    if not isinstance(cur, dict):
+        cur = {}
+    cur.update(values or {})
+    data[section] = cur
+    save_user_config(data)
+    return data
 
 
 def _last_session_path() -> Path:
