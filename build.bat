@@ -4,6 +4,12 @@ rem Pre: venv has requirements.txt + requirements-build.txt installed.
 rem Out: dist\SoloStream\SoloStream.exe + _internal\
 setlocal
 
+rem Force Windows PowerShell 5.1 to use ONLY its own module paths.
+rem If PowerShell 7 (pwsh) is installed, the inherited PSModulePath includes
+rem pwsh's module dir, which makes the 5.1 `powershell.exe` calls below load the
+rem wrong Microsoft.PowerShell.Utility and fail with "Get-FileHash not recognized".
+set "PSModulePath=%ProgramFiles%\WindowsPowerShell\Modules;%SystemRoot%\system32\WindowsPowerShell\v1.0\Modules"
+
 echo [build] clean build/ dist/
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
