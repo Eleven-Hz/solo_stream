@@ -16,6 +16,9 @@ __pycache__/*
 # Environment
 .env.local
 
+# 사용자 로컬 설정 (앱이 생성, 머신별 값) — 추적 안 함
+config.local.yaml
+
 # 런타임 세션 상태 (DEV 모드면 프로젝트 루트에 생성됨) — 추적 안 함
 last_session.yaml
 
