@@ -304,19 +304,43 @@ def ai_process(
                 f"프로필('{prof_name}')이 많이 다릅니다.\n프로필이 잘못 적용됐을 수 "
                 f"있으니 '게임 프로필' 탭에서 확인하세요."
             )
-        ui_queue.put({"system": True, "type": "profile_loaded",
-                      "name": prof_name, "warning": warning})
+        # 프로필 생성 결과 상태를 한 번에 산출해 UI(설정 탭)에 지속 표시되게 실어 보낸다.
+        #   ok      : 정상 생성/로드
+        #   aborted : 503 등으로 생성이 통째로 중단됨(빈 프로필 임시 사용)
+        #   partial : 일부 단계만 실패(나머지 정보는 있음)
+        aborted = profile.get("_generation_aborted")
         gen_errors = profile.get("_generation_errors") or []
-        if gen_errors:
+        if aborted:
+            status, detail = "aborted", str(aborted)
+        elif gen_errors:
             summary = " / ".join(gen_errors[:3])
             if len(gen_errors) > 3:
                 summary += f" 외 {len(gen_errors) - 3}건"
+            status, detail = "partial", f"{len(gen_errors)}단계 실패 — {summary}"
+        else:
+            status, detail = "ok", ""
+
+        ui_queue.put({"system": True, "type": "profile_loaded",
+                      "name": prof_name, "warning": warning,
+                      "status": status, "detail": detail})
+
+        # 채팅창에도 1회성 안내(흘러가지만 즉시 인지용). 설정 탭에는 위 status로 상시 표시됨.
+        if status == "aborted":
             ui_queue.put({
                 "name": "시스템",
                 "message": (
-                    f"⚠ 게임 프로필 일부 생성 실패 ({len(gen_errors)}단계). "
+                    f"⚠ 게임 프로필 생성이 서버 혼잡(503)으로 중단됐습니다. "
+                    f"모델이 일시적으로 과부하 상태입니다. 빈 프로필로 임시 진행하며, "
+                    f"잠시 후 '게임 프로필 재생성'으로 다시 시도하세요. — {detail}"
+                ),
+            })
+        elif status == "partial":
+            ui_queue.put({
+                "name": "시스템",
+                "message": (
+                    f"⚠ 게임 프로필 일부 생성 실패. "
                     f"서버 혼잡(503) 등 일시적 오류일 수 있습니다. "
-                    f"잠시 후 '게임 프로필 재생성'으로 다시 시도하세요. — {summary}"
+                    f"잠시 후 '게임 프로필 재생성'으로 다시 시도하세요. — {detail}"
                 ),
             })
 

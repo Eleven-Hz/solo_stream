@@ -198,6 +198,14 @@ def _build_mood_section(mood_hint: str | None) -> str:
     return f"[채팅창 분위기]\n{hint}\n\n"
 
 
+def _is_retryable_server_error(msg: str) -> bool:
+    """503/UNAVAILABLE/500/overloaded 등 서버 측 일시 혼잡 오류면 True.
+
+    429(quota)는 별도 'retry in Ns' 힌트 경로로 처리하므로 여기서 제외한다."""
+    low = msg.lower()
+    return any(m in low for m in ("503", "unavailable", "500", "overloaded", "internal error"))
+
+
 def is_transient_error(err: "Exception | str | None") -> bool:
     """503/UNAVAILABLE/429 등 서버 혼잡성 일시적 오류면 True.
 
@@ -274,10 +282,23 @@ class GeminiClient:
                 return fn()
             except Exception as e:
                 msg = str(e)
+                last = attempt == max_retries - 1
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    # quota 초과: 서버가 'retry in Ns' 힌트를 주면 그대로 따른다.
+                    if last:
+                        raise
                     m = re.search(r"retry in (\d+(?:\.\d+)?)s", msg)
                     wait = float(m.group(1)) if m else (2 ** attempt * 2)
                     logger.warning(f"429 quota 초과, {wait:.1f}초 후 재시도 ({attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                elif _is_retryable_server_error(msg):
+                    # 503/UNAVAILABLE/500/overloaded 등 일시적 서버 혼잡:
+                    # 채팅은 라운드 주기에 묶여 있어 길게 끌면 라운드가 밀린다.
+                    # 짧은 백오프(1s→2s)로 빠르게 1~2회만 재시도.
+                    if last:
+                        raise
+                    wait = min(2 ** attempt, 2)
+                    logger.warning(f"서버 혼잡(일시 오류), {wait}초 후 재시도 ({attempt+1}/{max_retries}): {msg[:120]}")
                     time.sleep(wait)
                 else:
                     raise

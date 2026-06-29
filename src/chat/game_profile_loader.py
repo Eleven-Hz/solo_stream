@@ -26,9 +26,9 @@ logger = logging.getLogger("solo_stream.game_profile")
 # 일시적(retryable) 오류로 간주할 신호. 이런 오류는 백오프 후 재시도한다.
 _RETRYABLE_MARKERS = ("503", "unavailable", "429", "resource_exhausted",
                       "rate limit", "overloaded", "deadline", "500", "internal")
-_MAX_RETRIES = 5          # 각 단계 최대 시도 횟수(첫 시도 포함)
-_RETRY_BASE_DELAY = 4.0   # 지수 백오프 기본 지연(초): 4 → 8 → 16 → 30(상한)
-_RETRY_MAX_DELAY = 30.0   # 백오프 지연 상한(초)
+_MAX_RETRIES = 3          # 각 단계 최대 시도 횟수(첫 시도 포함)
+_RETRY_BASE_DELAY = 2.0   # 지수 백오프 기본 지연(초): 2 → 4 → 8(상한)
+_RETRY_MAX_DELAY = 8.0    # 백오프 지연 상한(초)
 
 # 프로필은 런타임에 자동 생성·저장되므로 쓰기 가능한 사용자 데이터 폴더 기준.
 _PROFILE_DIR = paths.user_data_dir() / "game_profiles"
@@ -175,6 +175,18 @@ def _safe_filename(game_name: str) -> str:
     return name[:64]
 
 
+class ProfileGenerationAborted(Exception):
+    """단계 하나가 503 등 일시적 서버 혼잡으로 재시도까지 소진하고도 실패한 경우.
+
+    이런 상황은 모델 자체가 혼잡한 것이라 나머지 단계도 같은 이유로 실패할 가능성이 크다.
+    빈 껍데기 프로필을 저장하지 않도록 생성 전체를 중단시키는 신호로 쓴다."""
+
+    def __init__(self, step: str, cause: Exception):
+        self.step = step
+        self.cause = cause
+        super().__init__(f"{step}: {cause}")
+
+
 def _is_retryable(err: Exception) -> bool:
     """503/429 등 일시적 오류면 True (재시도 대상)."""
     msg = str(err).lower()
@@ -246,7 +258,18 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None) -> 
 
     model = (config or {}).get("ai", {}).get("profile_model", _DEFAULT_PROFILE_MODEL)
     logger.info(f"게임 프로필 없음. 멀티턴 검색으로 자동 생성 중: {game_name} (모델: {model})")
-    profile = _generate_profile(game_name, ai_client, model)
+    try:
+        profile = _generate_profile(game_name, ai_client, model)
+    except ProfileGenerationAborted as e:
+        # 모델 혼잡(503 등)으로 중단됨. 빈 껍데기를 저장하면 다음 실행에 그게 로드돼
+        # 재생성 기회를 영영 잃으므로 저장하지 않고, UI가 알림을 띄울 수 있게 표시만 한다.
+        logger.error(
+            f"게임 프로필 생성 중단 ({e.step}) — 모델({model}) 혼잡(503). "
+            f"저장하지 않음, 잠시 후 다시 시도 필요."
+        )
+        result = _empty_profile(game_name)
+        result["_generation_aborted"] = str(e)
+        return result
 
     # 생성 중 발생한 단계 오류는 UI 표시용이라 디스크에는 저장하지 않는다.
     # (오류가 박제되면 다음 실행 때 파일이 그대로 로드돼 재생성 기회를 놓친다)
@@ -276,8 +299,13 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
     errors: list[str] = []
 
     def _record_error(step: str, e: Exception):
-        retryable = " (재시도 후에도 실패)" if _is_retryable(e) else ""
-        logger.error(f"  {step} 실패{retryable}: {e}")
+        # 503 등 일시적 서버 혼잡으로 재시도까지 소진하고도 실패한 경우:
+        # 모델 자체가 혼잡한 것이라 나머지 단계도 같은 이유로 실패할 공산이 크다.
+        # 빈 껍데기 프로필을 만들지 않도록 생성 전체를 즉시 중단한다.
+        if _is_retryable(e):
+            logger.error(f"  {step} 실패 (재시도 후에도 실패) — 모델 혼잡으로 생성 중단: {e}")
+            raise ProfileGenerationAborted(step, e)
+        logger.error(f"  {step} 실패: {e}")
         errors.append(f"{step}: {e}")
 
     # ── 1단계: 기본 정보 ────────────────────────────────────────────────────

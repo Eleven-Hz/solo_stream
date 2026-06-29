@@ -1962,7 +1962,9 @@ class SettingsPanel(QWidget):
             logger.info(f"기존 프로필 삭제: {profile_path.name}")
         self._settings_queue.put({"game_name": game_name})
         paths.save_last_session(game_name=game_name)
+        # 직전 실패(빨강) 상태가 남지 않도록 진행 중(주황)으로 초기화.
         self._profile_status.setText(f"재생성 중: {game_name}...")
+        self._profile_status.setStyleSheet("color: #f4b400; font-size: 12px;")
 
     def _apply_vision_provider(self):
         provider = self._provider_combo.currentText()
@@ -2354,15 +2356,44 @@ class SettingsPanel(QWidget):
                 self._tabs.setCurrentIndex(i)
                 return
 
-    def set_profile_name(self, name: str):
-        self._profile_status.setText(f"현재 프로필: {name}")
+    def set_profile_name(self, name: str, status: str = "ok", detail: str = ""):
+        """프로필 로드/생성 결과를 설정 탭과 시작 탭 ③에 지속 표시.
+
+        status: "ok"(정상) | "aborted"(503 등으로 생성 중단) | "partial"(일부 단계 실패).
+        aborted/partial이면 색상과 안내문으로 상시 보여 사용자가 재생성을 판단할 수 있게 한다.
+        """
+        GREEN, AMBER, RED = "#6BCB77", "#f4b400", "#ff6b6b"
+        if status == "aborted":
+            color = RED
+            settings_text = (
+                f"현재 프로필: {name} (임시·빈 프로필)\n"
+                f"⚠ 서버 혼잡(503)으로 생성 중단됨. 아래 '재생성'으로 다시 시도하세요.\n{detail}"
+            )
+            start_text = f"⚠ 생성 중단(503): {name}\n잠시 후 재생성 필요"
+            dot_text, dot_color = "⚠ 생성 실패", RED
+        elif status == "partial":
+            color = AMBER
+            settings_text = (
+                f"현재 프로필: {name} (일부 정보 누락)\n"
+                f"⚠ 일부 단계 생성 실패. 필요 시 '재생성'으로 보완하세요.\n{detail}"
+            )
+            start_text = f"⚠ 일부 실패: {name}\n필요 시 재생성"
+            dot_text, dot_color = "⚠ 일부 실패", AMBER
+        else:
+            color = GREEN
+            settings_text = f"현재 프로필: {name}"
+            start_text = f"현재 프로필: {name}"
+            dot_text, dot_color = "✓ 생성됨", GREEN
+
+        self._profile_status.setText(settings_text)
+        self._profile_status.setStyleSheet(f"color: {color}; font-size: 12px;")
         # 시작 탭 ③ 상태도 갱신 (프로필 로드 완료 통지로 들어옴)
         if getattr(self, "_start_profile_status", None) is not None:
-            self._start_profile_status.setText(f"현재 프로필: {name}")
-            self._start_profile_status.setStyleSheet("color: #6BCB77; font-size: 12px;")
+            self._start_profile_status.setText(start_text)
+            self._start_profile_status.setStyleSheet(f"color: {color}; font-size: 12px;")
         if getattr(self, "_start_profile_status_dot", None) is not None:
-            self._start_profile_status_dot.setText("✓ 생성됨")
-            self._start_profile_status_dot.setStyleSheet("color: #6BCB77; font-size: 12px;")
+            self._start_profile_status_dot.setText(dot_text)
+            self._start_profile_status_dot.setStyleSheet(f"color: {dot_color}; font-size: 12px;")
         # 콤보박스에서 해당 프로필 선택 (있으면)
         for i in range(self._profile_combo.count()):
             if self._profile_combo.itemText(i) == name or self._profile_combo.itemData(i) == name:
@@ -2545,7 +2576,11 @@ class ChatOverlay(QWidget):
                     if "system" in chat:
                         # 시스템 메시지 (프로필 로드 완료 등)
                         if chat.get("type") == "profile_loaded":
-                            self._settings_panel.set_profile_name(chat["name"])
+                            self._settings_panel.set_profile_name(
+                                chat["name"],
+                                status=chat.get("status", "ok"),
+                                detail=chat.get("detail", ""),
+                            )
                             # 캡처 창↔프로필 불일치 경고는 채팅창이 아니라
                             # 상단 타이틀바 ⚠ 아이콘으로 표시(없으면 자동 해제).
                             self._titlebar.set_warning(chat.get("warning"))
