@@ -410,6 +410,8 @@ class SettingsPanel(QWidget):
         self._onboarding = onboarding
         # STT 인라인 표시 토글 변경을 ChatOverlay로 알리는 콜백(런타임 즉시 반영).
         self.on_show_stt_changed = None
+        # 채팅 기록 표시 개수(max_messages) 변경을 ChatOverlay로 알리는 콜백.
+        self.on_max_messages_changed = None
         self._excludes: list[str] = list(config.get("ui", {}).get("window_excludes", []))
         # 가시성: 패널 전체에 기준 폰트를 키워 둔다. 개별 위젯의 인라인 font-size가
         # 이를 덮어쓰는 경우가 많아, 인라인 px 값들도 한 단계씩 상향했다.
@@ -1242,6 +1244,18 @@ class SettingsPanel(QWidget):
         if callable(self.on_show_stt_changed):
             self.on_show_stt_changed(bool(checked))
 
+    def _save_max_messages(self, value: int):
+        """채팅 기록 표시 개수 저장(ui.max_messages) + 오버레이 즉시 반영."""
+        value = int(value)
+        try:
+            paths.update_user_config("ui", {"max_messages": value})
+            self._config.setdefault("ui", {})["max_messages"] = value
+        except Exception as e:
+            logger.error(f"max_messages 저장 실패: {e}")
+        # 런타임 즉시 반영(재시작 불필요).
+        if callable(self.on_max_messages_changed):
+            self.on_max_messages_changed(value)
+
     def set_show_stt_checked(self, checked: bool):
         """우클릭 메뉴에서 토글했을 때 패널 체크박스를 맞춰주기 위한 동기화용.
         시그널 재발화로 무한 루프가 나지 않도록 blockSignals로 감싼다."""
@@ -1630,6 +1644,29 @@ class SettingsPanel(QWidget):
         sh_hint.setStyleSheet("color: #666; font-size: 11px;")
         sh_hint.setWordWrap(True)
         layout.addWidget(sh_hint)
+
+        # 채팅 기록 표시 개수(ui.max_messages). 봇 메시지+STT 인라인이 한 줄씩
+        # 공유하므로 STT '항상 보기'를 켜면 실제 대화 보존량이 그만큼 줄어든다.
+        mm_row = QHBoxLayout()
+        mm_label = QLabel("채팅 기록 표시 개수")
+        mm_label.setStyleSheet("color: #ddd; font-size: 13px;")
+        mm_row.addWidget(mm_label)
+        self._max_messages_spin = QSpinBox()
+        self._max_messages_spin.setRange(50, 500)
+        self._max_messages_spin.setSingleStep(10)
+        self._max_messages_spin.setValue(
+            int((self._config.get("ui") or {}).get("max_messages", 150))
+        )
+        self._max_messages_spin.valueChanged.connect(self._save_max_messages)
+        mm_row.addWidget(self._max_messages_spin)
+        mm_row.addStretch(1)
+        layout.addLayout(mm_row)
+
+        mm_hint = QLabel("채팅창에 남길 최대 줄 수. 초과하면 오래된 줄부터 사라집니다.\n"
+                         "과거 대화가 너무 빨리 사라지면 값을 올리세요(STT 인라인도 함께 차지).")
+        mm_hint.setStyleSheet("color: #666; font-size: 11px;")
+        mm_hint.setWordWrap(True)
+        layout.addWidget(mm_hint)
 
     # ── 입력 장치 콤보 ──────────────────────────────────────────────────────
 
@@ -2516,6 +2553,7 @@ class ChatOverlay(QWidget):
         self._settings_panel.setStyleSheet("background: transparent;")
         # STT 인라인 표시 토글을 설정 패널 → 오버레이로 즉시 반영하는 콜백.
         self._settings_panel.on_show_stt_changed = self.set_show_stt
+        self._settings_panel.on_max_messages_changed = self.set_max_messages
 
         self._stack.addWidget(chat_page)       # index 0
         self._stack.addWidget(self._settings_panel)  # index 1
@@ -2618,7 +2656,7 @@ class ChatOverlay(QWidget):
         self._list.addItem(item)
         self._list.setItemWidget(item, label)
 
-        max_msgs = self._config.get("max_messages", 50)
+        max_msgs = self._config.get("max_messages", 150)
         while self._list.count() > max_msgs:
             self._list.takeItem(0)
 
@@ -2654,7 +2692,7 @@ class ChatOverlay(QWidget):
         self._list.addItem(item)
         self._list.setItemWidget(item, label)
 
-        max_msgs = self._config.get("max_messages", 50)
+        max_msgs = self._config.get("max_messages", 150)
         while self._list.count() > max_msgs:
             self._list.takeItem(0)
 
@@ -2663,6 +2701,12 @@ class ChatOverlay(QWidget):
     def set_show_stt(self, show: bool):
         """STT 인라인 표시 on/off (설정 패널·우클릭 메뉴에서 호출)."""
         self._show_stt = bool(show)
+
+    def set_max_messages(self, value: int):
+        """채팅 기록 표시 개수 즉시 반영(재시작 불필요). 현재 리스트도 새 한도로 트리밍."""
+        self._config["max_messages"] = int(value)
+        while self._list.count() > int(value):
+            self._list.takeItem(0)
 
     # ── 드래그 & 리사이즈 ───────────────────────────────────────────────────
 
