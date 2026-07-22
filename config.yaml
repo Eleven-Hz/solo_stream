@@ -75,3 +75,12 @@ stt:
   normalize_max_gain: 20.0
 logging:
   save_to_file: true
+
+# 채팅 외부 출력. solo_stream 의 채팅을 외부 소비자(예: project_ns AI 스트리머)에게
+# WebSocket 으로 내보낸다. 기본 비활성이며, 켜도 오버레이 동작에는 영향이 없다
+# (부가 출력이고 전송 실패는 조용히 무시한다).
+export:
+  websocket:
+    enabled: false       # 명시적으로 켜야 동작. 끄면 서버를 아예 띄우지 않는다.
+    host: 127.0.0.1
+    port: 8765

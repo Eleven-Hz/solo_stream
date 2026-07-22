@@ -263,7 +263,12 @@ def ai_process(
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
     from src.chat.emotion import EmotionState, update_emotions
     from src.chat.hype import compute_hype, build_hype_profile
+    from src.export.websocket import start_broadcaster
     from src.utils.logger import get_chat_logger
+
+    # 채팅 외부 출력(WS). 기본 비활성 — config 의 export.websocket.enabled 로 켠다.
+    # schedule_chats 가 이 브로드캐스터를 통해 외부 소비자(project_ns)에게도 채팅을 보낸다.
+    start_broadcaster(config)
 
     client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
     chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)

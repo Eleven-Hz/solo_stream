@@ -55,6 +55,10 @@ hiddenimports += [
     "google.genai.types",
     # multiprocessing spawn 시 자식이 import 하는 우리 패키지 진입 모듈
     "src.main",
+    # export.websocket 은 websockets 를 함수 안에서 지연 import 한다(기본 off라
+    # 평소엔 로드 안 됨). 정적 분석이 못 잡으므로 명시한다 — 프로즌 빌드에서도
+    # export.websocket.enabled=true 로 켜면 동작하도록.
+    "websockets",
 ]
 
 a = Analysis(

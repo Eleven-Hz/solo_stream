@@ -7,6 +7,8 @@ import random
 import time
 from multiprocessing import Queue
 
+from src.export.websocket import broadcast
+
 logger = logging.getLogger("solo_stream.orchestrator")
 
 _FREQUENCY_CHANCE = {
@@ -60,4 +62,7 @@ def schedule_chats(
         delay = random.uniform(delay_min, delay_max)
         time.sleep(delay)
         ui_queue.put(chat)
+        # 외부 소비자(project_ns 등)에게도 같은 채팅을 내보낸다. 기본 비활성이며
+        # 실패는 삼켜서 오버레이 흐름을 막지 않는다 (src/export/websocket.py).
+        broadcast(chat)
         logger.debug(f"[채팅 전달] {name}: {chat.get('message', '')}")
