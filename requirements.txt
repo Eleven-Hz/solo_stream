@@ -13,3 +13,5 @@ silero-vad>=5.1
 sounddevice>=0.4.6
 soundfile>=0.12.1
 openai>=2.0.0  # STT provider=openai (gpt-4o-transcribe 등)
+# 채팅 외부 출력 (export.websocket.enabled=true 일 때만 사용)
+websockets>=12.0
