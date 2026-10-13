@@ -267,3 +267,18 @@ def create_transcriber(
         normalize_percentile=normalize_percentile,
         normalize_max_gain=normalize_max_gain,
     )
+
+
+def check_openai_key(api_key: str) -> tuple[bool, str]:
+    """OpenAI 키가 동작하는지 모델 목록 조회로 확인한다(과금 없음). (성공 여부, 안내 문구)."""
+    if not api_key:
+        return False, "키가 없습니다"
+    try:
+        from openai import OpenAI
+        OpenAI(api_key=api_key).models.list()
+        return True, "연결됨"
+    except Exception as e:
+        msg = str(e)
+        if "401" in msg or "invalid_api_key" in msg or "Incorrect API key" in msg:
+            return False, "키가 올바르지 않습니다"
+        return False, msg[:120]

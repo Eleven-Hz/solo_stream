@@ -34,6 +34,7 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
     # ── OpenAI (STT transcribe) ─────────────────────────────
+    "gpt-transcribe": {"audio_per_min": 0.0045},
     "gpt-4o-transcribe": {"input": 2.50, "output": 10.0, "audio_per_min": 0.006},
     "gpt-4o-mini-transcribe": {"input": 1.25, "output": 5.0, "audio_per_min": 0.003},
     "whisper-1": {"audio_per_min": 0.006},

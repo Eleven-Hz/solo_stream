@@ -22,16 +22,22 @@ chat:
   delay_max: 8.0
   persona_dir: personas
 ui:
-  opacity: 0.85
+  # 채팅창 배경 투명도(0~100). 100 = 배경 없이 글자만(외곽 그림자). 오버레이 하단 슬라이더로 조절.
+  # (옛 opacity 키는 더 이상 쓰지 않는다 — 없으면 opacity 에서 환산)
+  transparency: 15
+  # 오래된 메시지를 흐리게 해 새 채팅이 먼저 보이게 한다.
+  fade_old: true
+  # 채팅창을 화면 캡처(Vision·녹화 프로그램)에서 제외. 봇이 자기 채팅을 화면에서 읽는 것을 막는다.
+  exclude_from_capture: true
   # 채팅창에 보관/표시할 최대 줄 수(봇 메시지+STT 인라인 공유). 초과 시 오래된 줄부터 삭제.
-  # 설정 '음성' 탭 부가기능에서 50~500 범위로 조절 가능.
+  # 설정 '오버레이' 페이지에서 50~500 범위로 조절 가능.
   max_messages: 150
   font_size: 14
   # STT 받아쓰기를 채팅창에 회색 인라인으로 항상 표시(불안정한 STT 확인용).
-  # 설정 '음성' 탭 또는 채팅창 우클릭 메뉴로 토글.
+  # 설정 '오버레이' 페이지 또는 채팅창 우클릭 메뉴로 토글.
   show_stt_history: false
-  width: 450
-  height: 875
+  width: 380
+  height: 640
   window_excludes:
   - '%Discord%'
   - '%NVIDIA%'

@@ -1,48 +1,55 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-05-24 | Updated: 2026-05-24 -->
+<!-- Generated: 2026-05-24 | Updated: 2026-10-14 -->
 
 # ui
 
 ## Purpose
-PyQt6 기반 투명 오버레이 채팅창 + 설정 패널. Frameless / Always-on-top / Tool window 플래그로 게임 위에 떠 있으며, 드래그 이동·우하단 리사이즈·우클릭 컨텍스트 메뉴(투명도/지우기/종료)·시작·정지 토글·⚙ 설정 탭(게임/AI 모델/음성)을 제공한다.
+PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 Frameless / Always-on-top / Tool window 로 게임 위에 떠 있고, 상단바(LIVE·시작/일시정지·설정·닫기)와 하단바(투명도 슬라이더·[배경 있음|글자만]·클릭 통과)를 가진다. 설정은 왼쪽 메뉴(방송 준비/오버레이/음성 인식/AI 모델·키/게임·프로필/사용량)가 있는 별도 창이며 모든 항목이 바꾸는 즉시 자동 저장된다.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `overlay.py` | 전부 한 파일. `ChatOverlay`(메인 위젯, 드래그/리사이즈/페인트), `TitleBar`(시작·정지 토글 + ⚙/✕), `SettingsPanel`(3탭 QTabWidget: 게임/AI 모델/음성, 각 섹션은 `_build_section_*` 메서드로 분리). `_list_windows`로 win32gui enumeration + 제외 패턴 필터(`%foo%` 포함 / `foo%` 시작 / `%foo` 끝 / `foo` 완전 일치). `run_overlay(config, ui_queue, settings_queue)`가 진입점. |
-| `__init__.py` | 패키지 마커 |
+| `overlay.py` | `ChatOverlay`(채팅 목록·드래그/리사이즈·우클릭 메뉴·투명도/글자만/클릭 통과/캡처 제외) + `run_overlay(config, ui_queue, settings_queue, onboarding)` 진입점(전역 단축키 등록 포함). 설정 창이 호출하는 공개 메서드: `set_transparency`, `set_click_through`, `set_fade`, `set_show_stt`, `set_font_size`, `set_max_messages`, `set_capture_exclusion`, `toggle_chat`. |
+| `settings.py` | `SettingsWindow`. 페이지마다 `_build_page_*` 빌더. 저장은 `_save(section, values)`(config.local.yaml + 인메모리 config), 실행 중 반영은 `self._queue.put(...)`, 재시작 필요 항목은 `_need_restart("이유")` → 하단 바에 '재시작하면 적용' + 버튼. 모델 후보 목록(`_VISION_MODELS`/`_CHAT_MODELS`/`_STT_MODELS`/`_PROFILE_MODELS`)과 STT 실측 수치(`_STT_MEASURED`)도 여기. |
+| `theme.py` | 색 토큰(`ACCENT`, `SURFACE` …), 폰트(`Malgun Gothic`/`Consolas`), QPainter 선 아이콘(`icon(name)`), 설정 창 공용 QSS(`settings_qss()`), 재사용 위젯(`Switch`, `Segmented`, `LevelMeter`, `StatusBadge`, `Chip`, `Card`, `row_box`, `combo`). |
+| `winapi.py` | ctypes Windows API: `set_exclude_from_capture`(WDA_EXCLUDEFROMCAPTURE), `set_click_through`(WS_EX_TRANSPARENT 토글), `remove_dwm_border`(Win11 테두리 제거), `GlobalHotkeys`(RegisterHotKey + 네이티브 이벤트 필터). 실패해도 예외 없이 False. |
+| `workers.py` | QThread 워커: `MicLevelWorker`(입력 레벨), `STTTestWorker`(4초 녹음→받아쓰기), `KeyCheckWorker`(키 연결 확인, 과금 없음), `CapturePreviewWorker`(캡처 미리보기). `start_worker()` 로 실행. |
+| `helpers.py` | 순수 함수: `list_windows`(win32gui + 제외 패턴 `%foo%`/`foo%`/`%foo`/`foo`), `extract_game_name`, `profile_filename`, `parse_device`. |
 
 ## For AI Agents
 
 ### Working In This Directory
-- `overlay.py`는 한 파일에 ~1380줄로 크지만, **분리하지 말 것** — UI 프로세스는 자체 PyQt6 이벤트 루프이고, 위젯 간 시그널·슬롯이 `_settings_queue`로 떨어지는 흐름이 한 눈에 보여야 디버그가 쉽다.
-- 새 설정 항목 추가 절차:
-  1. `SettingsPanel._build_section_*` 메서드 안에서 위젯 생성 + 디스크 저장 핸들러 작성 (저장 패턴은 `_save_config_*` 참조 — yaml.safe_load → 수정 → yaml.dump).
-  2. `apply` 버튼에서 `self._settings_queue.put({...})` 로 브로드캐스트.
-  3. `src/main.py`의 해당 프로세스에서 `settings_queue.empty()` 루프에 elif 추가.
-- 채팅 메시지는 `_poll_queue`가 100ms 타이머로 `ui_queue`를 drain — `system` 키가 있으면 시스템 메시지(예: 프로필 로드 완료), 아니면 `{name, message}` 일반 채팅.
-- 한국어/이모지·이모티콘 폭 계산 때문에 `QListWidgetItem.setSizeHint(label.sizeHint())` 후 `setItemWidget` 패턴 사용 — wordwrap 라벨이 행 높이를 결정하게 함.
-- `_extract_game_name`은 `src/main.py`에도 동일 구현이 있다 (UI/AI 프로세스 격리). 한쪽 정규식 수정 시 다른 쪽도 같이 수정.
+- 새 설정 항목 추가: `settings.py` 의 해당 `_build_page_*` 에 위젯 + 저장 핸들러(`self._save(...)`). 실행 중 반영이 필요하면 `self._queue.put({...})` 후 `src/main.py` 받는 프로세스의 settings_queue 루프에 elif 추가. 오버레이 표시 옵션이면 `ChatOverlay` 에 `set_*` 메서드를 만들고 설정 창에서 호출.
+- **적용 버튼을 만들지 않는다** — 바꾸는 즉시 저장이 원칙. 예외: 비용이 드는 동작(게임 창 적용 → 프로필 생성, 프로필 다시 만들기, 받아쓰기 테스트, 키 저장)과 여러 줄 편집(화면 분석 프롬프트 대화상자)만 명시적 버튼.
+- SDK import 는 UI 에 두지 않는다 — 키 확인은 `src/ai/model_client.check_api_key`, `src/stt/transcriber.check_openai_key` 를 워커에서 호출.
+- 키 없이 Claude 모델을 고르면 AI 프로세스가 클라이언트를 못 만들고 죽으므로 `_on_ai_model` 이 거부·원복한다. 비슷한 '키 필요' 선택지를 추가하면 같은 가드를 둔다.
+- 클릭 통과는 Ctrl+Shift+O 가 유일한 해제 수단이다. 단축키 등록에 실패하면(`hotkeys_ok=False`) 클릭 통과를 켤 수 없게 막아 둔다 — 이 가드를 없애지 말 것.
+- 클릭 통과·캡처 제외는 Qt 창 플래그가 아니라 winapi 로 확장 스타일/디스플레이 속성만 바꾼다(Qt 플래그 변경은 네이티브 창을 다시 만들어 설정이 풀린다).
+- 채팅 메시지: `_poll_queue` 가 100ms 마다 `ui_queue` drain → `_handle_message`. `system` 키 = 프로필 로드 등, `stt_transcript` = 내 말(설정 켜졌을 때만), 그 외 `{name, message}` 채팅(`name == "시스템"` 이면 시스템 줄). 본문은 `html.escape` 후 RichText 라벨.
+- 줄 높이는 `QListWidgetItem.setSizeHint` + `lbl.heightForWidth` 로 정한다. 높이를 재기 전에 `ensurePolished()` 를 불러야 스타일시트 폰트가 반영돼 줄이 겹치지 않는다. 창 크기가 바뀌면 `_relayout_messages` 가 다시 잰다.
+- `extract_game_name`(helpers.py)은 `src/main.py::_extract_game_name` 과 동일 구현 — 한쪽 정규식을 고치면 다른 쪽도 같이.
 
 ### Testing Requirements
-- `tests/ui/test_ui.py` — 채팅 스크롤 동작 (fake 메시지 30개 feed).
-- `tests/ui/preview_settings.py` — 설정 패널 단독 띄우기.
-- `tests/ui/smoke_settings_tabs.py` — 탭 전환 스모크.
+- `tests/ui/smoke_settings_tabs.py` — 가짜 게임 화면 위에 오버레이를 띄워 투명도 단계·메시지 종류·캡처 제외와 설정 6페이지를 실제 화면 캡처 PNG 로 남긴다(API 호출 없음, 몇 초간 창이 뜬다). `QWidget.render()` 는 그래픽 효과·반투명 합성을 실제와 다르게 그려 쓰지 않는다.
+- `tests/ui/test_ui.py` — 가짜 메시지를 흘려 넣는 수동 확인용.
+- 최종 확인은 `run.bat` 로 실제 실행.
 
 ### Common Patterns
-- 모든 위젯에 인라인 stylesheet (다크 테마, `#1e1e2e`/`#1a1a25` 계열). 공용 스타일은 `_btn_style(bg, hover)` 헬퍼.
-- 색상 닉네임 매핑: `_name_color(name)` — 이름의 ord 합 % 팔레트 길이.
-- `WA_TranslucentBackground` + `paintEvent`에서 우하단 리사이즈 헤어라인 직접 그림.
+- 다크 톤 토큰은 `theme.py` 에서만 정의. 설정 창은 루트에 `settings_qss()` 한 번 + objectName 셀렉터(`#card`, `#lbl`, `#sub`, `#btn`, `#primary` …).
+- 아이콘은 이모지 대신 `theme.icon(name, color, size)`.
+- 투명도: `ui.transparency`(0~100, 100=글자만). 60 이상이면 줄마다 옅은 받침 + 그림자. 없으면 옛 `ui.opacity` 에서 환산(`transparency_from_config`).
 
 ## Dependencies
 
 ### Internal
-- `src/utils/config_loader` 의 config 구조를 그대로 받아 `SettingsPanel` 에 전달.
-- `_settings_queue` (= main의 `broadcast_queue`)로 모든 프로세스에 설정 변경 전파.
+- `src/utils/config_loader` 의 config 구조를 그대로 받아 `ChatOverlay` → `SettingsWindow` 에 전달.
+- `settings_queue` (= main 의 `broadcast_queue`)로 모든 프로세스에 설정 변경 전파.
+- `src/utils/paths` — `update_user_config`, `save_last_session`, `restart_app`, `user_data_dir`.
 
 ### External
 - `PyQt6` — QtCore/QtGui/QtWidgets
-- `PyYAML` — `_save_*` 핸들러에서 config.yaml in-place 갱신
+- `PyYAML` — 프로필 목록 이름 읽기
 - `pywin32` (`win32gui`) — 캡처 가능한 창 enumeration
+- `ctypes` (user32/dwmapi) — 캡처 제외·클릭 통과·전역 단축키
 
 <!-- MANUAL: -->

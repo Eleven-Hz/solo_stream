@@ -32,13 +32,13 @@
 
 ### Working In This Directory
 - 새 외부 SDK import는 **반드시** `src/ai/model_client.py` 또는 `src/stt/transcriber.py` 같은 단일 진입점에 격리한다 — 모델 deprecate 주기가 짧기 때문에 한 곳에서만 갈아끼울 수 있어야 한다.
-- `config.yaml` 스키마를 바꿀 때는 `src/main.py`(프로세스 부팅), `src/ui/overlay.py`의 `SettingsPanel`(UI 동기화), 해당 도메인 모듈을 모두 같이 수정한다.
+- `config.yaml` 스키마를 바꿀 때는 `src/main.py`(프로세스 부팅), `src/ui/settings.py`의 `SettingsWindow`(UI 동기화), 해당 도메인 모듈을 모두 같이 수정한다.
 - Windows 전용 의존성 (`pywin32`, `win32gui`) 사용 — 다른 OS 호환성을 가정하지 말 것.
 - 한국어 사용자 인터페이스/프롬프트가 기본 — 로그·UI·페르소나·프롬프트 모두 한국어 톤을 유지한다.
 
 ### Testing Requirements
 - 자동화된 pytest 스위트는 없다. `tests/<module>/run.py` 형식의 평가 러너를 직접 실행해 HTML/TXT 리포트를 생성하는 방식이다.
-- UI 변경은 `tests/ui/test_ui.py` 또는 `tests/ui/preview_settings.py`로 스모크 후 실제 `run.bat` 실행으로 확인.
+- UI 변경은 `tests/ui/smoke_settings_tabs.py`(화면 캡처 PNG)로 스모크 후 실제 `run.bat` 실행으로 확인.
 - API 비용이 드는 호출(Vision/Chat/STT)은 실제 키 + Free-tier 한도 안에서 수동 검증.
 
 ### Common Patterns
