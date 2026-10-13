@@ -19,7 +19,7 @@
 | `capture/` | mss 기반 화면 캡처 + SSIM 변화 감지 — see `capture/AGENTS.md` |
 | `chat/` | 페르소나/게임 프로필 로더 + 봇별 타이밍 오케스트레이터 — see `chat/AGENTS.md` |
 | `stt/` | silero-vad + Gemini Audio 실시간 음성 인식 파이프라인 — see `stt/AGENTS.md` |
-| `ui/` | PyQt6 투명 오버레이 + 설정 패널 (탭: 게임/AI 모델/음성) — see `ui/AGENTS.md` |
+| `ui/` | PyQt6 투명 오버레이 + 별도 설정 창 (방송 준비/오버레이/음성/AI·키/게임/사용량) — see `ui/AGENTS.md` |
 | `utils/` | `config_loader`, `logger` 공용 유틸 — see `utils/AGENTS.md` |
 
 ## For AI Agents
@@ -29,8 +29,8 @@
 - 새 프로세스 간 메시지를 추가할 때:
   1. `broadcast_queue`에 들어갈 설정 dict 키를 정한다 (예: `{"chat_active": True}`)
   2. 받는 쪽 프로세스(`capture_process` / `ai_process` / `stt_process`)의 `while not settings_queue.empty():` 블록에 elif 분기 추가
-  3. UI 쪽 `SettingsPanel`에서 `self._settings_queue.put(...)` 호출 추가
-- `_extract_game_name`은 `main.py`와 `ui/overlay.py` 두 곳에 중복 정의되어 있다 — 한쪽을 수정하면 다른 쪽도 같이 수정한다 (UI 프로세스와 AI 프로세스가 서로 import하지 않기 위함).
+  3. UI 쪽 `src/ui/settings.py`의 `SettingsWindow`에서 `self._queue.put(...)` 호출 추가
+- `_extract_game_name`은 `main.py`와 `ui/helpers.py`(`extract_game_name`) 두 곳에 중복 정의되어 있다 — 한쪽을 수정하면 다른 쪽도 같이 수정한다 (UI 프로세스와 AI 프로세스가 서로 import하지 않기 위함).
 
 ### Testing Requirements
 - 통합 실행: `run.bat` (= `python -m src.main`). 반드시 `.env.local`에 `GEMINI_API_KEY` 필요.

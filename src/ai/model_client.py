@@ -495,3 +495,29 @@ def create_chat_client(config: dict, gemini_api_key: str, claude_api_key: str | 
             raise ValueError("Claude chat을 사용하려면 CLAUDE_API_KEY가 필요합니다.")
         return ClaudeClient(api_key=claude_api_key, config=config)
     return GeminiClient(api_key=gemini_api_key, config=config)
+
+
+def check_api_key(provider: str, api_key: str) -> tuple[bool, str]:
+    """키가 실제로 동작하는지 가벼운 목록 조회로 확인한다(과금 없음). (성공 여부, 안내 문구).
+
+    설정 창의 '연결 확인' 버튼용. SDK import 를 이 파일에 가두기 위해 여기 둔다.
+    OpenAI 키 확인은 STT 쪽 진입점(src/stt/transcriber.check_openai_key)에 있다.
+    """
+    if not api_key:
+        return False, "키가 없습니다"
+    try:
+        if provider == "gemini":
+            from google import genai
+            client = genai.Client(api_key=api_key)
+            next(iter(client.models.list(config={"page_size": 1})), None)
+        elif provider == "claude":
+            import anthropic
+            anthropic.Anthropic(api_key=api_key).models.list(limit=1)
+        else:
+            return False, f"알 수 없는 provider: {provider}"
+        return True, "연결됨"
+    except Exception as e:
+        msg = str(e)
+        if "API_KEY_INVALID" in msg or "401" in msg or "authentication" in msg.lower():
+            return False, "키가 올바르지 않습니다"
+        return False, msg[:120]

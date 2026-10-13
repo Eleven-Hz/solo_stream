@@ -20,11 +20,11 @@ if __name__ == "__main__":
 
     cfg = {
         "ui": {
-            "opacity": 0.85,
+            "transparency": 15,
             "max_messages": 50,
             "font_size": 14,
-            "width": 360,
-            "height": 500,
+            "width": 380,
+            "height": 560,
         }
     }
-    run_overlay(cfg, q)
+    run_overlay(cfg, q, Queue())
