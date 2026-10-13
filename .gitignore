@@ -8,10 +8,6 @@ build/
 dist/
 __pycache__/*
 *.pyc
-*/__init__.py
-*/*/__init__.py
-# src/__init__.py 는 앱 버전(__version__) 단일 소스라 추적해야 한다.
-!src/__init__.py
 
 # Environment
 .env.local
