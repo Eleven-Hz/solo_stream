@@ -1303,6 +1303,13 @@ class SettingsWindow(QWidget):
         weight.changed.connect(lambda v: self._save_stt({"default_weight": v}, runtime=True))
         card.add_row(title="봇 반응 강도", sub="개별 설정이 없는 봇이 내 말에 얼마나 받아칠지", right=weight)
 
+        instant = T.Switch(bool(stt.get("instant_reply", True)))
+        instant.setAccessibleName("말하면 바로 반응")
+        instant.toggled.connect(lambda on: self._save_stt({"instant_reply": bool(on)}, runtime=True))
+        card.add_row(title="말하면 바로 반응",
+                     sub="다음 화면 분석을 기다리지 않고 몇 초 안에 봇이 받아칩니다. 채팅 호출이 늘어 채팅 비용이 최대 2배쯤 됩니다.",
+                     right=instant)
+
         w, h = T.row_box(spacing=8)
         self._adv_btn = QPushButton("  고급 설정")
         self._adv_btn.setObjectName("link")
@@ -1395,6 +1402,7 @@ class SettingsWindow(QWidget):
                 "lookback_seconds": float(stt.get("lookback_seconds", 20.0)),
                 "min_transcript_chars": int(stt.get("min_transcript_chars", 2)),
                 "default_weight": str(stt.get("default_weight", "high")),
+                "instant_reply": bool(stt.get("instant_reply", True)),
             }})
         if restart:
             self._need_restart("음성 인식")

@@ -36,6 +36,10 @@ chat:
   topic_window_rounds: 6
   # 부분 문자열로 잡는 클리셰 키워드(한 글자 단어는 다른 단어 속에서도 잡히니 주의).
   cliche_keywords: [렉, 버벅, 프레임, 끊기, 끊김, 서버]
+  # 대화 흐름(src/chat/flow.py): 직전 라운드 발언자 중 carry_over 명은 다음 라운드에도 남기고,
+  # reply_chance 확률로 1명이 앞 채팅을 받아친다(봇의 react_to_others/react_chance 적용).
+  carry_over: 1
+  reply_chance: 0.7
 ui:
   # 채팅창 배경 투명도(0~100). 100 = 배경 없이 글자만(외곽 그림자). 오버레이 하단 슬라이더로 조절.
   # (옛 opacity 키는 더 이상 쓰지 않는다 — 없으면 opacity 에서 환산)
@@ -91,6 +95,14 @@ stt:
   language: ko
   transcribe_prompt: 사용자가 게임을 플레이하며 한국어로 혼잣말/감상을 말합니다. 짧은 감탄사도 그대로 옮겨 적으세요.
   lookback_seconds: 20.0
+  # 말하면 바로 반응: 받아쓰기가 오면 다음 화면 분석을 기다리지 않고 직전 화면으로 채팅만 1회.
+  # 말이 끝나고 debounce 초 뒤(계속 말하면 첫 발화 후 max_wait 초 뒤), 직전 라운드 시작부터 min_gap 초 이상,
+  # 다음 화면 분석이 3초 넘게 남았을 때만. 참여 봇은 instant_batch 명. 채팅 호출이 최대 2배쯤 는다.
+  instant_reply: true
+  instant_debounce_seconds: 1.5
+  instant_max_wait_seconds: 4.0
+  instant_min_gap_seconds: 5.0
+  instant_batch: 3
   min_transcript_chars: 2
   default_weight: high
   input_gain: 1.0

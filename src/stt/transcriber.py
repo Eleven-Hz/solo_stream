@@ -99,6 +99,10 @@ class GeminiTranscriber:
             f"max_gain={normalize_max_gain}"
         )
 
+    def set_prompt(self, prompt: str | None) -> None:
+        """도메인 힌트 교체(게임 프로필이 바뀌면 고유명사 목록이 달라진다)."""
+        self._extra_prompt = prompt or ""
+
     def _build_prompt(self) -> str:
         context_hint = self._extra_prompt.strip()
         return _TRANSCRIBE_PROMPT_TEMPLATE.format(
@@ -196,6 +200,10 @@ class OpenAITranscriber:
             f"normalize_level={normalize_target_level} p{normalize_percentile:.0f} "
             f"max_gain={normalize_max_gain}"
         )
+
+    def set_prompt(self, prompt: str | None) -> None:
+        """도메인 힌트 교체(게임 프로필이 바뀌면 고유명사 목록이 달라진다)."""
+        self._prompt = (prompt or _OPENAI_DEFAULT_PROMPT).strip()
 
     def transcribe(self, pcm: np.ndarray, sample_rate: int = 16000) -> tuple[str, float]:
         pcm = normalize_pcm(

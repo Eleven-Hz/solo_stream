@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 
 from common import OUTPUT_DIR, ChatRound, api_keys, chat_metrics, config_with, write_transcript
@@ -42,15 +43,16 @@ def main():
         client = create_chat_client(config_with(config, "chat", spec), **keys)
         chat = ChatRound(config, pool)
         rounds = []
-        for r in src["rounds"]:
+        for i, r in enumerate(src["rounds"]):
             res = chat.run(client, vision=r["vision"], speech=r["speech"], batch_names=r["batch"],
-                           profile_ctx=profile_ctx)
-            rounds.append({"t": r["t"], **res})
+                           profile_ctx=profile_ctx, speech_round=r.get("speech_round", False),
+                           rng=random.Random(meta.get("seed", 1) * 1000 + i))
+            rounds.append({"t": r["t"], "speech": r["speech"], **res})
             print(f"{spec} [{int(r['t'])//60:02d}:{int(r['t'])%60:02d}] {len(res['chats'])}개 {res['sec']}s "
                   f"in={res['in_tokens']} out={res['out_tokens']}{' 오류' if res['error'] else ''}", flush=True)
         p = pricing.get_pricing(spec.partition(":")[2])
         summary[spec] = chat_metrics(rounds, (p["input"], p["output"]) if p and "input" in p else None,
-                                     meta["interval"])
+                                     meta["interval"], [b["name"] for b in pool])
         columns[spec] = rounds
 
     tag = args.tag or Path(args.replay).stem + "_compare"

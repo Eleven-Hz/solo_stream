@@ -105,7 +105,7 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 
 {roster_section}[봇 목록 - {bot_count}명]
 {bots_info}
-{topic_section}
+{topic_section}{round_notes}
 ===규칙===
 - 각 봇은 반드시 1개의 메시지만 생성. 2개 이상 금지.
 - 메시지는 15자 이내. 실제 채팅처럼 짧게.
@@ -113,12 +113,13 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 - 게임 정보를 아는 시청자처럼: 게임 용어, 캐릭터명, 스킬명을 자연스럽게 사용.
 - HP/SP 수치는 직접 읽지 말고 "피 빵빵하네", "기력 다 썼다" 처럼 표현.
 - 봇마다 말투가 확실히 달라야 함. 같은 내용 다르게 말하기 금지.
-- **소재를 분산한다.** 한 라운드에서 같은 소재(같은 단어·같은 화제)는 최대 2명까지만. 나머지 봇은 화면의 다른 요소, 스트리머 발화, 다른 봇의 말, 자기 페르소나 관심사 등 서로 다른 소재로 말한다.
+- **소재를 분산한다.** 한 라운드에서 같은 소재(같은 단어·같은 화제)는 최대 2명까지만(스트리머 발화에 반응하는 건 예외). 나머지 봇은 화면의 다른 요소, 스트리머 발화, 다른 봇의 말, 자기 페르소나 관심사 등 서로 다른 소재로 말한다.
 - 렉·버그·끊김·프레임 같은 기술 문제는 [현재 게임 상황]에 명시됐을 때만 언급한다. 화면 정보가 없거나 채팅이 뜸하다고 렉을 추측하지 않는다.
 - **[최근 채팅 기록]이나 "내 최근 발언"에 이미 나온 문장을 그대로(또는 거의 똑같이) 다시 치지 않는다.** 같은 봇이 직전에 한 말을 복붙하지 말고, 상황이 그대로면 차라리 침묵(결과에서 제외)한다. 새로 할 말이 없으면 그 봇은 빼라.
 - 봇별 [자기 기억] 범위만큼만 자기 과거 발언을 참고한다. 범위 밖 발언은 기억 못 함.
 - 봇별 [타인 반응] 설정이 false이면 다른 봇 발언에 직접 반응하거나 닉네임 언급 금지.
-- 봇별 [타인 반응 빈도]가 있으면 그 확률로만 타인 발언에 반응한다 (예: 0.3 → 30% 확률).
+- 다른 봇에게 받아치는 봇은 [이번 라운드 대화 과제]에 지정돼 있다. 그 외 봇은 [타인 반응 빈도]가 높을 때만 가끔 받아친다.
+- 봇별 "말버릇 금지" 단어는 그 봇이 최근 계속 쓴 말이다. 이번엔 그 단어를 쓰지 말고 다른 얘기를 한다.
 - 봇이 다른 봇에게 받아칠 때는 그 봇의 닉네임을 직접 부르며 말할 수 있다 ([타인 반응]이 true인 경우에 한함).
 - 봇별 [호명됨] true인 봇은 스트리머가 자기 이름을 부른 것이다. 반드시 응답하며, 일반 게임 채팅이 아니라 **스트리머가 한 말 그 자체에 직접 반응**한다 — 인사("안녕")를 받으면 인사로 받아치고, 질문을 받으면 답하고, 의견을 받으면 그에 대해 말한다. 페르소나 말투는 유지하되 발화 내용을 무시하고 엉뚱한 채팅을 치지 않는다.
 - **[호명됨] true인 봇은 자기 직전 발언(내 최근 발언)을 그대로 반복하지 않는다.** HP/SP·화면 상황 코멘트로 때우지 말고, 호명한 발화의 내용에 맞춰 새로운 말을 한다. (예: "패드가 편한가요?"라고 물으면 "HP 여유롭네요"가 아니라 "패드 추천드려요" 같이 질문에 답)
@@ -175,6 +176,10 @@ def _build_bots_info(
         known = [str(x) for x in (b.get("known_streamers") or []) if x]
         if known:
             line += f" / 아는 다른 스트리머: {', '.join(known)} (다른 방송 얘기할 때 이 이름을 씀)"
+
+        avoid = [str(w) for w in (b.get("avoid_words") or []) if w]
+        if avoid:
+            line += f" / 말버릇 금지: {', '.join(avoid)}"
 
         if name in mentioned_set:
             line += " / [호명됨] true"
@@ -273,8 +278,11 @@ def _build_chat_prompt(
     mood_hint: str | None = None,
     roster: list[dict] | None = None,
     avoid_topics: list[str] | None = None,
+    round_notes: str | None = None,
 ) -> str:
-    """모든 provider 가 같은 채팅 프롬프트를 쓰도록 한 곳에서 만든다."""
+    """모든 provider 가 같은 채팅 프롬프트를 쓰도록 한 곳에서 만든다.
+
+    round_notes: 이번 라운드 대화 과제(누가 무엇에 반응할지) — src/chat/flow.build_round_notes."""
     bots_info = _build_bots_info(bots, chat_history, default_speech_weight, mentioned_names)
     history_text = (
         "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
@@ -290,6 +298,7 @@ def _build_chat_prompt(
         bot_count=len(bots),
         roster_section=_build_roster_section(roster, bots),
         topic_section=_build_topic_section(avoid_topics),
+        round_notes=round_notes or "",
     )
 
 
@@ -435,10 +444,11 @@ class GeminiClient:
         mood_hint: str | None = None,
         roster: list[dict] | None = None,
         avoid_topics: list[str] | None = None,
+        round_notes: str | None = None,
     ) -> list[dict]:
         prompt = _build_chat_prompt(
             game_context, bots, chat_history, game_profile_context, user_speech,
-            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics,
+            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics, round_notes,
         )
         raw = ""
         parsed: list[dict] = []
@@ -535,10 +545,11 @@ class ClaudeClient:
         mood_hint: str | None = None,
         roster: list[dict] | None = None,
         avoid_topics: list[str] | None = None,
+        round_notes: str | None = None,
     ) -> list[dict]:
         prompt = _build_chat_prompt(
             game_context, bots, chat_history, game_profile_context, user_speech,
-            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics,
+            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics, round_notes,
         )
         raw = ""
         parsed: list[dict] = []
@@ -644,10 +655,11 @@ class OpenAIClient:
         mood_hint: str | None = None,
         roster: list[dict] | None = None,
         avoid_topics: list[str] | None = None,
+        round_notes: str | None = None,
     ) -> list[dict]:
         prompt = _build_chat_prompt(
             game_context, bots, chat_history, game_profile_context, user_speech,
-            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics,
+            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics, round_notes,
         )
         raw = ""
         parsed: list[dict] = []

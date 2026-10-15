@@ -10,7 +10,6 @@ settings_queue를 통해 AI/Capture Process에 전달한다.
 import logging
 import multiprocessing
 import multiprocessing.queues
-import random
 import sys
 import time
 import threading
@@ -353,12 +352,17 @@ def ai_process(
     # 소재(클리셰) 쏠림 억제 (KNOWN_ISSUES 4-1/4-2): 최근 라운드 과열 소재를 프롬프트로
     # 피하게 하고, 라운드 안에서 같은 소재를 쓰는 봇 수를 후처리로 제한한다.
     from src.chat.topic_guard import TopicTracker, limit_round_topics
+    from src.chat import flow
     chat_cfg = config.get("chat", {}) or {}
     topic_tracker = TopicTracker(
         window_rounds=int(chat_cfg.get("topic_window_rounds", 6)),
         cliche_keywords=chat_cfg.get("cliche_keywords"),
     )
     topic_round_max = int(chat_cfg.get("topic_round_max", 2))
+    # 대화 흐름(src/chat/flow.py): 직전 발언자 일부를 이어서 출석시키고, 1명은 앞 채팅을 받아친다.
+    carry_over = int(chat_cfg.get("carry_over", 1))
+    reply_chance = float(chat_cfg.get("reply_chance", 0.7))
+    bot_habits = flow.BotHabits()
 
     chat_log = get_chat_logger()
     # 세션 시작 시 게임 프로필을 chat_log 에 한 번 박아두고, 라운드 로그에서는 생략한다.
@@ -495,8 +499,36 @@ def ai_process(
     lookback_s = float(stt_cfg.get("lookback_seconds", 20.0))
     min_tx_chars = int(stt_cfg.get("min_transcript_chars", 1))
     default_weight = str(stt_cfg.get("default_weight", "medium")).lower()
-    # 누적 발화 버퍼: {"timestamp": float, "text": str, "duration": float}
+    # 누적 발화 버퍼: {"timestamp": float, "text": str, "duration": float, "recv": 도착 시각, "rounds": 사용 횟수}
     user_speech_buffer: list[dict] = []
+    # 발화 즉시 반응: 받아쓰기가 도착하면 다음 화면 분석을 기다리지 않고 직전 화면으로 채팅 라운드를
+    # 바로 돌린다(채팅 호출만, 화면 분석 없음). 주기 대기 때문에 말하고 10~20초 뒤에야 반응하던 문제.
+    instant_reply = bool(stt_cfg.get("instant_reply", True))
+    instant_debounce = float(stt_cfg.get("instant_debounce_seconds", 1.5))
+    instant_min_gap = float(stt_cfg.get("instant_min_gap_seconds", 5.0))
+    instant_max_wait = float(stt_cfg.get("instant_max_wait_seconds", 4.0))
+    instant_batch = int(stt_cfg.get("instant_batch", 3))
+    last_game_context = ""
+    last_vision_t = 0.0
+    last_round_start = 0.0
+    prev_batch_names: list[str] = []
+    last_round_chats: list[dict] = []
+    emotion_labels: dict = {}
+
+    def _speech_round_due(now: float) -> bool:
+        """새 발화가 있고(아직 안 쓴 것), 말이 끝난 지 debounce 가 지났고, 다음 화면 분석이 곧 오지 않으면 True."""
+        fresh = [e for e in user_speech_buffer if e.get("rounds", 0) == 0]
+        if not fresh:
+            return False
+        recv = [e.get("recv", e["timestamp"]) for e in fresh]
+        # 이어서 말하는 중일 수 있다 — 문장이 끝나길 잠깐 기다리되, 계속 말하면 max_wait 후엔 반응
+        if now - max(recv) < instant_debounce and now - min(recv) < instant_max_wait:
+            return False
+        # 직전 라운드 '시작'부터 min_gap — 화면 분석 라운드가 길어져도(분석+채팅 7~8초) 그 직후 반응할 틈을 남긴다
+        if now - last_round_start < instant_min_gap:
+            return False
+        # 화면 분석 라운드가 3초 안에 올 예정이면 그쪽에서 같이 반응한다
+        return now - last_vision_t < interval_s - 3.0
 
     while True:
         # 설정 변경 수신 (non-blocking)
@@ -557,6 +589,9 @@ def ai_process(
                 vision_context = build_vision_context(game_profile)
                 chat_history.clear()
                 topic_tracker.clear()
+                bot_habits.clear()
+                last_round_chats = []
+                last_game_context = ""
                 last_location = ""
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
                 _log_profile_header(profile_context, game_profile.get("name", "?"))
@@ -573,9 +608,11 @@ def ai_process(
                     min_tx_chars = int(rt["min_transcript_chars"])
                 if "default_weight" in rt:
                     default_weight = str(rt["default_weight"]).lower()
+                if "instant_reply" in rt:
+                    instant_reply = bool(rt["instant_reply"])
                 log.info(
                     f"STT 런타임 설정 갱신: lookback={lookback_s:.1f}s "
-                    f"min_chars={min_tx_chars} default_weight={default_weight}"
+                    f"min_chars={min_tx_chars} default_weight={default_weight} instant_reply={instant_reply}"
                 )
 
         if not chat_active:
@@ -594,34 +631,52 @@ def ai_process(
                 except Exception:
                     break
                 if ev.get("text") and len(ev["text"]) >= min_tx_chars:
+                    ev["recv"] = time.time()
                     user_speech_buffer.append(ev)
 
         # 1차 drain: 라운드 시작 전에 큐를 비워둠
         _drain_stt_queue()
 
         try:
-            image_bytes = image_queue.get(timeout=5)
+            try:
+                image_bytes = image_queue.get(timeout=0.5)
+            except multiprocessing.queues.Empty:
+                # 화면이 안 왔으면 새 발화로 즉시 반응할지 본다. 아니면 다음 루프.
+                _drain_stt_queue()
+                if not (stt_enabled and instant_reply and last_game_context
+                        and _speech_round_due(time.time())):
+                    raise
+                image_bytes = None
+            speech_round = image_bytes is None
+            last_round_start = time.time()
             round_num += 1
-            log.info(f"=== 라운드 #{round_num} Vision 분석 시작 ===")
-
-            vision_t0 = time.perf_counter()
-            game_context = client.analyze_screenshot(
-                image_bytes,
-                game_profile_context=vision_context,
-                previous_location=last_location,
-            )
-            vision_elapsed = time.perf_counter() - vision_t0
-            log.info(f"[게임 상황] {game_context}")
-
-            # 위치 / 이벤트 추출 (이벤트는 감정 신호원 — 없으면 빈 문자열)
             event_text = ""
-            for line in game_context.splitlines():
-                if line.startswith("위치:"):
-                    loc = line[len("위치:"):].strip()
-                    if loc and loc != "알 수 없음":
-                        last_location = loc
-                elif line.startswith("이벤트:"):
-                    event_text = line[len("이벤트:"):].strip()
+            if speech_round:
+                log.info(f"=== 라운드 #{round_num} 발화 즉시 반응 (직전 화면 재사용) ===")
+                game_context = last_game_context
+                vision_elapsed = 0.0
+            else:
+                log.info(f"=== 라운드 #{round_num} Vision 분석 시작 ===")
+                last_vision_t = time.time()
+
+                vision_t0 = time.perf_counter()
+                game_context = client.analyze_screenshot(
+                    image_bytes,
+                    game_profile_context=vision_context,
+                    previous_location=last_location,
+                )
+                vision_elapsed = time.perf_counter() - vision_t0
+                log.info(f"[게임 상황] {game_context}")
+                last_game_context = game_context
+
+                # 위치 / 이벤트 추출 (이벤트는 감정 신호원 — 없으면 빈 문자열)
+                for line in game_context.splitlines():
+                    if line.startswith("위치:"):
+                        loc = line[len("위치:"):].strip()
+                        if loc and loc != "알 수 없음":
+                            last_location = loc
+                    elif line.startswith("이벤트:"):
+                        event_text = line[len("이벤트:"):].strip()
 
             # 2차 drain: vision 분석이 도는 동안(수 초~십수 초) 도착한 발화까지 수거
             _drain_stt_queue()
@@ -642,6 +697,7 @@ def ai_process(
                         user_speech_payload.append({
                             "text": e["text"],
                             "seconds_ago": sec_ago,
+                            "reacted": e.get("rounds", 0) > 0,
                         })
 
             # 발화에서 호명된 봇은 이번 라운드 batch에 반드시 포함시킨다.
@@ -653,9 +709,11 @@ def ai_process(
             # 감정 갱신: 3신호(채팅 톤 + Vision 이벤트 + STT 발화)로 봇 풀 전체 감정 전이.
             # Vision 이벤트가 비어도 나머지 신호로 굴러간다.
             speech_texts = [u["text"] for u in user_speech_payload]
-            emotion_labels = update_emotions(
-                emotion_states, bot_pool, chat_history, event_text, speech_texts,
-            )
+            # 발화 라운드는 화면 분석 사이에 끼는 추가 라운드라 감정 감쇠를 두 번 돌리지 않는다.
+            if not speech_round or not emotion_labels:
+                emotion_labels = update_emotions(
+                    emotion_states, bot_pool, chat_history, event_text, speech_texts,
+                )
 
             # 흥분도(hype) 계산: 스트리머 발화 + 직전 채팅 톤(ㅋㅋ/ㅠㅠ/강조어)에서
             # hype(0~1)·valence(±)를 뽑아 이번 라운드 타이밍·물량·분위기 힌트를 정한다.
@@ -683,19 +741,29 @@ def ai_process(
                 )
             prev_round_hyped = round_hyped
 
-            # 라운드마다 batch_size(흥분 시 증량)만큼 발언자 선정 (호명 봇 우선)
-            sample_size = min(batch_size + hype_profile.extra_batch, len(bot_pool))
-            mentioned_in_batch = mentioned[:sample_size]
-            remaining_slots = sample_size - len(mentioned_in_batch)
-            others_pool = [b for b in bot_pool if b not in mentioned_in_batch]
-            others = random.sample(others_pool, min(remaining_slots, len(others_pool)))
-            batch = mentioned_in_batch + others
+            # 라운드마다 batch_size(흥분 시 증량)만큼 발언자 선정: 호명 봇 → 직전 발언자 carry_over 명 → 무작위.
+            # 발화 즉시 반응 라운드는 instant_batch 명만(짧게 받아치기).
+            base_size = instant_batch if speech_round else batch_size + hype_profile.extra_batch
+            sample_size = min(base_size, len(bot_pool))
+            batch = flow.pick_batch(bot_pool, sample_size, must=mentioned,
+                                    prev_names=prev_batch_names, carry=carry_over)
             # batch 봇의 emotion을 동적 라벨로 덮은 사본 사용 (원본 bot_pool은 보존)
             batch = [{**b, "emotion": emotion_labels.get(b["name"], b.get("emotion", "평온"))} for b in batch]
+            # 봇별 말버릇(최근 계속 쓴 단어)은 이번엔 금지 — 지금 화면·발화에 나온 단어는 제외
+            now_text = " ".join([game_context] + speech_texts)
+            batch = bot_habits.annotate(batch, now_text)
             log.info(f"이번 라운드 발언자 {len(batch)}명: {[b['name'] for b in batch]}")
-            hot_topics = topic_tracker.hot_keys()
+            # 과열 소재 회피 — 지금 화면·발화에 나온 소재(보스전 중 '보스' 등)는 면제
+            hot_topics = flow.exempt_current(topic_tracker.hot_keys(), game_context, speech_texts)
             if hot_topics:
                 log.info(f"과열 소재(이번 라운드 회피): {hot_topics}")
+            # 발화 즉시 반응 라운드는 발화에 집중 — 봇끼리 받아치기는 화면 분석 라운드에서만
+            reply = None if speech_round else flow.pick_reply(
+                batch, last_round_chats, chance=reply_chance, exclude=set(mentioned_names))
+            round_notes = flow.build_round_notes(speech=user_speech_payload, bots=batch,
+                                                 reply=reply, speech_round=speech_round)
+            if reply:
+                log.info(f"받아치기: {reply[0]} → {reply[1]['name']}")
             chats = chat_client.generate_chats(
                 game_context=game_context,
                 bots=batch,
@@ -707,6 +775,7 @@ def ai_process(
                 mood_hint=hype_profile.mood_hint or None,
                 roster=bot_pool,
                 avoid_topics=hot_topics,
+                round_notes=round_notes,
             )
 
             # 채팅 생성이 503 등 서버 혼잡이면 채팅창에 안내. 매 라운드 반복되지
@@ -757,7 +826,13 @@ def ai_process(
             if topic_dropped:
                 log.info("소재 쏠림 드롭: " + ", ".join(
                     f"{c.get('name')}[{k}]" for c, k in topic_dropped))
+            chats, habit_dropped = bot_habits.drop_habit_chats(chats, batch, set(mentioned_names))
+            if habit_dropped:
+                log.info("말버릇 반복 드롭: " + ", ".join(f"{c.get('name')}[{k}]" for c, k in habit_dropped))
             topic_tracker.push_round([c.get("message", "") for c in chats])
+            bot_habits.push(chats)
+            prev_batch_names = [b["name"] for b in batch]
+            last_round_chats = list(chats)
 
             # 한 라운드의 전체 흐름을 chat_log 에 단일 블록으로 출력
             _write_round_block(
@@ -781,11 +856,11 @@ def ai_process(
                 ),
             )
 
-            # 채팅 생성에 쓰인 발화는 버퍼에서 제거 (같은 발화가 다음 라운드에 또 들어가지 않게)
-            if stt_enabled and user_speech_payload:
-                used_texts = {u["text"] for u in user_speech_payload}
+            # MAX_SPEECH_ROUNDS 번 쓰인 발화는 버퍼에서 제거. 한 번 쓰인 발화는 다음 라운드에
+            # '이미 반응함'으로 표시돼 1명 정도만 이어서 반응한다.
+            if stt_enabled:
                 user_speech_buffer = [
-                    e for e in user_speech_buffer if e["text"] not in used_texts
+                    e for e in user_speech_buffer if e.get("rounds", 0) < MAX_SPEECH_ROUNDS
                 ]
 
             if chats:
@@ -798,11 +873,14 @@ def ai_process(
                 if len(chat_history) > context_window:
                     chat_history = chat_history[-context_window:]
 
+                # 발화 즉시 반응은 빨리 떠야 의미가 있다 — 간격을 짧게.
+                d_min, d_max = ((0.4, min(3.0, hype_profile.delay_max)) if speech_round
+                                else (hype_profile.delay_min, hype_profile.delay_max))
                 t = threading.Thread(
                     target=schedule_chats,
                     args=(
                         chats, batch, ui_queue,
-                        hype_profile.delay_min, hype_profile.delay_max,
+                        d_min, d_max,
                         mentioned_names, hype_profile.skip_relief,
                     ),
                     daemon=True,
@@ -909,13 +987,31 @@ def stt_process(
                 })
             except Exception:
                 pass
+    # 받아쓰기 힌트에 게임 고유명사(지명·적·기술, 프로필 stt_terms)를 붙여 오인식을 줄인다
+    # ("시즈카"→"시즈 카로", "에밀리네이터"→"에뮬레이터"). 게임 프로필이 바뀌면 다시 만든다.
+    from src.chat.flow import stt_hint_terms, stt_prompt_with_terms
+
+    def _stt_prompt_for(game: str | None) -> str:
+        if not game:
+            return stt_cfg.get("transcribe_prompt") or ""
+        try:
+            from src.chat.game_profile_loader import load_profile
+            terms = stt_hint_terms(load_profile(game))
+        except Exception as e:
+            log.warning(f"STT 힌트용 프로필 로드 실패: {e}")
+            terms = []
+        log.info(f"STT 고유명사 힌트 {len(terms)}개 ({game})")
+        return stt_prompt_with_terms(stt_cfg.get("transcribe_prompt"), terms)
+
+    cap_cfg = config.get("capture", {}) or {}
+    stt_game = cap_cfg.get("game_name") or _extract_game_name(cap_cfg.get("target_window") or "")
     transcriber = create_transcriber(
         provider,
         gemini_api_key=api_key,
         openai_api_key=openai_api_key,
         model=model,
         language=stt_cfg.get("language", "ko"),
-        prompt=stt_cfg.get("transcribe_prompt"),
+        prompt=_stt_prompt_for(stt_game),
         normalize_target_level=float(stt_cfg.get("normalize_target_level", 0.1)),
         normalize_percentile=float(stt_cfg.get("normalize_percentile", 95.0)),
         normalize_max_gain=float(stt_cfg.get("normalize_max_gain", 20.0)),
@@ -963,6 +1059,8 @@ def stt_process(
             if "chat_active" in setting:
                 chat_active = setting["chat_active"]
                 log.info(f"STT {'시작' if chat_active else '일시정지'}")
+            elif "game_name" in setting and hasattr(transcriber, "set_prompt"):
+                transcriber.set_prompt(_stt_prompt_for(setting["game_name"]))
 
         if chat_active and not started:
             pipeline.start(_push)

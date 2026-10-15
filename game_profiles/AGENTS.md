@@ -27,6 +27,7 @@
   - `enemies` (list[str]) — 동일 형식
   - `skills` (list[str]) — 동일 형식
   - `chat_tips` (list[str]) — 시청자 채팅 밈/반응 포인트
+  - `stt_terms` (list[str], 선택) — 받아쓰기 힌트에 넣을 고유명사(캐릭터·동료 이름 등). 지명·적·기술 이름은 자동으로 들어가니 그 밖의 것만 (`src/chat/flow.stt_hint_terms`)
 - 자동 생성된 프로필은 한국어 번역이 어색할 수 있다 — 5단계 검수에도 빠지면 직접 수정하거나 UI의 "선택 창 게임 프로필 재생성" 버튼으로 다시 만든다.
 - 파일명 규칙: `_safe_filename(game_name)` — 소문자, 공백→`_`, 특수문자 제거, 64자 제한. 한글은 그대로 살림.
 - `default.yaml`은 `_load_default()`가 직접 읽는 fallback — 키를 빼면 자동 생성 실패 시 KeyError가 날 수 있어 주의.
