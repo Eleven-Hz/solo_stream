@@ -118,7 +118,7 @@ def run(test_cfg: dict, app_config: dict, out: io.TextIOWrapper, html_path: Path
     raw_game = test_cfg.get("game") or app_config["capture"].get("target_window", "")
     game_name = _extract_game_name(raw_game)
     w(f"게임 프로필 로드 중: {game_name} ...")
-    game_profile = load_profile(game_name, ai_client=gemini_client, config=app_config)
+    game_profile = load_profile(game_name, ai_client=gemini_client, config=app_config, auto_generate=True)
     profile_context = build_vision_context(game_profile)
 
     rounds = test_cfg.get("rounds", 1)

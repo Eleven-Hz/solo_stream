@@ -44,7 +44,7 @@ def capture_process(
     from src.capture.screen import capture_screen
     from src.capture.change_detect import has_significant_change
 
-    interval = config["capture"]["interval_seconds"]
+    interval = _clamp_interval(config["capture"].get("interval_seconds", BASE_INTERVAL_S))
     threshold = config["capture"]["ssim_threshold"]
     target = config["capture"].get("target_window")
     resize_w = config["capture"].get("resize_width", 1024)
@@ -66,6 +66,9 @@ def capture_process(
                 target = setting["target_window"]
                 prev_frame = None
                 log.info(f"캡처 대상 변경: '{target}'")
+            elif "interval_seconds" in setting:
+                interval = _clamp_interval(setting["interval_seconds"])
+                log.info(f"캡처 주기 변경: {interval:g}s")
             elif "chat_active" in setting:
                 chat_active = setting["chat_active"]
                 log.info(f"캡처 {'시작' if chat_active else '정지'}")
@@ -90,6 +93,38 @@ def capture_process(
         except Exception as e:
             log.error(f"캡처 오류: {e}")
             time.sleep(interval)
+
+
+# ── 캡처 주기에 맞춘 페이싱 ──────────────────────────────────────────────────
+# chat.delay_min/max · topic_window_rounds 등 기본값은 15초 주기 기준으로 맞춰져 있다.
+# 주기를 바꾸면 같은 '시간 감각'이 유지되도록 비례해서 늘리고 줄인다.
+BASE_INTERVAL_S = 15.0
+MIN_INTERVAL_S = 5.0     # vision+chat 한 라운드가 3~6초라 이보다 짧으면 라운드가 밀린다
+MAX_INTERVAL_S = 60.0
+# 한 발화를 채팅 프롬프트에 넣는 최대 라운드 수. 주기가 짧으면 lookback 안에서 같은
+# 발화가 여러 라운드에 반복돼 봇들이 같은 말에 계속 반응하는 걸 막는다.
+MAX_SPEECH_ROUNDS = 2
+
+
+def _clamp_interval(sec) -> float:
+    try:
+        sec = float(sec)
+    except (TypeError, ValueError):
+        return BASE_INTERVAL_S
+    return max(MIN_INTERVAL_S, min(MAX_INTERVAL_S, sec))
+
+
+def _paced(config: dict, interval_s: float) -> tuple[float, float, int]:
+    """주기에 맞춘 (delay_min, delay_max, topic_window_rounds).
+
+    채팅은 한 라운드 안에서 메시지마다 delay 만큼 차례로 뜨므로, delay 를 주기에 비례시켜
+    다음 라운드와 겹치지 않게 한다. 소재 쏠림 윈도우는 '라운드 수'가 아니라 같은 시간(≈90초)을 보게 한다."""
+    scale = interval_s / BASE_INTERVAL_S
+    chat_cfg = config.get("chat", {}) or {}
+    d_min = float(chat_cfg.get("delay_min", 1.0)) * scale
+    d_max = float(chat_cfg.get("delay_max", 8.0)) * scale
+    window = max(3, round(int(chat_cfg.get("topic_window_rounds", 6)) / scale))
+    return round(d_min, 2), round(d_max, 2), window
 
 
 # ── 봇 호명 감지 ─────────────────────────────────────────────────────────────
@@ -124,9 +159,12 @@ def _detect_mentioned_bots(
 
 
 def _normalize_msg(text: str) -> str:
-    """중복 비교용 정규화: 공백 제거 + 소문자. ㅠㅠㅠㅠ 길이 차 등은 의도적으로
-    구분 유지(완전 동일 복붙만 잡는다)."""
-    return "".join((text or "").split()).lower()
+    """중복 비교용 정규화: 공백·문장부호 제거 + 소문자. ㅠㅠㅠㅠ 길이 차 등은 의도적으로
+    구분 유지(완전 동일 복붙만 잡는다). 문장부호는 떼어 단답 봇의 "흠." / "흠" 같은
+    사실상 같은 연속 단답도 잡는다(KNOWN_ISSUES 4-1). 부호만 있는 메시지("...")는 그대로 둔다."""
+    compact = "".join((text or "").split()).lower()
+    stripped = compact.strip(".,!?~…·")
+    return stripped or compact
 
 
 def _drop_repeat_chats(
@@ -162,6 +200,14 @@ def _drop_repeat_chats(
 
 
 # ── 라운드 로그 포맷 ─────────────────────────────────────────────────────────
+
+def _send_usage(ui_queue, source: str, snap: dict) -> None:
+    """사용량 스냅샷을 UI 로. 큐가 차 있으면 버린다 — 누적값이라 다음 스냅샷이 대신한다."""
+    try:
+        ui_queue.put_nowait({"system": True, "type": "usage", "source": source, "data": snap})
+    except Exception:
+        pass
+
 
 def _write_round_block(
     chat_log: logging.Logger,
@@ -215,7 +261,7 @@ def _write_round_block(
         lines.append("")
         lines.append(
             f"[CHAT 호출] {chat_debug.provider}/{chat_debug.model}"
-            f"  ({chat_debug.elapsed_s:.2f}s)"
+            f"  ({chat_debug.elapsed_s:.2f}s, 토큰 in={chat_debug.in_tokens} out={chat_debug.out_tokens})"
         )
         if chat_debug.prompt:
             prompt_for_log = chat_debug.prompt
@@ -252,12 +298,16 @@ def ai_process(
     api_key: str,
     claude_api_key: str | None = None,
     stt_queue: "multiprocessing.Queue | None" = None,
+    openai_api_key: str | None = None,
 ):
     setup_logger("solo_stream")
     setup_logger("solo_stream.ai")
     log = logging.getLogger("solo_stream.ai")
 
-    from src.ai.model_client import create_vision_client, create_chat_client, GeminiClient, is_transient_error
+    from src.ai.model_client import (
+        create_vision_client, create_chat_client, GeminiClient, is_transient_error,
+        model_config_key, resolve_provider,
+    )
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
@@ -270,12 +320,45 @@ def ai_process(
     # schedule_chats 가 이 브로드캐스터를 통해 외부 소비자(project_ns)에게도 채팅을 보낸다.
     start_broadcaster(config)
 
-    client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
-    chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
-    # 게임 프로필 생성은 항상 Gemini로 (Google Search 그라운딩 필요)
-    gemini_client = GeminiClient(api_key=api_key, config=config)
+    # 실제 사용량: 호출마다 토큰을 모아 UI '사용량' 탭으로 보낸다(STT 는 stt_process 가 따로).
+    from src.utils import usage
+    usage.set_sink(usage.UsageMeter(on_change=lambda snap: _send_usage(ui_queue, "ai", snap)).add)
+
+    provider_keys = {"gemini": api_key, "claude": claude_api_key, "openai": openai_api_key}
+    _LABEL = {"gemini": "Gemini", "openai": "OpenAI", "claude": "Claude"}
+
+    def _make_client(kind: str):
+        """설정된 provider 로 클라이언트를 만든다. 키가 없어 다른 provider 로 대체되면 채팅창에 알린다."""
+        provider, model, fell_from = resolve_provider(config, kind, provider_keys)
+        if fell_from:
+            label = "화면 분석" if kind == "vision" else "채팅 생성"
+            ui_queue.put({
+                "name": "시스템",
+                "message": (f"ℹ {_LABEL[fell_from]} 키가 없어 {label}을 {_LABEL[provider]}({model})로 "
+                            f"대체합니다 — 설정 'AI 모델 · 키'에서 키를 추가하세요."),
+            })
+        log.info(f"{kind}: {provider}/{model}" + (f" ({fell_from} 대체)" if fell_from else ""))
+        factory = create_vision_client if kind == "vision" else create_chat_client
+        return factory(config, gemini_api_key=api_key, claude_api_key=claude_api_key,
+                       openai_api_key=openai_api_key)
+
+    client = _make_client("vision")
+    chat_client = _make_client("chat")
+    # 게임 프로필 '자동 생성'만 Gemini 전용(Google Search 그라운딩). Gemini 키가 없으면 None —
+    # 자동 생성 요청이 와도 빈 프로필로 진행하고 안내한다.
+    gemini_client = GeminiClient(api_key=api_key, config=config) if api_key else None
     bot_pool = load_personas(config["chat"]["persona_dir"])
     log.info(f"봇 풀 {len(bot_pool)}명 로딩: {[b['name'] for b in bot_pool]}")
+
+    # 소재(클리셰) 쏠림 억제 (KNOWN_ISSUES 4-1/4-2): 최근 라운드 과열 소재를 프롬프트로
+    # 피하게 하고, 라운드 안에서 같은 소재를 쓰는 봇 수를 후처리로 제한한다.
+    from src.chat.topic_guard import TopicTracker, limit_round_topics
+    chat_cfg = config.get("chat", {}) or {}
+    topic_tracker = TopicTracker(
+        window_rounds=int(chat_cfg.get("topic_window_rounds", 6)),
+        cliche_keywords=chat_cfg.get("cliche_keywords"),
+    )
+    topic_round_max = int(chat_cfg.get("topic_round_max", 2))
 
     chat_log = get_chat_logger()
     # 세션 시작 시 게임 프로필을 chat_log 에 한 번 박아두고, 라운드 로그에서는 생략한다.
@@ -315,7 +398,9 @@ def ai_process(
         #   partial : 일부 단계만 실패(나머지 정보는 있음)
         aborted = profile.get("_generation_aborted")
         gen_errors = profile.get("_generation_errors") or []
-        if aborted:
+        if profile.get("_missing"):
+            status, detail = "missing", ""
+        elif aborted:
             status, detail = "aborted", str(aborted)
         elif gen_errors:
             summary = " / ".join(gen_errors[:3])
@@ -330,7 +415,16 @@ def ai_process(
                       "status": status, "detail": detail})
 
         # 채팅창에도 1회성 안내(흘러가지만 즉시 인지용). 설정 탭에는 위 status로 상시 표시됨.
-        if status == "aborted":
+        if status == "missing":
+            ui_queue.put({
+                "name": "시스템",
+                "message": (
+                    f"ℹ '{prof_name}' 게임 프로필이 없어요. 화면만 보고 채팅합니다. "
+                    f"설정 '게임 · 프로필'에서 프롬프트를 복사해 ChatGPT·Claude·Gemini에 "
+                    f"붙여넣으면 무료로 만들 수 있어요."
+                ),
+            })
+        elif status == "aborted":
             ui_queue.put({
                 "name": "시스템",
                 "message": (
@@ -349,7 +443,7 @@ def ai_process(
                 ),
             })
 
-    game_profile = load_profile(game_name, ai_client=gemini_client, config=config)
+    game_profile = load_profile(game_name, ai_client=gemini_client, config=config)  # 없으면 missing(자동 생성 안 함)
     profile_context = build_profile_context(game_profile)
     vision_context = build_vision_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
@@ -374,8 +468,10 @@ def ai_process(
     _log_profile_header(profile_context, game_profile.get("name", "?"))
 
     batch_size = config["chat"]["batch_size"]
-    delay_min = config["chat"]["delay_min"]
-    delay_max = config["chat"]["delay_max"]
+    interval_s = _clamp_interval(config.get("capture", {}).get("interval_seconds", BASE_INTERVAL_S))
+    delay_min, delay_max, topic_window = _paced(config, interval_s)
+    topic_tracker.set_window(topic_window)
+    log.info(f"페이싱: 주기 {interval_s:g}s → 채팅 간격 {delay_min}~{delay_max}s, 소재 윈도우 {topic_window}라운드")
     chat_history: list[dict] = []
     round_num = 0
     chat_active = False  # 시작/종료 버튼으로 제어
@@ -412,29 +508,30 @@ def ai_process(
                 ai_cfg = config.setdefault("ai", {})
                 ai_cfg["vision_provider"] = new_provider
                 if new_model:
-                    if new_provider == "claude":
-                        ai_cfg["claude_vision_model"] = new_model
-                    else:
-                        ai_cfg["vision_model"] = new_model
+                    ai_cfg[model_config_key(new_provider, "vision")] = new_model
                 log.info(f"vision 변경: {new_provider} / {new_model or '(모델 유지)'}")
-                client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+                client = _make_client("vision")
             elif "vision_prompt" in setting:
                 ai_cfg = config.setdefault("ai", {})
                 ai_cfg["vision_prompt"] = setting["vision_prompt"]
                 log.info("vision 프롬프트 변경 — vision client 재생성")
-                client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+                client = _make_client("vision")
             elif "chat_provider" in setting:
                 new_provider = setting["chat_provider"]
                 new_model = setting.get("chat_model")
                 ai_cfg = config.setdefault("ai", {})
                 ai_cfg["chat_provider"] = new_provider
                 if new_model:
-                    if new_provider == "claude":
-                        ai_cfg["claude_chat_model"] = new_model
-                    else:
-                        ai_cfg["chat_model"] = new_model
+                    ai_cfg[model_config_key(new_provider, "chat")] = new_model
                 log.info(f"chat 모델 변경: {new_provider} / {new_model or '(모델 유지)'}")
-                chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+                chat_client = _make_client("chat")
+            elif "interval_seconds" in setting:
+                interval_s = _clamp_interval(setting["interval_seconds"])
+                config.setdefault("capture", {})["interval_seconds"] = interval_s
+                delay_min, delay_max, topic_window = _paced(config, interval_s)
+                topic_tracker.set_window(topic_window)
+                log.info(f"페이싱 변경: 주기 {interval_s:g}s → 채팅 간격 {delay_min}~{delay_max}s, "
+                         f"소재 윈도우 {topic_window}라운드")
             elif "profile_model" in setting:
                 # 다음 프로필 생성/재생성 때 load_profile(config=...)에서 읽힌다.
                 ai_cfg = config.setdefault("ai", {})
@@ -446,11 +543,20 @@ def ai_process(
                 _current_window["title"] = setting["target_window"] or ""
             elif "game_name" in setting:
                 new_game = setting["game_name"]
-                log.info(f"게임 프로필 변경 요청: {new_game}")
-                game_profile = load_profile(new_game, ai_client=gemini_client, config=config)
+                # generate=True 는 설정의 '자동 생성(API)' 버튼 — 그때만 Gemini 검색으로 만든다.
+                auto_gen = bool(setting.get("generate"))
+                if auto_gen and gemini_client is None:
+                    auto_gen = False
+                    ui_queue.put({"name": "시스템", "message": (
+                        "ℹ 프로필 자동 생성은 Gemini 키가 있어야 해요(구글 검색 사용). "
+                        "'프롬프트 복사'로 무료로 만들 수 있어요.")})
+                log.info(f"게임 프로필 변경 요청: {new_game}{' (자동 생성)' if auto_gen else ''}")
+                game_profile = load_profile(new_game, ai_client=gemini_client, config=config,
+                                            auto_generate=auto_gen)
                 profile_context = build_profile_context(game_profile)
                 vision_context = build_vision_context(game_profile)
                 chat_history.clear()
+                topic_tracker.clear()
                 last_location = ""
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
                 _log_profile_header(profile_context, game_profile.get("name", "?"))
@@ -527,10 +633,12 @@ def ai_process(
 
             # 사용자 발화: 현재 시점 기준 lookback 내 발화만 사용
             user_speech_payload: list[dict] = []
+            speech_used: list[dict] = []
             if stt_enabled and user_speech_buffer:
                 for e in user_speech_buffer:
                     sec_ago = now - e["timestamp"]
-                    if sec_ago <= lookback_s:
+                    if sec_ago <= lookback_s and e.get("rounds", 0) < MAX_SPEECH_ROUNDS:
+                        speech_used.append(e)
                         user_speech_payload.append({
                             "text": e["text"],
                             "seconds_ago": sec_ago,
@@ -585,6 +693,9 @@ def ai_process(
             # batch 봇의 emotion을 동적 라벨로 덮은 사본 사용 (원본 bot_pool은 보존)
             batch = [{**b, "emotion": emotion_labels.get(b["name"], b.get("emotion", "평온"))} for b in batch]
             log.info(f"이번 라운드 발언자 {len(batch)}명: {[b['name'] for b in batch]}")
+            hot_topics = topic_tracker.hot_keys()
+            if hot_topics:
+                log.info(f"과열 소재(이번 라운드 회피): {hot_topics}")
             chats = chat_client.generate_chats(
                 game_context=game_context,
                 bots=batch,
@@ -594,6 +705,8 @@ def ai_process(
                 default_speech_weight=default_weight,
                 mentioned_names=mentioned_names,
                 mood_hint=hype_profile.mood_hint or None,
+                roster=bot_pool,
+                avoid_topics=hot_topics,
             )
 
             # 채팅 생성이 503 등 서버 혼잡이면 채팅창에 안내. 매 라운드 반복되지
@@ -613,6 +726,18 @@ def ai_process(
                     "message": "✓ AI 서버 연결이 회복됐습니다. 채팅을 다시 생성합니다.",
                 })
             api_busy = now_busy
+            # 채팅이 만들어진 라운드만 발화 사용 횟수를 센다(실패 라운드의 발화는 다음에 다시 쓴다).
+            if not chat_err:
+                for e in speech_used:
+                    e["rounds"] = e.get("rounds", 0) + 1
+
+            # 이번 라운드 발언자(batch)가 아닌 봇의 채팅은 버린다. 프롬프트에 다른 시청자
+            # 목록(roster)이 들어가 LLM 이 그 봇들 채팅까지 지어내는 경우가 있다.
+            batch_names = {b["name"] for b in batch}
+            outsiders = [c for c in chats if c.get("name") not in batch_names]
+            if outsiders:
+                log.info(f"발언자 외 채팅 {len(outsiders)}개 드롭: {[c.get('name') for c in outsiders]}")
+                chats = [c for c in chats if c.get("name") in batch_names]
 
             # 직전 라운드 발언을 그대로 복붙한 채팅 드롭 (B). hype delay 축소로 인접
             # 라운드 간격이 짧아지면 같은 메시지가 화면에 거의 동시에 떠 중복으로 보인다.
@@ -620,6 +745,19 @@ def ai_process(
             chats = _drop_repeat_chats(chats, chat_history)
             if len(chats) < before:
                 log.info(f"중복 복붙 {before - len(chats)}개 드롭")
+
+            # 같은 소재에 여러 봇이 몰린 채팅 드롭 (호명 봇은 면제)
+            chats, topic_dropped = limit_round_topics(
+                chats,
+                hot_keys=hot_topics,
+                cliche_keywords=topic_tracker.cliche_keywords,
+                per_round_max=topic_round_max,
+                exempt_names=set(mentioned_names),
+            )
+            if topic_dropped:
+                log.info("소재 쏠림 드롭: " + ", ".join(
+                    f"{c.get('name')}[{k}]" for c, k in topic_dropped))
+            topic_tracker.push_round([c.get("message", "") for c in chats])
 
             # 한 라운드의 전체 흐름을 chat_log 에 단일 블록으로 출력
             _write_round_block(
@@ -742,23 +880,47 @@ def stt_process(
 
     from src.stt import STTPipeline, UtteranceEvent
     from src.stt.transcriber import create_transcriber
+    from src.utils import usage
+    if ui_queue is not None:
+        usage.set_sink(usage.UsageMeter(on_change=lambda snap: _send_usage(ui_queue, "stt", snap)).add)
 
     stt_cfg = config.get("stt", {}) or {}
     sample_rate = int(stt_cfg.get("sample_rate", 16000))
 
     provider = str(stt_cfg.get("provider", "gemini")).lower()
+    model = stt_cfg.get("model", "gemini-2.5-flash")
+    # 기본값은 OpenAI(gpt-transcribe). 고른 쪽 키가 없으면 STT 를 죽이지 않고
+    # 있는 쪽(OpenAI ↔ Gemini)으로 대체하고 채팅창에 한 번 알린다. (main 은 둘 중 하나라도
+    # 있어야 STT 프로세스를 띄운다.)
+    if provider == "gemini" and not api_key and openai_api_key:
+        model = "gpt-transcribe"
+        log.warning("Gemini 키가 없어 STT 를 OpenAI(gpt-transcribe)로 대체합니다")
+        provider = "openai"
+    if provider == "openai" and not openai_api_key and api_key:
+        model = stt_cfg.get("fallback_model", "gemini-2.5-flash")
+        log.warning(f"OpenAI 키가 없어 STT 를 Gemini({model})로 대체합니다")
+        provider = "gemini"
+        if ui_queue is not None:
+            try:
+                ui_queue.put_nowait({
+                    "name": "시스템",
+                    "message": ("ℹ OpenAI 키가 없어 음성 인식을 Gemini로 대체합니다. "
+                                "정확도가 낮을 수 있어요 — 설정 'AI 모델 · 키'에서 OpenAI 키를 추가하세요."),
+                })
+            except Exception:
+                pass
     transcriber = create_transcriber(
         provider,
         gemini_api_key=api_key,
         openai_api_key=openai_api_key,
-        model=stt_cfg.get("model", "gemini-2.5-flash"),
+        model=model,
         language=stt_cfg.get("language", "ko"),
         prompt=stt_cfg.get("transcribe_prompt"),
         normalize_target_level=float(stt_cfg.get("normalize_target_level", 0.1)),
         normalize_percentile=float(stt_cfg.get("normalize_percentile", 95.0)),
         normalize_max_gain=float(stt_cfg.get("normalize_max_gain", 20.0)),
     )
-    log.info(f"STT transcriber provider={provider} model={stt_cfg.get('model')}")
+    log.info(f"STT transcriber provider={provider} model={model}")
 
     pipeline = STTPipeline(
         transcriber=transcriber,
@@ -856,11 +1018,12 @@ def main():
 
     # 키 미설정 시 graceful degrade: AI/STT 프로세스를 띄우지 않고 UI(오버레이)만 시작해
     # 첫 실행 온보딩(API 키 입력)을 노출한다. frozen 배포에서 콘솔 없이 조용히 죽던
-    # ValueError 크래시를 대체. Gemini 키는 vision/chat/STT 모두의 기본 키이므로 필수.
-    onboarding = not api_key
+    # ValueError 크래시를 대체. 키는 Gemini/OpenAI/Claude 중 아무거나 하나면 된다 —
+    # 고른 모델의 키가 없으면 model_client.resolve_provider 가 있는 키로 대체한다.
+    onboarding = not (api_key or openai_api_key or claude_api_key)
     if onboarding:
         logger.warning(
-            "Gemini API 키 미설정 — AI/STT 비활성. 오버레이 설정에서 키 입력 후 재시작하세요. "
+            "API 키가 하나도 없음 — AI/STT 비활성. 설정에서 키 입력 후 재시작하세요. "
             f"(키 저장 위치: {paths.user_data_dir() / '.env.local'})"
         )
 
@@ -877,7 +1040,11 @@ def main():
     ai_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
     stt_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
 
-    stt_enabled = bool((config.get("stt") or {}).get("enabled", False)) and not onboarding
+    # 음성 인식은 OpenAI 나 Gemini 키가 있어야 한다(Claude 는 받아쓰기 없음).
+    stt_enabled = (bool((config.get("stt") or {}).get("enabled", False)) and not onboarding
+                   and bool(api_key or openai_api_key))
+    if not onboarding and (config.get("stt") or {}).get("enabled") and not stt_enabled:
+        logger.warning("음성 인식: OpenAI/Gemini 키가 없어 끕니다 (Claude 키만 있음)")
     stt_queue: multiprocessing.Queue | None = (
         multiprocessing.Queue(maxsize=200) if stt_enabled else None
     )
@@ -895,7 +1062,8 @@ def main():
             ),
             multiprocessing.Process(
                 target=ai_process,
-                args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key, stt_queue),
+                args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key, stt_queue,
+                      openai_api_key),
                 name="AIProcess",
                 daemon=True,
             ),

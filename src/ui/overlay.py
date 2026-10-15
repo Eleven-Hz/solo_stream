@@ -138,7 +138,8 @@ class ChatOverlay(QWidget):
         self._settings = SettingsWindow(settings_queue, config, overlay=self, onboarding=onboarding)
 
         if self._onboarding:
-            QTimer.singleShot(0, lambda: self.open_settings("ready"))
+            # 첫 실행(키 없음)은 키 입력 화면으로 바로 연다.
+            QTimer.singleShot(0, lambda: self.open_settings("ai"))
 
     # ── 창/레이아웃 ──────────────────────────────────────────────────────────
 
@@ -528,6 +529,8 @@ class ChatOverlay(QWidget):
                 warning = msg.get("warning")
                 self._warn_btn.setVisible(bool(warning))
                 self._warn_btn.setToolTip(warning or "")
+            elif msg.get("type") == "usage":
+                self._settings.set_usage(msg.get("source", ""), msg.get("data") or {})
             return
         if "stt_transcript" in msg:
             if self._show_stt:

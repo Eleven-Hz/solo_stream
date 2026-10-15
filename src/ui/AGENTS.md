@@ -10,7 +10,7 @@ PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 
 | File | Description |
 |------|-------------|
 | `overlay.py` | `ChatOverlay`(채팅 목록·드래그/리사이즈·우클릭 메뉴·투명도/글자만/클릭 통과/캡처 제외) + `run_overlay(config, ui_queue, settings_queue, onboarding)` 진입점(전역 단축키 등록 포함). 설정 창이 호출하는 공개 메서드: `set_transparency`, `set_click_through`, `set_fade`, `set_show_stt`, `set_font_size`, `set_max_messages`, `set_capture_exclusion`, `toggle_chat`. |
-| `settings.py` | `SettingsWindow`. 페이지마다 `_build_page_*` 빌더. 저장은 `_save(section, values)`(config.local.yaml + 인메모리 config), 실행 중 반영은 `self._queue.put(...)`, 재시작 필요 항목은 `_need_restart("이유")` → 하단 바에 '재시작하면 적용' + 버튼. 모델 후보 목록(`_VISION_MODELS`/`_CHAT_MODELS`/`_STT_MODELS`/`_PROFILE_MODELS`)과 STT 실측 수치(`_STT_MEASURED`)도 여기. |
+| `settings.py` | `SettingsWindow`. 페이지마다 `_build_page_*` 빌더. 저장은 `_save(section, values)`(config.local.yaml + 인메모리 config), 실행 중 반영은 `self._queue.put(...)`, 재시작 필요 항목은 `_need_restart("이유")` → 하단 바에 '재시작하면 적용' + 버튼. 모델 후보 목록(`_VISION_MODELS`/`_CHAT_MODELS`/`_STT_MODELS`/`_PROFILE_MODELS`)과 STT 실측 수치(`_STT_MEASURED`)도 여기. '사용량' 탭은 실제 사용(`set_usage(source, snap)` ← 오버레이가 `type=usage` 시스템 메시지를 전달)과 예상 비용(`pricing.estimate_costs`)을 함께 보여주고, 실제 사용이 들어오면 메뉴 배지가 누적액으로 바뀐다. |
 | `theme.py` | 색 토큰(`ACCENT`, `SURFACE` …), 폰트(`Malgun Gothic`/`Consolas`), QPainter 선 아이콘(`icon(name)`), 설정 창 공용 QSS(`settings_qss()`), 재사용 위젯(`Switch`, `Segmented`, `LevelMeter`, `StatusBadge`, `Chip`, `Card`, `row_box`, `combo`). |
 | `winapi.py` | ctypes Windows API: `set_exclude_from_capture`(WDA_EXCLUDEFROMCAPTURE), `set_click_through`(WS_EX_TRANSPARENT 토글), `remove_dwm_border`(Win11 테두리 제거), `GlobalHotkeys`(RegisterHotKey + 네이티브 이벤트 필터). 실패해도 예외 없이 False. |
 | `workers.py` | QThread 워커: `MicLevelWorker`(입력 레벨), `STTTestWorker`(4초 녹음→받아쓰기), `KeyCheckWorker`(키 연결 확인, 과금 없음), `CapturePreviewWorker`(캡처 미리보기). `start_worker()` 로 실행. |
@@ -22,7 +22,8 @@ PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 
 - 새 설정 항목 추가: `settings.py` 의 해당 `_build_page_*` 에 위젯 + 저장 핸들러(`self._save(...)`). 실행 중 반영이 필요하면 `self._queue.put({...})` 후 `src/main.py` 받는 프로세스의 settings_queue 루프에 elif 추가. 오버레이 표시 옵션이면 `ChatOverlay` 에 `set_*` 메서드를 만들고 설정 창에서 호출.
 - **적용 버튼을 만들지 않는다** — 바꾸는 즉시 저장이 원칙. 예외: 비용이 드는 동작(게임 창 적용 → 프로필 생성, 프로필 다시 만들기, 받아쓰기 테스트, 키 저장)과 여러 줄 편집(화면 분석 프롬프트 대화상자)만 명시적 버튼.
 - SDK import 는 UI 에 두지 않는다 — 키 확인은 `src/ai/model_client.check_api_key`, `src/stt/transcriber.check_openai_key` 를 워커에서 호출.
-- 키 없이 Claude 모델을 고르면 AI 프로세스가 클라이언트를 못 만들고 죽으므로 `_on_ai_model` 이 거부·원복한다. 비슷한 '키 필요' 선택지를 추가하면 같은 가드를 둔다.
+- 키 없는 provider 의 모델도 고를 수 있다(저장됨). AI 프로세스는 키가 생길 때까지 `resolve_provider` 로 있는 키로 대체해 돌고, 설정 'AI 모델' 카드가 행마다 `_refresh_model_warns` 로 '⚠ X 키가 없어요 — Y로 대체' 경고와 목록의 '(키 없음)' 표시를 띄운다(키 저장·모델 변경 때 갱신). 비슷한 '키 필요' 선택지를 추가하면 같은 방식으로 경고한다. 모델 키 이름은 직접 조립하지 말고 `model_client.model_config_key` / `selected_model` 을 쓴다.
+- 분석 주기(`capture.interval_seconds`)는 'AI 모델' 카드의 스핀박스(5~60초)로 바꾸고 `{"interval_seconds"}` 로 캡처·AI 프로세스에 바로 반영된다. 15초 미만이면 예상 비용 증가 경고. 주기를 화면에 쓰는 문구는 `_interval_text` 로 만든다(숫자 하드코딩 금지).
 - 클릭 통과는 Ctrl+Shift+O 가 유일한 해제 수단이다. 단축키 등록에 실패하면(`hotkeys_ok=False`) 클릭 통과를 켤 수 없게 막아 둔다 — 이 가드를 없애지 말 것.
 - 클릭 통과·캡처 제외는 Qt 창 플래그가 아니라 winapi 로 확장 스타일/디스플레이 속성만 바꾼다(Qt 플래그 변경은 네이티브 창을 다시 만들어 설정이 풀린다).
 - 채팅 메시지: `_poll_queue` 가 100ms 마다 `ui_queue` drain → `_handle_message`. `system` 키 = 프로필 로드 등, `stt_transcript` = 내 말(설정 켜졌을 때만), 그 외 `{name, message}` 채팅(`name == "시스템"` 이면 시스템 줄). 본문은 `html.escape` 후 RichText 라벨.

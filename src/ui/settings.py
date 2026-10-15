@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from multiprocessing import Queue
+from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPixmap
@@ -24,12 +25,14 @@ from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLayout,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -53,6 +56,7 @@ from src.ui.workers import (
     start_worker,
 )
 from src.utils import paths
+from src.ai.model_client import model_config_key, resolve_provider, selected_model  # SDK import 없음(지연 import)
 
 logger = logging.getLogger("solo_stream.ui")
 
@@ -60,13 +64,18 @@ logger = logging.getLogger("solo_stream.ui")
 _VISION_MODELS = [
     ("gemini", "gemini-2.5-flash"), ("gemini", "gemini-2.5-flash-lite"),
     ("gemini", "gemini-2.5-pro"), ("gemini", "gemini-2.0-flash"),
-    ("claude", "claude-sonnet-4-6"), ("claude", "claude-opus-4-7"), ("claude", "claude-haiku-4-5-20251001"),
+    ("openai", "gpt-6-luna"), ("openai", "gpt-5-mini"),
+    ("claude", "claude-haiku-5-5"), ("claude", "claude-sonnet-4-6"), ("claude", "claude-opus-4-7"),
 ]
+_VISION_RECOMMENDED = "gemini-2.5-flash"
 _CHAT_MODELS = [
+    ("openai", "gpt-6-luna"), ("openai", "gpt-5-nano"), ("openai", "gpt-5-mini"), ("openai", "gpt-4.1-nano"),
     ("gemini", "gemini-2.5-flash-lite"), ("gemini", "gemini-2.5-flash"),
     ("gemini", "gemini-2.5-pro"), ("gemini", "gemini-2.0-flash"),
-    ("claude", "claude-haiku-4-5-20251001"), ("claude", "claude-sonnet-4-6"), ("claude", "claude-opus-4-7"),
+    ("claude", "claude-haiku-5-5"), ("claude", "claude-haiku-4-5-20251001"), ("claude", "claude-sonnet-4-6"),
 ]
+# 2026-10 샘플 영상 20라운드 비교에서 발화 반응·자연스러움 1위(비용은 flash-lite 와 비슷).
+_CHAT_RECOMMENDED = "gpt-6-luna"
 # 게임 프로필 생성은 Google Search 그라운딩이 필요해 Gemini 전용.
 _PROFILE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"]
 # STT: gemini 는 generate_content(오디오 이해)로 받아쓰기가 되는 모델만.
@@ -95,6 +104,24 @@ _PAGES = [
     ("game", "게임 · 프로필"),
     ("usage", "사용량"),
 ]
+
+
+# 분석 주기(capture.interval_seconds). main 의 BASE/MIN/MAX_INTERVAL_S 와 같은 값.
+_BASE_INTERVAL = 15
+_MIN_INTERVAL, _MAX_INTERVAL = 5, 60
+
+
+def _interval_s(config: dict) -> float:
+    try:
+        sec = float((config.get("capture") or {}).get("interval_seconds", _BASE_INTERVAL) or _BASE_INTERVAL)
+    except (TypeError, ValueError):
+        sec = float(_BASE_INTERVAL)
+    return max(_MIN_INTERVAL, min(_MAX_INTERVAL, sec))
+
+
+def _interval_text(config: dict) -> str:
+    """분석 주기 문구('15초' 등). 설정에서 바꾸면 실행 중에도 바로 적용된다."""
+    return f"{_interval_s(config):g}초"
 
 
 def _model_text(provider: str, model: str, recommended: str | None = None) -> str:
@@ -320,6 +347,75 @@ class _PromptDialog(QDialog):
         lay.addLayout(row)
 
 
+class _ProfilePasteDialog(QDialog):
+    """구독 채팅(ChatGPT/Claude/Gemini)이 준 프로필 결과를 붙여넣어 저장한다.
+
+    붙여넣는 즉시 읽어서 항목 수·경고를 보여주고, 읽을 수 있을 때만 저장 버튼을 켠다."""
+
+    def __init__(self, game_name: str, text: str = "", parent=None):
+        super().__init__(parent)
+        self._game_name = game_name
+        self.profile: dict | None = None
+        self.setWindowTitle("게임 프로필 붙여넣기")
+        self.setModal(True)
+        self.resize(680, 540)
+        self.setStyleSheet(f"QDialog {{ background: {T.BG}; }}" + T.settings_qss())
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        lay.addWidget(T.label(f"'{game_name}' 프로필 붙여넣기", "lbl"))
+        lay.addWidget(T.label(
+            "채팅이 준 답을 통째로 붙여넣으세요. 앞뒤 설명이나 ``` 표시가 섞여 있어도 괜찮아요. "
+            "저장하면 이 게임의 기존 프로필을 덮어씁니다.", "sub", wrap=True))
+        self.editor = QPlainTextEdit()
+        self.editor.setPlaceholderText("name: ...\ndescription: ...\nlocations:\n  - ...")
+        self.editor.textChanged.connect(self._reparse)
+        lay.addWidget(self.editor, 1)
+        self._summary = T.label("", "sub", wrap=True)
+        lay.addWidget(self._summary)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = T.button("취소")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        self._ok = T.button("저장하고 적용")
+        self._ok.setStyleSheet(f"QPushButton {{ background: {T.ACCENT}; color: {T.ACCENT_FG}; border: none; "
+                               "border-radius: 7px; height: 32px; padding: 0 16px; font-weight: 700; }"
+                               "QPushButton:disabled { background: #2A2C33; color: #6E7380; }")
+        self._ok.clicked.connect(self.accept)
+        row.addWidget(self._ok)
+        lay.addLayout(row)
+        self.editor.setPlainText(text)
+        self._reparse()
+
+    def _reparse(self):
+        from src.chat.game_profile_loader import PROFILE_SECTIONS, parse_profile_text
+        text = self.editor.toPlainText()
+        self.profile = None
+        if not text.strip():
+            self._summary.setText("붙여넣기를 기다리는 중…")
+            self._summary.setStyleSheet(f"color: {T.MUTED}; font-size: 12px;")
+            self._ok.setEnabled(False)
+            return
+        try:
+            profile, warnings = parse_profile_text(text, fallback_name=self._game_name)
+        except Exception as e:
+            self._summary.setText(f"읽을 수 없어요 — {e}")
+            self._summary.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            self._ok.setEnabled(False)
+            return
+        labels = {"vision_focus": "화면 포인트", "systems": "시스템", "locations": "지역",
+                  "enemies": "적", "skills": "스킬", "chat_tips": "채팅 포인트"}
+        counts = " · ".join(f"{labels[s]} {len(profile[s])}" for s in PROFILE_SECTIONS)
+        msg = f"{profile['name']}  —  {counts}"
+        if warnings:
+            msg += "\n⚠ " + " / ".join(warnings)
+        self._summary.setText(msg)
+        self._summary.setStyleSheet(f"color: {T.WARN if warnings else T.TEXT_2}; font-size: 12px;")
+        self.profile = profile
+        self._ok.setEnabled(True)
+
+
 # ── 설정 창 ──────────────────────────────────────────────────────────────────
 
 class SettingsWindow(QWidget):
@@ -407,9 +503,12 @@ class SettingsWindow(QWidget):
         self._start_btn.style().polish(self._start_btn)
 
     def set_profile_name(self, name: str, status: str = "ok", detail: str = ""):
-        """프로필 로드/생성 결과. status: ok | aborted(503 등으로 중단) | partial(일부 실패)."""
+        """프로필 로드/생성 결과. status: ok | missing(파일 없음) | aborted(503 등으로 중단) | partial(일부 실패)."""
         self._profile_state = (name, status, detail)
-        if status == "aborted":
+        if status == "missing":
+            text = f"{name} · 프로필 없음 — '게임 · 프로필'에서 만들 수 있어요(화면만 보고 채팅 중)"
+            badge, color = "warn", T.WARN
+        elif status == "aborted":
             text = f"{name} · 서버 혼잡으로 생성 중단됨 — 잠시 후 다시 만들기"
             badge, color = "error", T.ERROR
         elif status == "partial":
@@ -645,20 +744,6 @@ class SettingsWindow(QWidget):
         top.addLayout(tb, 1)
         top.addWidget(keys_btn)
         h.addLayout(top)
-        # 키가 없을 때만 보이는 빠른 입력(첫 실행 온보딩)
-        self._quick_key_row = QWidget()
-        qk = QHBoxLayout(self._quick_key_row)
-        qk.setContentsMargins(38, 0, 0, 0)
-        qk.setSpacing(8)
-        self._quick_key_input = QLineEdit()
-        self._quick_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._quick_key_input.setPlaceholderText("Gemini API 키 붙여넣기 — aistudio.google.com/apikey")
-        self._quick_key_input.returnPressed.connect(self._save_quick_key)
-        qk.addWidget(self._quick_key_input, 1)
-        qs = T.button("저장")
-        qs.clicked.connect(self._save_quick_key)
-        qk.addWidget(qs)
-        h.addWidget(self._quick_key_row)
         card.add_row(w)
 
         # 게임 창
@@ -697,9 +782,9 @@ class SettingsWindow(QWidget):
         # 게임 프로필
         self._ready_profile_badge = T.StatusBadge()
         self._ready_profile_sub = T.label("불러오는 중…", "sub", wrap=True)
-        regen = T.button("다시 만들기")
-        regen.setToolTip("선택한 창의 게임 정보를 다시 검색해 프로필을 새로 만듭니다(수십 초)")
-        regen.clicked.connect(self._regenerate_profile)
+        regen = T.button("만들기·바꾸기…")
+        regen.setToolTip("'게임 · 프로필'로 이동 — 프롬프트 복사/붙여넣기로 무료로 만들거나 자동 생성")
+        regen.clicked.connect(lambda: self.open_page("game"))
         card.add_row(left=self._ready_profile_badge, title="게임 프로필", right=regen)
         # add_row 의 sub 라벨 대신 상태 라벨을 직접 붙이기 위해 마지막 행에 끼워 넣는다
         last = card.layout().itemAt(card.layout().count() - 1).widget()
@@ -752,8 +837,7 @@ class SettingsWindow(QWidget):
         h.addWidget(self._cap_preview)
         cv = QVBoxLayout()
         cv.setSpacing(8)
-        self._cap_desc = T.label("15초마다 게임 창을 찍고, 화면이 거의 그대로면 건너뛰어 비용을 아낍니다. "
-                                 "채팅창이 찍히지 않는지 여기서 확인할 수 있어요.", "sub", wrap=True)
+        self._cap_desc = T.label(self._cap_desc_text(), "sub", wrap=True)
         cv.addWidget(self._cap_desc)
         cap_btn = T.button("지금 찍어보기")
         cap_btn.clicked.connect(self._capture_preview)
@@ -769,22 +853,30 @@ class SettingsWindow(QWidget):
         keys = _read_env_keys()
         stt = self._config.get("stt") or {}
         stt_on = bool(stt.get("enabled", False))
-        need_openai = stt_on and str(stt.get("provider", "gemini")) == "openai"
+        stt_provider = str(stt.get("provider", "gemini"))
+        ai_need = {selected_model(self._config, k)[0] for k in ("vision", "chat")}
+        missing_ai = [p for p in sorted(ai_need) if not keys[p]]
+        stt_missing = stt_on and not keys.get(stt_provider)
         done = 0
-        # 키
-        if not keys["gemini"]:
+        # 키 — Gemini·OpenAI·Claude 중 하나만 있으면 된다(없는 쪽은 있는 키로 대체).
+        if not any(keys.values()):
             self._ready_key_badge.set_state("warn")
-            self._ready_key_sub.setText("Gemini 키가 필요해요 — 아래에 붙여넣고 저장")
-            self._quick_key_row.setVisible(True)
-        elif need_openai and not keys["openai"]:
+            self._ready_key_sub.setText("키가 하나도 없어요 — '키 관리'에서 Gemini·OpenAI·Claude 중 하나를 추가하세요")
+        elif missing_ai or stt_missing:
             self._ready_key_badge.set_state("warn")
-            self._ready_key_sub.setText("음성 인식(OpenAI)에 쓸 OpenAI 키가 없어요")
-            self._quick_key_row.setVisible(False)
+            if missing_ai:
+                names = "·".join(_PROVIDER_LABEL[p] for p in missing_ai)
+                self._ready_key_sub.setText(f"{names} 키가 없어 고른 AI 모델 대신 있는 키로 대체돼요")
+            elif not (keys["openai"] or keys["gemini"]):
+                self._ready_key_sub.setText("음성 인식은 OpenAI나 Gemini 키가 있어야 해요(지금은 꺼짐)")
+            else:
+                self._ready_key_sub.setText(f"{_PROVIDER_LABEL.get(stt_provider, stt_provider)} 키가 없어 "
+                                            "음성 인식은 다른 키로 대체돼요")
+            done += 1  # 대체로 동작은 하므로 준비 완료로 친다
         else:
             self._ready_key_badge.set_state("ok")
             parts = [f"{_PROVIDER_LABEL[p]} 있음" for p in ("gemini", "openai", "claude") if keys[p]]
             self._ready_key_sub.setText(" · ".join(parts))
-            self._quick_key_row.setVisible(False)
             done += 1
         # 창
         target = (self._config.get("capture") or {}).get("target_window") or ""
@@ -803,7 +895,7 @@ class SettingsWindow(QWidget):
         name, status, _ = self._profile_state
         if self._onboarding:
             self._ready_profile_badge.set_state("pending")
-            self._ready_profile_sub.setText("키를 저장하고 다시 시작하면 만들어집니다")
+            self._ready_profile_sub.setText("키를 저장하고 다시 시작하세요")
         elif status == "ok" and name:
             done += 1
         # 마이크
@@ -822,17 +914,6 @@ class SettingsWindow(QWidget):
             self._ready_mic_badge.set_state("pending")
             self._ready_mic_sub.setText(f"{self._device_short_name()} · 말해 보세요")
         self._nav_buttons[0].set_meta(f"{done}/4", T.ACCENT if done == 4 else T.WARN)
-
-    def _save_quick_key(self):
-        key = self._quick_key_input.text().strip()
-        if not key:
-            return
-        _write_env_key("GEMINI_API_KEY", key)
-        self._quick_key_input.clear()
-        logger.info("Gemini API 키 저장(방송 준비)")
-        self._need_restart("API 키")
-        self._refresh_keys()
-        self._refresh_ready()
 
     def _device_short_name(self) -> str:
         text = self._device_combo.currentText() if hasattr(self, "_device_combo") else ""
@@ -873,24 +954,90 @@ class SettingsWindow(QWidget):
         logger.info(f"캡처 창 적용: {title}")
         self._refresh_ready()
 
+    def _profile_target_game(self) -> str | None:
+        """프로필을 만들/붙여넣을 대상 게임 이름(파일 이름 규칙의 기준).
+        목록에서 고른 프로필이 있으면 그 파일, '자동'이면 캡처 창 이름에서 뽑은 게임."""
+        if hasattr(self, "_profile_combo") and self._profile_combo.currentIndex() > 0:
+            return self._profile_combo.currentData() or self._profile_combo.currentText()
+        title = (self._config.get("capture") or {}).get("target_window") or self._window_combo.currentText()
+        return extract_game_name(title) if title else None
+
+    def _set_profile_pending(self, game_name: str, text: str):
+        self._profile_state = (game_name, "pending", "")
+        self._ready_profile_badge.set_state("pending")
+        self._ready_profile_sub.setText(f"{game_name} · {text}")
+        self._game_profile_status.setText(f"{game_name} · {text}")
+        self._game_profile_status.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+        self._refresh_ready()
+
     def _regenerate_profile(self):
-        title = self._window_combo.currentText() or (self._config.get("capture") or {}).get("target_window")
-        if not title:
-            self._ready_profile_sub.setText("먼저 게임 창을 고르세요")
+        """Gemini 검색으로 자동 생성(API 비용, 수십 초). 기존 프로필을 지우고 다시 만든다."""
+        game_name = self._profile_target_game()
+        if not game_name:
+            self._game_profile_status.setText("먼저 게임 창을 고르세요")
             return
-        game_name = extract_game_name(title)
+        if not _read_env_keys()["gemini"]:
+            self._game_profile_status.setText("자동 생성은 Gemini 키가 있어야 해요(구글 검색 사용) — "
+                                              "'프롬프트 복사'로 무료로 만들 수 있어요.")
+            self._game_profile_status.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+            return
         profile_path = paths.user_data_dir() / "game_profiles" / f"{profile_filename(game_name)}.yaml"
+        msg = f"'{game_name}' 프로필을 Gemini 검색으로 자동 생성할까요?\n검색 6번 — API 비용이 들고 수십 초 걸려요."
+        if profile_path.exists():
+            msg += "\n\n지금 있는 프로필은 지워지고 새로 만든 것으로 바뀝니다."
+        if QMessageBox.question(self, "자동 생성", msg) != QMessageBox.StandardButton.Yes:
+            return
         if profile_path.exists():
             profile_path.unlink()
             logger.info(f"기존 프로필 삭제: {profile_path.name}")
+        self._queue.put({"game_name": game_name, "generate": True})
+        paths.save_last_session(game_name=game_name)
+        self._set_profile_pending(game_name, "자동 생성 중… (수십 초)")
+
+    def _copy_profile_prompt(self):
+        from src.chat.game_profile_loader import build_manual_prompt
+        game_name = self._profile_target_game()
+        if not game_name:
+            self._game_profile_status.setText("먼저 게임 창을 고르세요")
+            return
+        QApplication.clipboard().setText(build_manual_prompt(game_name))
+        self._game_profile_status.setText(
+            f"'{game_name}' 프롬프트를 복사했어요 → ChatGPT·Claude·Gemini에 붙여넣고(웹 검색 켜기) "
+            "받은 답을 '결과 붙여넣기'에 넣으세요.")
+        self._game_profile_status.setStyleSheet(f"color: {T.ACCENT_HI}; font-size: 12px;")
+        logger.info(f"프로필 프롬프트 복사: {game_name}")
+
+    def _paste_profile(self, text: str = ""):
+        from src.chat.game_profile_loader import save_profile
+        game_name = self._profile_target_game()
+        if not game_name:
+            self._game_profile_status.setText("먼저 게임 창을 고르세요")
+            return
+        dlg = _ProfilePasteDialog(game_name, text, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.profile:
+            return
+        try:
+            save_profile(game_name, dlg.profile)
+        except Exception as e:
+            self._game_profile_status.setText(f"저장 실패: {e}")
+            self._game_profile_status.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            return
+        self._refresh_profiles()
         self._queue.put({"game_name": game_name})
         paths.save_last_session(game_name=game_name)
-        self._profile_state = (game_name, "pending", "")
-        self._ready_profile_badge.set_state("pending")
-        self._ready_profile_sub.setText(f"{game_name} · 다시 만드는 중…")
-        self._game_profile_status.setText(f"{game_name} · 다시 만드는 중…")
-        self._game_profile_status.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
-        self._refresh_ready()
+        self._set_profile_pending(game_name, "저장됨 · 불러오는 중…")
+
+    def _load_profile_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "프로필 파일 불러오기", "",
+                                              "프로필 (*.yaml *.yml *.json *.txt *.md);;모든 파일 (*)")
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except Exception as e:
+            self._game_profile_status.setText(f"파일을 읽지 못했어요: {e}")
+            return
+        self._paste_profile(text)
 
     def _capture_preview(self):
         target = (self._config.get("capture") or {}).get("target_window")
@@ -1398,7 +1545,7 @@ class SettingsWindow(QWidget):
 
         card = T.Card("API 키")
         self._key_rows: dict[str, dict] = {}
-        for provider, optional in (("gemini", False), ("openai", False), ("claude", True)):
+        for provider, optional in (("gemini", True), ("openai", True), ("claude", True)):
             w, h = T.row_box(vertical=True, spacing=10)
             top = QHBoxLayout()
             top.setSpacing(12)
@@ -1439,26 +1586,51 @@ class SettingsWindow(QWidget):
         lay.addWidget(card)
 
         card = T.Card("모델")
-        vp = str(ai.get("vision_provider", "gemini"))
-        vm = ai.get("claude_vision_model" if vp == "claude" else "vision_model", "gemini-2.5-flash")
-        self._vision_combo = T.combo([(_model_text(p, m), _pm(p, m)) for p, m in _VISION_MODELS], width=300)
+        vp, vm = selected_model(self._config, "vision")
+        self._vision_combo = T.combo([(_model_text(p, m, _VISION_RECOMMENDED), _pm(p, m))
+                                      for p, m in _VISION_MODELS], width=300)
         T.select_data(self._vision_combo, _pm(vp, vm), fallback_text=_model_text(vp, vm))
         self._vision_combo.currentIndexChanged.connect(lambda _: self._on_ai_model("vision"))
-        card.add_row(title="화면 분석", sub="15초마다 게임 화면을 읽어요", right=self._vision_combo)
+        row_v = card.add_row(title="화면 분석", sub=f"{_interval_text(self._config)}마다 게임 화면을 읽어요", right=self._vision_combo)
+        self._vision_sub = row_v.layout().itemAt(0).layout().itemAt(1).widget()
 
-        cp = str(ai.get("chat_provider", "gemini"))
-        cm = ai.get("claude_chat_model" if cp == "claude" else "chat_model", "gemini-2.5-flash-lite")
-        self._chat_combo = T.combo([(_model_text(p, m), _pm(p, m)) for p, m in _CHAT_MODELS], width=300)
+        self._interval_spin = QSpinBox()
+        self._interval_spin.setRange(_MIN_INTERVAL, _MAX_INTERVAL)
+        self._interval_spin.setSuffix(" 초")
+        self._interval_spin.setValue(int(round(_interval_s(self._config))))
+        self._interval_spin.setFixedWidth(84)
+        self._interval_spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._interval_spin.valueChanged.connect(self._on_interval)
+        row_i = card.add_row(title="분석 주기",
+                             sub=f"게임 화면을 읽고 채팅을 만드는 간격 · 기본 {_BASE_INTERVAL}초 · 바로 적용",
+                             right=self._interval_spin)
+        self._interval_warn = T.label("", "sub", wrap=True)
+        self._interval_warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+        row_i.layout().itemAt(0).layout().addWidget(self._interval_warn)
+        self._update_interval_warn()
+
+        cp, cm = selected_model(self._config, "chat")
+        self._chat_combo = T.combo([(_model_text(p, m, _CHAT_RECOMMENDED), _pm(p, m))
+                                    for p, m in _CHAT_MODELS], width=300)
         T.select_data(self._chat_combo, _pm(cp, cm), fallback_text=_model_text(cp, cm))
         self._chat_combo.currentIndexChanged.connect(lambda _: self._on_ai_model("chat"))
-        card.add_row(title="채팅 생성", sub="봇 채팅을 한 번에 몰아서 만들어요", right=self._chat_combo)
+        row_c = card.add_row(title="채팅 생성", sub="봇 채팅을 한 번에 몰아서 만들어요", right=self._chat_combo)
 
         pmodel = str(ai.get("profile_model", _PROFILE_MODELS[0]))
         self._profile_model_combo = T.combo([(_model_text("gemini", m), m) for m in _PROFILE_MODELS], width=300)
         T.select_data(self._profile_model_combo, pmodel, fallback_text=_model_text("gemini", pmodel))
         self._profile_model_combo.currentIndexChanged.connect(self._on_profile_model)
-        card.add_row(title="게임 프로필 생성", sub="구글 검색으로 게임 정보를 모아요(Gemini 전용) · 다음 생성부터 적용",
-                     right=self._profile_model_combo)
+        row_p = card.add_row(title="게임 프로필 자동 생성",
+                             sub="구글 검색으로 게임 정보를 모아요(Gemini 전용) · 다음 생성부터 적용",
+                             right=self._profile_model_combo)
+        # 행마다 '키 없음' 경고(제목/설명 아래). 고른 모델의 키가 없으면 무엇으로 대체되는지 알려준다.
+        self._model_warns: dict[str, QLabel] = {}
+        for kind, row in (("vision", row_v), ("chat", row_c), ("profile", row_p)):
+            warn = T.label("", "sub", wrap=True)
+            warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+            warn.setVisible(False)
+            row.layout().itemAt(0).layout().addWidget(warn)
+            self._model_warns[kind] = warn
 
         prompt_btn = T.button("편집…")
         prompt_btn.clicked.connect(self._edit_vision_prompt)
@@ -1467,11 +1639,8 @@ class SettingsWindow(QWidget):
         last = card.layout().itemAt(card.layout().count() - 1).widget()
         last.layout().itemAt(0).layout().addWidget(self._prompt_sub)
         self._update_prompt_sub()
-        self._ai_warn = T.label("", "sub", wrap=True)
-        self._ai_warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px; padding: 0 16px 14px 16px;")
-        self._ai_warn.setVisible(False)
-        card.add_widget(self._ai_warn)
         lay.addWidget(card)
+        self._refresh_model_warns()
         lay.addStretch(1)
         return page
 
@@ -1480,19 +1649,53 @@ class SettingsWindow(QWidget):
             return
         keys = _read_env_keys()
         stt = self._config.get("stt") or {}
+        any_key = any(keys.values())
+        chosen = {selected_model(self._config, k)[0] for k in ("vision", "chat")}
         for provider, row in self._key_rows.items():
             has = bool(keys[provider])
             row["check"].setEnabled(has)
             row["edit"].setText("변경" if has else "추가")
             if has:
                 row["chip"].set_tone("ok", "있음")
-            elif provider == "openai" and str(stt.get("provider")) == "openai":
-                row["chip"].set_tone("warn", "필요")
-            elif row["optional"] or provider == "openai":
-                row["chip"].set_tone("neutral", "선택 사항 · 없음")
+            elif not any_key:
+                row["chip"].set_tone("warn", "셋 중 하나 이상 필요")
+            elif provider in chosen:
+                row["chip"].set_tone("warn", "고른 모델용 · 없으면 다른 키로 대체")
+            elif provider == str(stt.get("provider")) and stt.get("enabled"):
+                row["chip"].set_tone("warn", "음성 인식용 · 없으면 다른 키로 대체")
             else:
-                row["chip"].set_tone("warn", "필요")
+                row["chip"].set_tone("neutral", "선택 사항 · 없음")
+        self._refresh_model_warns()
         self._refresh_ready() if hasattr(self, "_ready_key_badge") else None
+
+    def _refresh_model_warns(self):
+        """모델 행 아래 경고: 고른 모델의 키가 없으면 '키 없음 → 무엇으로 대체'를, 목록에는 '키 없음' 표시."""
+        if not hasattr(self, "_model_warns"):
+            return
+        keys = _read_env_keys()
+        for kind, combo, recommended in (("vision", self._vision_combo, _VISION_RECOMMENDED),
+                                         ("chat", self._chat_combo, _CHAT_RECOMMENDED)):
+            for i in range(combo.count()):
+                p, _, m = (combo.itemData(i) or "").partition("|")
+                # 칸이 좁아 '(추천)' 과 같이 붙이면 잘린다 — 키가 없으면 '(키 없음)' 이 대신 들어간다.
+                combo.setItemText(i, _model_text(p, m, recommended) if keys.get(p)
+                                  else f"{_model_text(p, m)}  (키 없음)")
+            provider = (combo.currentData() or "").partition("|")[0]
+            warn = self._model_warns[kind]
+            if not provider or keys.get(provider):
+                warn.setVisible(False)
+                continue
+            label = _PROVIDER_LABEL.get(provider, provider)
+            try:
+                alt, alt_model, _ = resolve_provider(self._config, kind, keys)
+                tail = f"키를 추가하기 전까지 {_PROVIDER_LABEL[alt]}({alt_model})로 대체돼요."
+            except ValueError:
+                tail = "위에서 키를 추가하세요."
+            warn.setText(f"⚠ {label} 키가 없어요 — {tail}")
+            warn.setVisible(True)
+        pw = self._model_warns["profile"]
+        pw.setText("⚠ Gemini 키가 없어 자동 생성은 못 써요 — '게임 · 프로필'의 '프롬프트 복사'로 무료로 만들 수 있어요.")
+        pw.setVisible(not keys["gemini"])
 
     def _check_key(self, provider: str):
         key = _read_env_keys()[provider]
@@ -1527,24 +1730,55 @@ class SettingsWindow(QWidget):
     def _on_ai_model(self, kind: str):
         combo = self._vision_combo if kind == "vision" else self._chat_combo
         provider, _, model = (combo.currentData() or "").partition("|")
-        if provider == "claude" and not _read_env_keys()["claude"]:
-            # 키 없이 Claude 로 바꾸면 AI 프로세스가 클라이언트를 못 만든다 — 적용하지 않는다.
-            self._ai_warn.setText("Claude 모델은 Claude 키가 있어야 쓸 수 있어요. 위에서 키를 추가하고 다시 시작한 뒤 고르세요.")
-            self._ai_warn.setVisible(True)
-            ai = self._config.get("ai") or {}
-            pkey = "vision_provider" if kind == "vision" else "chat_provider"
-            p = str(ai.get(pkey, "gemini"))
-            mkey = ("claude_" if p == "claude" else "") + ("vision_model" if kind == "vision" else "chat_model")
-            combo.blockSignals(True)
-            T.select_data(combo, _pm(p, ai.get(mkey, "")))
-            combo.blockSignals(False)
-            return
-        self._ai_warn.setVisible(False)
-        values = {f"{kind}_provider": provider}
-        values[("claude_" if provider == "claude" else "") + f"{kind}_model"] = model
+        # 키가 없어도 선택은 저장한다 — AI 프로세스는 키가 생길 때까지 있는 키로 대체해 돌고,
+        # 행 아래 경고가 그 사실을 알려준다(키를 추가·재시작하면 고른 모델로 돈다).
+        values = {f"{kind}_provider": provider, model_config_key(provider, kind): model}
         self._save("ai", values)
         self._queue.put({f"{kind}_provider": provider, f"{kind}_model": model})
         logger.info(f"{kind} 모델 변경: {provider} / {model}")
+        self._refresh_keys()
+        self._update_interval_warn()
+
+    def _on_interval(self, value: int):
+        """분석 주기 변경 → 저장 + 캡처/AI 프로세스에 바로 반영(채팅 간격·소재 윈도우도 비례 조정)."""
+        self._save("capture", {"interval_seconds": int(value)})
+        self._queue.put({"interval_seconds": int(value)})
+        logger.info(f"분석 주기 변경: {value}초")
+        text = _interval_text(self._config)
+        self._vision_sub.setText(f"{text}마다 게임 화면을 읽어요")
+        if hasattr(self, "_cap_desc"):
+            self._cap_desc.setText(self._cap_desc_text())
+        if hasattr(self, "_cost_spins"):
+            # 채팅은 화면 분석 라운드마다 한 번 — 예상 비용의 '시간당 채팅 생성' 기본값도 주기에 맞춘다.
+            self._cost_spins["chat_calls_per_hour"].setValue(3600.0 / _interval_s(self._config))
+        self._update_interval_warn()
+
+    def _update_interval_warn(self):
+        sec = _interval_s(self._config)
+        if sec >= _BASE_INTERVAL:
+            self._interval_warn.setVisible(False)
+            return
+        from src.utils import pricing
+        vm = selected_model(self._config, "vision")[1]
+        cm = selected_model(self._config, "chat")[1]
+
+        def per_hour(interval: float) -> float:
+            d = pricing.USAGE_DEFAULTS
+            return pricing.estimate_costs(
+                vision_model=vm, chat_model=cm, stt_model="", capture_interval_s=interval, hours=1.0,
+                speech_min_per_hour=0.0, screen_change_pct=d["screen_change_pct"],
+                chat_calls_per_hour=3600.0 / interval)["total_per_hour"]
+
+        base, now = per_hour(_BASE_INTERVAL), per_hour(sec)
+        cost = f" (화면 분석+채팅 예상 시간당 {pricing.format_usd(base)} → {pricing.format_usd(now)})" if base else ""
+        self._interval_warn.setText(
+            f"⚠ 기본 {_BASE_INTERVAL}초보다 짧으면 AI 호출이 약 {_BASE_INTERVAL / sec:.1f}배로 늘어 "
+            f"비용이 많이 나갈 수 있어요{cost}.")
+        self._interval_warn.setVisible(True)
+
+    def _cap_desc_text(self) -> str:
+        return (f"{_interval_text(self._config)}마다 게임 창을 찍고, 화면이 거의 그대로면 건너뛰어 비용을 아낍니다. "
+                "채팅창이 찍히지 않는지 여기서 확인할 수 있어요.")
 
     def _on_profile_model(self, _):
         model = self._profile_model_combo.currentData()
@@ -1584,14 +1818,38 @@ class SettingsWindow(QWidget):
         apply_p = T.button("이 프로필 쓰기")
         apply_p.clicked.connect(self._apply_profile)
         h.addWidget(apply_p)
-        regen = T.button("다시 만들기")
-        regen.clicked.connect(self._regenerate_profile)
-        h.addWidget(regen)
         card.add_row(w)
         w, h = T.row_box()
         self._game_profile_status = T.label("불러오는 중…", "sub", wrap=True)
         h.addWidget(self._game_profile_status)
         card.add_row(w)
+        lay.addWidget(card)
+
+        # 만들기: 구독 채팅에 프롬프트를 붙여넣는 무료 방식이 기본, 자동 생성(API)은 선택.
+        card = T.Card("프로필 만들기 · 무료")
+        steps = T.label(
+            "① 프롬프트 복사 → ② ChatGPT·Claude·Gemini 앱에 붙여넣기(웹 검색/리서치 켜기) → "
+            "③ 받은 답을 '결과 붙여넣기'에. 대상은 위 목록에서 고른 프로필, '자동'이면 캡처 중인 게임이에요.",
+            "sub", wrap=True)
+        sw_, sh = T.row_box()
+        sh.addWidget(steps, 1)
+        card.add_row(sw_)
+        w, h = T.row_box(spacing=8)
+        copy_p = T.button("① 프롬프트 복사")
+        copy_p.clicked.connect(self._copy_profile_prompt)
+        h.addWidget(copy_p)
+        paste_p = T.button("③ 결과 붙여넣기…")
+        paste_p.clicked.connect(lambda: self._paste_profile())
+        h.addWidget(paste_p)
+        file_p = T.button("파일 불러오기…")
+        file_p.clicked.connect(self._load_profile_file)
+        h.addWidget(file_p)
+        h.addStretch(1)
+        card.add_row(w)
+        regen = T.button("자동 생성…")
+        regen.clicked.connect(self._regenerate_profile)
+        card.add_row(title="자동 생성 (API 비용)", sub="Gemini 구글 검색 6번으로 만들어요 · Gemini 키 필요 · 수십 초",
+                     right=regen)
         lay.addWidget(card)
 
         card = T.Card("창 목록에서 뺄 이름")
@@ -1711,8 +1969,8 @@ class SettingsWindow(QWidget):
 
     def _build_page_usage(self) -> QWidget:
         from src.utils import pricing
-        page, lay = self._page("사용량", f"지금 고른 모델 기준의 대략적인 비용이에요. 단가 {pricing.PRICING_AS_OF} 공개가, "
-                                       "토큰량은 추정치라 실제 청구액과 다를 수 있어요.")
+        page, lay = self._page("사용량", "이번 세션에 실제로 쓴 양과, 지금 고른 모델로 쓸 때의 예상 비용이에요. "
+                                       f"단가는 {pricing.PRICING_AS_OF} 공개가 기준이라 청구액과 조금 다를 수 있어요.")
         d = pricing.USAGE_DEFAULTS
         card = T.Card("사용량 가정")
         box = QWidget()
@@ -1734,7 +1992,7 @@ class SettingsWindow(QWidget):
             sp.setRange(lo, hi)
             sp.setSingleStep(step)
             sp.setDecimals(dec)
-            sp.setValue(float(d[key]))
+            sp.setValue(3600.0 / _interval_s(self._config) if key == "chat_calls_per_hour" else float(d[key]))
             sp.setFixedWidth(84)
             sp.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             sp.valueChanged.connect(self._recompute_cost)
@@ -1745,6 +2003,16 @@ class SettingsWindow(QWidget):
             self._cost_spins[key] = sp
         card.add_widget(box)
         lay.addWidget(card)
+
+        card = T.Card("이번 세션 실제 사용")
+        w, h = T.row_box()
+        self._usage_out = QLabel()
+        self._usage_out.setTextFormat(Qt.TextFormat.RichText)
+        self._usage_out.setWordWrap(True)
+        h.addWidget(self._usage_out, 1)
+        card.add_row(w)
+        lay.insertWidget(1, card)  # 페이지 머리 바로 아래 — 가정·예상보다 먼저 보이게
+        self._render_usage()
 
         card = T.Card("예상 비용")
         w, h = T.row_box()
@@ -1757,14 +2025,62 @@ class SettingsWindow(QWidget):
         lay.addStretch(1)
         return page
 
+    def set_usage(self, source: str, snap: dict):
+        """AI/STT 프로세스가 보낸 실제 사용량 스냅샷(출처별 누적값). 오버레이가 전달한다."""
+        if not hasattr(self, "_usage_snaps"):
+            self._usage_snaps: dict[str, dict] = {}
+        self._usage_snaps[source] = snap
+        self._render_usage()
+
+    def _render_usage(self):
+        if not hasattr(self, "_usage_out"):
+            return
+        from src.utils import pricing, usage
+        snaps = list(getattr(self, "_usage_snaps", {}).values())
+        if not snaps:
+            self._usage_out.setText(f"<span style='color:{T.MUTED}'>방송을 시작하면 API가 알려준 실제 토큰 수로 "
+                                    "비용을 집계해요.</span>")
+            return
+        m = usage.merge_snapshots(snaps)
+        f = pricing.format_usd
+        td = "padding:6px 12px;color:{}"
+        rows = ""
+        for r in m["rows"]:
+            if r["audio_sec"] and not r["in_tokens"]:
+                amount = f"{r['audio_sec'] / 60:.1f}분"
+            else:
+                amount = f"{r['in_tokens']:,} / {r['out_tokens']:,}"
+            cost = f(r["cost"]) if r["priced"] else f"<span style='color:{T.WARN}'>?</span>"
+            rows += (f"<tr><td style='padding:6px 12px 6px 0;color:{T.TEXT}'>{usage.KIND_LABEL.get(r['kind'], r['kind'])}</td>"
+                     f"<td style='{td.format(T.MUTED)}'>{r['model']}</td>"
+                     f"<td align='right' style='{td.format(T.MUTED)}'>{r['calls']:,}</td>"
+                     f"<td align='right' style='{td.format(T.MUTED)}'>{amount}</td>"
+                     f"<td align='right' style='padding:6px 0 6px 12px;color:{T.TEXT}'>{cost}</td></tr>")
+        head = (f"<tr style='color:{T.FAINT};font-size:11px'><td style='padding:0 12px 6px 0'>항목</td>"
+                "<td style='padding:0 12px 6px'>모델</td><td align='right' style='padding:0 12px 6px'>호출</td>"
+                "<td align='right' style='padding:0 12px 6px'>토큰 입력/출력 · 오디오</td>"
+                "<td align='right' style='padding:0 0 6px 12px'>비용</td></tr>")
+        mins = m["elapsed_s"] / 60
+        elapsed = f"{int(mins // 60)}시간 {int(mins % 60)}분" if mins >= 60 else f"{mins:.0f}분"
+        total = (f"<tr><td colspan='4' style='padding:10px 12px 0 0;font-weight:700'>합계 · {elapsed} 경과"
+                 f"<span style='color:{T.MUTED};font-weight:400'> (시간당 {f(m['per_hour'])})</span></td>"
+                 f"<td align='right' style='padding:10px 0 0 12px;color:{T.ACCENT_HI};font-weight:700'>"
+                 f"{f(m['total_cost'])}</td></tr>")
+        note = ("<p style='color:{};font-size:12px'>API가 보고한 토큰 × 공개 단가({}) 기준. 무료 한도·할인·"
+                "검색 요금은 빠져 있어 청구액과 조금 다를 수 있어요.</p>").format(T.FAINT, pricing.PRICING_AS_OF)
+        if m["unpriced"]:
+            note += (f"<p style='color:{T.WARN};font-size:12px'>단가가 등록되지 않은 모델: "
+                     f"{', '.join(m['unpriced'])} — 합계에서 빠졌어요</p>")
+        self._usage_out.setText(f"<table width='100%' cellspacing='0'>{head}{rows}{total}</table>{note}")
+        self._nav_buttons[5].set_meta(f(m["total_cost"]))
+
     def _recompute_cost(self, *_):
         if not hasattr(self, "_cost_out"):
             return
         from src.utils import pricing
-        ai = self._config.get("ai") or {}
         stt = self._config.get("stt") or {}
-        vm = ai.get("claude_vision_model") if ai.get("vision_provider") == "claude" else ai.get("vision_model")
-        cm = ai.get("claude_chat_model") if ai.get("chat_provider") == "claude" else ai.get("chat_model")
+        vm = selected_model(self._config, "vision")[1]
+        cm = selected_model(self._config, "chat")[1]
         sm = stt.get("model") if stt.get("enabled") else ""
         interval = float((self._config.get("capture") or {}).get("interval_seconds", 15) or 15)
         sp = self._cost_spins
@@ -1805,4 +2121,5 @@ class SettingsWindow(QWidget):
             warn = (f"<p style='color:{T.WARN};font-size:12px'>공개 단가가 없는 모델: "
                     f"{', '.join(sorted(set(est['unknown'])))} — 합계에서 빠졌어요</p>")
         self._cost_out.setText(f"<table width='100%' cellspacing='0'>{head}{rows}{total}</table>{warn}")
-        self._nav_buttons[5].set_meta(f(est["total_per_hour"]) + "/h")
+        if not getattr(self, "_usage_snaps", None):  # 실제 사용이 들어오면 메뉴 배지는 실제 누적액
+            self._nav_buttons[5].set_meta(f(est["total_per_hour"]) + "/h")

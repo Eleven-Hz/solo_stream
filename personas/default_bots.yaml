@@ -113,6 +113,8 @@ bots:
     memory_depth: 2
     react_to_others: true
     react_chance: 0.5
+    # 다른 방송 얘기할 때 부를 가상의 스트리머 이름 (실존 인물 아님)
+    known_streamers: ["새벽두부", "빵떡도사", "삼각김밥TV", "느림보거북", "구름망치"]
     triggers:
       - type: "death"
         reaction: "어제 ㅇㅇ방송에선 한방에 깨던데ㅋㅋ"

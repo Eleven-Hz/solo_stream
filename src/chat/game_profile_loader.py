@@ -1,7 +1,9 @@
 """
 게임 프로필 로더.
 - game_profiles/{게임명}.yaml 이 있으면 로드
-- 없으면 Gemini (Google Search grounding) 멀티턴으로 자동 생성 후 저장
+- 없으면: 기본은 '프로필 없음'(빈 프로필 + missing 표시) — 사용자가 build_manual_prompt() 를
+  구독 채팅에 붙여넣고 받은 결과를 parse_profile_text()/save_profile() 로 넣는다(비용 0).
+  auto_generate=True 일 때만 Gemini (Google Search grounding) 멀티턴으로 자동 생성 후 저장.
 
 생성 파이프라인:
   1단계: 기본 정보 (장르, 개발사, 스토리, 분위기)
@@ -17,7 +19,6 @@ import time
 from pathlib import Path
 
 import yaml
-from google.genai import types
 
 from src.utils import paths
 
@@ -199,6 +200,7 @@ def _search(ai_client, prompt: str, model: str) -> str:
     503/UNAVAILABLE 같은 일시적 오류는 지수 백오프로 최대 _MAX_RETRIES 회 재시도한다.
     모든 재시도가 실패하면 마지막 예외를 그대로 raise 한다(호출부가 메시지 수집).
     """
+    from google.genai import types
     last_err: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
@@ -209,6 +211,12 @@ def _search(ai_client, prompt: str, model: str) -> str:
                     tools=[types.Tool(google_search=types.GoogleSearch())],
                 ),
             )
+            um = getattr(response, "usage_metadata", None)
+            if um is not None:
+                from src.utils import usage
+                usage.record("profile", model, getattr(um, "prompt_token_count", 0) or 0,
+                             (getattr(um, "candidates_token_count", 0) or 0)
+                             + (getattr(um, "thoughts_token_count", 0) or 0))
             text = (response.text or "").strip()
             if not text:
                 # 503 등으로 본문이 비어 돌아오는 케이스도 일시적 오류로 취급해 재시도
@@ -236,10 +244,12 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
-def load_profile(game_name: str, ai_client=None, config: dict | None = None) -> dict:
+def load_profile(game_name: str, ai_client=None, config: dict | None = None,
+                 auto_generate: bool = False) -> dict:
     """
-    게임 프로필 로드. 없으면 ai_client로 자동 생성.
-    ai_client가 None이면 default 프로필 반환.
+    게임 프로필 로드. 파일이 없으면:
+      - auto_generate=True 이고 ai_client 가 있으면 Gemini 검색으로 자동 생성(API 비용)
+      - 아니면 빈 프로필에 _missing 표시 → UI 가 '프로필 만들기' 안내를 띄운다
     """
     _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -252,9 +262,11 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None) -> 
         logger.info(f"게임 프로필 로드: {profile_path.name}")
         return profile
 
-    if ai_client is None:
-        logger.warning(f"프로필 없음, AI 클라이언트 없어서 빈 프로필 사용: {game_name}")
-        return _empty_profile(game_name)
+    if ai_client is None or not auto_generate:
+        logger.warning(f"프로필 없음 — 빈 프로필로 진행(설정에서 만들기 안내): {game_name}")
+        result = _empty_profile(game_name)
+        result["_missing"] = True
+        return result
 
     model = (config or {}).get("ai", {}).get("profile_model", _DEFAULT_PROFILE_MODEL)
     logger.info(f"게임 프로필 없음. 멀티턴 검색으로 자동 생성 중: {game_name} (모델: {model})")
@@ -511,3 +523,173 @@ def build_vision_context(profile: dict) -> str:
             short = s.split(":")[0].strip()
             lines.append(f"  - {short}")
     return "\n".join(lines)
+
+
+# ── 수동 생성(구독 채팅에 붙여넣기) ─────────────────────────────────────────────
+# API 자동 생성(6단계 검색) 대신, 사용자가 이 프롬프트 하나를 ChatGPT/Claude/Gemini 앱에
+# 붙여넣고 받은 YAML 을 앱에 다시 붙여넣는다. 구독 채팅의 웹 검색·리서치가 단계별 API
+# 검색보다 깊고, API 비용이 들지 않는다. 결과 형식은 자동 생성과 같은 프로필 스키마.
+
+PROFILE_SECTIONS = ("vision_focus", "systems", "locations", "enemies", "skills", "chat_tips")
+
+_MANUAL_PROMPT = """게임 "{game_name}"의 정보를 웹에서 검색해, 이 게임을 실제로 아는 한국 시청자들이 방송 채팅에서 쓸 수 있는 '게임 프로필'을 만들어 주세요.
+(웹 검색 기능을 켜고 공식 사이트·스팀·나무위키·위키피디아·게임 위키·공략 사이트·커뮤니티(레딧, 디시 등)를 참고)
+
+반드시 지킬 것
+- 실제로 게임에 있는 것만. 확인이 안 되는 이름·밈은 지어내지 말고 빼세요.
+- 고유명사는 '한국어명 (영문 원어명)' 형식. 한국어 공식 번역이 있으면 그것을, 없으면 한국 팬덤에서 통용되는 표기를 쓰세요.
+- 각 항목은 한 줄: '이름: 한 줄 설명'.
+- 출처 링크·각주·인용 표시는 넣지 마세요.
+- 결과는 아래 YAML 하나만, ```yaml 코드 블록 하나에 담아 주세요. 앞뒤 설명은 쓰지 마세요.
+
+```yaml
+name: 게임 정식 명칭 (한국어 공식명 있으면 병기. 예: CrossCode (크로스코드))
+description: 장르, 개발사, 핵심 스토리, 분위기를 2~3문장으로.
+vision_focus:   # 5~8개. AI가 게임 스크린샷을 볼 때 주목할 시각 요소와 읽는 법. HP 같은 HUD 숫자 읽기는 넣지 말 것
+  - 지역 분위기 (배경 색상·지형 — 설원/사막/던전 등)
+systems:        # 10개 이상. 전투 메카닉, 성장, 자원/게이지, 특수 시스템
+  - 시스템명 (원어명): 한 줄 설명
+locations:      # 10개 이상. 주요 지역/던전, 해금 순서대로
+  - 한국어명 (영문명): 테마·특징 한 줄
+enemies:        # 10개 이상. 일반 몬스터, 미니보스, 메인 보스 구분해서
+  - 한국어명 (영문명): 특징 한 줄
+skills:         # 10개 이상. 플레이어가 쓰는 스킬/기술/무기/아이템
+  - 한국어명 (영문명): 효과 한 줄
+chat_tips:      # 15개 이상. 이 게임 방송 채팅에서 실제로 쓰이는 반응·밈·별칭을 '상황 → 채팅 반응' 한 문장으로
+  - 보스 첫 등장 → '또 시작됐네' 같은 밈 채팅이 쏟아짐
+```
+
+참고용 예시(CrossCode 일부):
+```yaml
+name: CrossCode (크로스코드)
+description: Radical Fish Games 개발. 기억을 잃은 주인공 '레아'가 가상현실 MMO 'CrossWorlds'의 진실을 파헤치는 2D 액션 RPG. 고속 전투와 고난도 퍼즐이 특징.
+locations:
+  - 초보자 항구 (Rookie Harbor): 시작 허브 도시
+enemies:
+  - 고슴도치 (Hedgehag): 상징적인 기본 몬스터
+chat_tips:
+  - 아폴로가 장황한 정의 선언을 시작하면 '또 시작됐네', 'Justice!' 채팅 폭발
+```"""
+
+
+def build_manual_prompt(game_name: str) -> str:
+    """구독 채팅에 붙여넣을 프로필 생성 프롬프트(한 번에 전체)."""
+    return _MANUAL_PROMPT.format(game_name=game_name.strip() or "Unknown")
+
+
+def _profile_item(item) -> str | None:
+    """리스트 항목 하나를 '이름: 설명' 문자열로. 채팅이 dict 로 주는 경우도 받는다."""
+    if isinstance(item, str):
+        return item.strip() or None
+    if isinstance(item, dict):
+        if len(item) == 1:  # {"이름": "설명"} — YAML 에서 '이름: 설명' 이 dict 로 읽힌 경우
+            (k, v), = item.items()
+            return f"{k}: {v}".strip() if v not in (None, "") else str(k).strip()
+        name = item.get("name") or item.get("이름") or item.get("title")
+        desc = item.get("description") or item.get("desc") or item.get("설명") or ""
+        if name:
+            return f"{name}: {desc}".strip().rstrip(":") if desc else str(name).strip()
+    return None
+
+
+_KNOWN_KEYS = ("name", "description") + PROFILE_SECTIONS
+
+
+def _strip_citations(text: str) -> str:
+    """검색 켠 채팅이 붙이는 출처 표시 제거: '([site](url))' 는 통째로, '[글자](url)' 는 글자만."""
+    text = re.sub(r"\s*\(\[[^\]]*\]\([^)]*\)\)", "", text)
+    text = re.sub(r"\[([^\]]*)\]\(https?://[^)]*\)", r"\1", text)
+    return re.sub(r"\s*【[^】]*】", "", text)
+
+
+def _parse_loose(text: str) -> dict:
+    """정식 YAML 이 아닐 때의 줄 단위 읽기. 채팅 답은 항목 안에 '예: …' 처럼 콜론이 또 들어가
+    YAML 이 깨지는 경우가 흔해서, 'key:' 줄과 '- 항목' 줄만 보고 항목은 원문 그대로 둔다."""
+    data: dict = {}
+    key = None
+    for line in text.splitlines():
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        m = re.match(r"^([A-Za-z_]+)\s*:\s*(.*)$", line)
+        if m and m.group(1) in _KNOWN_KEYS:
+            key, value = m.group(1), m.group(2).strip()
+            if value.startswith("#") or value in ("|", ">", "|-", ">-"):
+                value = ""  # 주석만 있거나 블록 스칼라 시작 — 내용은 다음 줄들
+            data[key] = value.strip("'\"") if value else ([] if key in PROFILE_SECTIONS else "")
+            continue
+        if key is None:
+            continue
+        item = re.match(r"^\s*[-•*]\s+(.*)$", line)
+        if item and key in PROFILE_SECTIONS:
+            if not isinstance(data.get(key), list):
+                data[key] = []
+            data[key].append(item.group(1).strip().strip("'\""))
+        elif isinstance(data.get(key), list) and data[key]:
+            data[key][-1] += " " + line.strip()  # 줄바꿈된 항목 이어붙이기
+        elif isinstance(data.get(key), str):
+            data[key] = (data[key] + " " + line.strip()).strip()  # 여러 줄 설명
+    return data
+
+
+def _extract_structured(text: str):
+    """붙여넣은 답에서 프로필을 찾아 읽는다. 코드 블록 → 전체 → { } 순으로 정식 YAML/JSON,
+    다 안 되면 줄 단위 읽기(_parse_loose)."""
+    text = _strip_citations(text)
+    blocks = re.findall(r"```(?:ya?ml|json)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    candidates = blocks + [text]
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        candidates.append(m.group(0))
+    for c in candidates:
+        try:
+            data = yaml.safe_load(c)
+        except Exception:
+            continue
+        if isinstance(data, dict) and any(k in data for k in _KNOWN_KEYS):
+            return data
+    for c in blocks + [text]:
+        data = _parse_loose(c)
+        if any(data.get(k) for k in _KNOWN_KEYS):
+            return data
+    raise ValueError("프로필 형식(name:, locations: 같은 항목)을 찾지 못했어요")
+
+
+def parse_profile_text(text: str, fallback_name: str = "") -> tuple[dict, list[str]]:
+    """구독 채팅 결과(붙여넣기/파일)를 프로필 dict 로. (프로필, 경고 목록). 못 읽으면 ValueError."""
+    if not (text or "").strip():
+        raise ValueError("붙여넣은 내용이 없어요")
+    data = _extract_structured(text)
+    profile: dict = {
+        "name": str(data.get("name") or fallback_name or "Unknown").strip(),
+        "description": str(data.get("description") or "").strip(),
+    }
+    for section in PROFILE_SECTIONS:
+        raw = data.get(section) or []
+        if isinstance(raw, str):
+            raw = [line.lstrip("-• ").strip() for line in raw.splitlines()]
+        items = [s for s in (_profile_item(x) for x in raw) if s]
+        profile[section] = _clean_list(items)
+    warnings: list[str] = []
+    if not data.get("name"):
+        warnings.append("이름(name)이 없어 게임 이름으로 채웠어요")
+    if not profile["description"]:
+        warnings.append("설명(description)이 비어 있어요")
+    empty = [s for s in PROFILE_SECTIONS if not profile[s]]
+    if empty:
+        warnings.append(f"비어 있는 항목: {', '.join(empty)}")
+    return profile, warnings
+
+
+def profile_path_for(game_name: str) -> Path:
+    return _PROFILE_DIR / f"{_safe_filename(game_name)}.yaml"
+
+
+def save_profile(game_name: str, profile: dict) -> Path:
+    """프로필을 게임 이름 규칙의 파일로 저장(덮어씀). load_profile 이 다음부터 이 파일을 읽는다."""
+    _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    path = profile_path_for(game_name)
+    to_save = {k: v for k, v in profile.items() if not k.startswith("_")}
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    logger.info(f"게임 프로필 저장(수동): {path}")
+    return path

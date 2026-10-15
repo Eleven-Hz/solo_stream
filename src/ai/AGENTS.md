@@ -4,12 +4,12 @@
 # ai
 
 ## Purpose
-**유일한 AI API 접점**. 외부 SDK (`google.genai`, `anthropic`)는 이 디렉토리에서만 import된다. Vision 분석(`analyze_screenshot`)과 봇 채팅 생성(`generate_chats`)을 동일 인터페이스로 노출하고, `config.yaml`의 `ai.vision_provider` / `ai.chat_provider`로 provider(`gemini` | `claude`)를 런타임 교체할 수 있다. 모델 deprecate 주기가 짧다는 전제 하에 한 파일만 수정해 갈아끼울 수 있도록 설계됨.
+**유일한 AI API 접점**. 외부 SDK (`google.genai`, `anthropic`, `openai`(vision/채팅))는 이 디렉토리에서만 import된다(OpenAI STT 는 `src/stt/transcriber.py`). Vision 분석(`analyze_screenshot`)과 봇 채팅 생성(`generate_chats`)을 동일 인터페이스로 노출하고, `config.yaml`의 `ai.vision_provider` / `ai.chat_provider`로 provider(`gemini` | `claude` | `openai`)를 런타임 교체할 수 있다. 모델 이름 키는 `model_config_key(provider, kind)`(gemini=`vision_model`/`chat_model`, 그 외 `<provider>_<kind>_model`), 현재 선택은 `selected_model(config, kind)`로 읽는다 — main·설정 창이 모두 이 두 함수를 쓴다. 고른 provider 키가 없으면 팩토리가 Gemini 로 대체한다(죽지 않음). 모델 deprecate 주기가 짧다는 전제 하에 한 파일만 수정해 갈아끼울 수 있도록 설계됨.
 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `model_client.py` | `GeminiClient`, `ClaudeClient`, `create_vision_client`, `create_chat_client`. Vision 프롬프트 빌더(`_build_vision_prompt`), 채팅 프롬프트 빌더(`_build_bots_info`, `_build_user_speech_section`), JSON 응답 파서(`_parse_chats`, trailing-comma·코드펜스·잡음 텍스트 보수적 cleanup), 429 quota 재시도 로직 포함 |
+| `model_client.py` | `GeminiClient`, `ClaudeClient`, `OpenAIClient`(Responses API, reasoning.effort 를 none→minimal→미지정 순으로 낮춰 시도·모델별 기억), `create_vision_client`, `create_chat_client`. 채팅 프롬프트는 `_build_chat_prompt` 하나로 세 provider 가 공유. Claude 는 thinking off(+5세대는 effort low). Vision 프롬프트 빌더(`_build_vision_prompt`), 채팅 프롬프트 빌더(`_build_bots_info`, `_build_user_speech_section`), JSON 응답 파서(`_parse_chats`, trailing-comma·코드펜스·잡음 텍스트 보수적 cleanup), 429 quota 재시도 로직 포함 |
 | `__init__.py` | 패키지 마커 |
 
 ## For AI Agents
