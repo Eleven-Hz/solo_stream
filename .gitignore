@@ -42,3 +42,5 @@ dev_history
 # oh my claude
 .omc
 .omc/*
+# 평가 러너 출력 폴더 (replay, ui 스크린샷 등)
+tests/*/output/

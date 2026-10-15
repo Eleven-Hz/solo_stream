@@ -21,7 +21,8 @@
 | `vision/` | Vision 모델 비교 러너 (영상 프레임 샘플링) — see `vision/AGENTS.md` |
 | `stt/` | VAD + transcribe 평가 (WAV 입력) — see `stt/AGENTS.md` |
 | `integration/` | Vision + STT 합쳐 vision 라운드의 lookback 컨텍스트 검증 — see `integration/AGENTS.md` |
-| `ui/` | PyQt 오버레이/설정 패널 스모크 — see `ui/AGENTS.md` |
+| `ui/` | PyQt 오버레이/설정 패널 스모크 + README 스크린샷(`readme_shots.py`) — see `ui/AGENTS.md` |
+| `replay/` | 샘플 영상·음성 리플레이(화면 분석→받아쓰기→채팅, main 과 같은 후처리) + 채팅 모델 A/B — see `replay/AGENTS.md` |
 
 ## For AI Agents
 

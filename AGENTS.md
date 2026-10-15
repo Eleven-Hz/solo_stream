@@ -24,6 +24,7 @@
 | `personas/` | 봇 페르소나 YAML (이름/말투/감정/반응 강도) — see `personas/AGENTS.md` |
 | `game_profiles/` | 게임별 캐시된 프로필 YAML (자동 생성 + 수동 편집) — see `game_profiles/AGENTS.md` |
 | `docs/` | 기획서, 기능 추가 계획 등 한국어 설계 문서 — see `docs/AGENTS.md` |
+| `docs/wiki/` | 실측 결과·외부 API 특성·결정 이유·검증 방법 (코드에 안 남는 지식) — see `docs/wiki/README.md` |
 | `dev_history/` | 일자별 개발 일지 (gitignore 대상, dev-history skill로 자동 생성) — see `dev_history/AGENTS.md` |
 | `logs/` | 세션 로그 + 채팅 라운드 블록 로그 (gitignore 대상) |
 | `venv/` | Python 가상환경 (gitignore 대상, 분석 제외) |
@@ -36,8 +37,11 @@
 - Windows 전용 의존성 (`pywin32`, `win32gui`) 사용 — 다른 OS 호환성을 가정하지 말 것.
 - 한국어 사용자 인터페이스/프롬프트가 기본 — 로그·UI·페르소나·프롬프트 모두 한국어 톤을 유지한다.
 
+- **지식 둘 곳**: 구조·코드 규칙은 `AGENTS.md`, 실측 수치·모델/API 특성·결정의 이유·검증 방법은 `docs/wiki/`. 같은 내용을 두 곳에 쓰지 않는다. 모델을 바꾸거나 새로 재면 `docs/wiki/models-and-providers.md` 를 날짜와 함께 갱신.
+
 ### Testing Requirements
 - 자동화된 pytest 스위트는 없다. `tests/<module>/run.py` 형식의 평가 러너를 직접 실행해 HTML/TXT 리포트를 생성하는 방식이다.
+- 프롬프트·후처리·모델·게임 프로필을 바꾸면 `tests/replay/run.py`(샘플 영상 리플레이)로 전후 대화록을 비교한다 — 방법은 `docs/wiki/evaluation.md`.
 - UI 변경은 `tests/ui/smoke_settings_tabs.py`(화면 캡처 PNG)로 스모크 후 실제 `run.bat` 실행으로 확인.
 - API 비용이 드는 호출(Vision/Chat/STT)은 실제 키 + Free-tier 한도 안에서 수동 검증.
 

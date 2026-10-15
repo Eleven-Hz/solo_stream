@@ -10,6 +10,7 @@ PyQt6 오버레이·설정 창 스모크 테스트. 실서비스 백엔드(캡�
 | File | Description |
 |------|-------------|
 | `smoke_settings_tabs.py` | 가짜 게임 화면 창 위에 오버레이를 띄우고 투명도 15/50/100%, 글자만+마우스 없음, 캡처 제외 상태와 설정 창 6페이지를 **실제 화면 캡처**로 PNG 저장(기본 `tests/ui/output/`). 메시지 수·예외 여부도 확인. |
+| `readme_shots.py` | README 스크린샷 생성. 위젯을 직접 렌더(`grab()`)해 원격·작은 화면에서도 안 잘리고, 임시 데이터 폴더(가짜 키·crosscode 프로필)로 실행해 실제 키·경로가 안 찍힌다. 기본 출력 `tests/ui/output/readme/` → 확인 후 `docs/images/` 로 복사. |
 | `test_ui.py` | 0.5초 간격 가짜 메시지를 흘려 넣고 `run_overlay` 로 띄우는 수동 확인용. |
 | `__init__.py` | 패키지 마커 |
 
