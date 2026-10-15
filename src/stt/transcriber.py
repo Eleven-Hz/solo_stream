@@ -147,6 +147,11 @@ class GeminiTranscriber:
         t0 = time.perf_counter()
         try:
             response = self._call_with_retry(_call)
+            um = getattr(response, "usage_metadata", None)
+            if um is not None:
+                from src.utils import usage
+                usage.record("stt", self._model, getattr(um, "prompt_token_count", 0) or 0,
+                             getattr(um, "candidates_token_count", 0) or 0)
             text = (response.text or "").strip()
         except Exception as e:
             logger.error(f"transcribe 실패: {e}")
@@ -213,6 +218,9 @@ class OpenAITranscriber:
                 response_format="text",
             )
             text = (resp if isinstance(resp, str) else getattr(resp, "text", "")).strip()
+            # transcribe 모델은 오디오 분 단위 과금 — 보낸 길이로 기록한다.
+            from src.utils import usage
+            usage.record("stt", self._model, audio_sec=len(pcm) / float(sample_rate))
         except Exception as e:
             logger.error(f"transcribe 실패: {e}")
             text = ""

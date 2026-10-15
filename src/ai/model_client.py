@@ -12,7 +12,26 @@ import logging
 import re
 import time
 
+from src.utils import usage
+
 logger = logging.getLogger("solo_stream.ai")
+
+
+def _gemini_tokens(response) -> tuple[int, int]:
+    """Gemini 응답의 (입력, 출력) 토큰. 사고 토큰은 출력 요금으로 청구되므로 출력에 더한다."""
+    um = getattr(response, "usage_metadata", None)
+    if um is None:
+        return 0, 0
+    out = (getattr(um, "candidates_token_count", 0) or 0) + (getattr(um, "thoughts_token_count", 0) or 0)
+    return getattr(um, "prompt_token_count", 0) or 0, out
+
+
+def _usage_tokens(response) -> tuple[int, int]:
+    """OpenAI Responses / Anthropic Messages 응답의 (입력, 출력) 토큰 — 둘 다 같은 필드 이름."""
+    u = getattr(response, "usage", None)
+    if u is None:
+        return 0, 0
+    return getattr(u, "input_tokens", 0) or 0, getattr(u, "output_tokens", 0) or 0
 
 _VISION_SYSTEM = "당신은 게임 방송 전문 해설 AI입니다. 주어진 게임 정보를 활용해 화면을 정확하고 간결하게 한국어로 분석합니다."
 
@@ -294,10 +313,12 @@ def is_transient_error(err: "Exception | str | None") -> bool:
 
 class ChatCallDebug:
     """generate_chats 가 마지막 호출 정보를 보관해 호출자가 라운드 로그에 합쳐쓸 수 있게 함."""
-    __slots__ = ("provider", "model", "prompt", "raw_response", "elapsed_s", "error")
+    __slots__ = ("provider", "model", "prompt", "raw_response", "elapsed_s", "error", "in_tokens", "out_tokens")
 
     def __init__(self):
         self.provider: str = ""
+        self.in_tokens: int = 0
+        self.out_tokens: int = 0
         self.model: str = ""
         self.prompt: str = ""
         self.raw_response: str = ""
@@ -396,6 +417,7 @@ class GeminiClient:
                     ),
                 )
             response = self._call_with_retry(_call)
+            usage.record("vision", self._vision_model, *_gemini_tokens(response))
             return response.text.strip()
         except Exception as e:
             logger.error(f"Vision 분석 실패: {e}")
@@ -421,6 +443,7 @@ class GeminiClient:
         raw = ""
         parsed: list[dict] = []
         err = ""
+        tokens = (0, 0)
         t0 = time.perf_counter()
         try:
             def _call():
@@ -429,6 +452,8 @@ class GeminiClient:
                     contents=prompt,
                 )
             response = self._call_with_retry(_call)
+            tokens = _gemini_tokens(response)
+            usage.record("chat", self._chat_model, *tokens)
             raw = (response.text or "").strip()
             parsed = _parse_chats(raw)
         except json.JSONDecodeError as e:
@@ -444,6 +469,7 @@ class GeminiClient:
             self.last_chat_call.raw_response = raw
             self.last_chat_call.elapsed_s = time.perf_counter() - t0
             self.last_chat_call.error = err
+            self.last_chat_call.in_tokens, self.last_chat_call.out_tokens = tokens
         return parsed
 
 
@@ -491,6 +517,7 @@ class ClaudeClient:
                     }
                 ],
             )
+            usage.record("vision", self._vision_model, *_usage_tokens(response))
             return "".join(b.text for b in response.content if b.type == "text").strip()
         except Exception as e:
             logger.error(f"Claude Vision 분석 실패: {e}")
@@ -516,6 +543,7 @@ class ClaudeClient:
         raw = ""
         parsed: list[dict] = []
         err = ""
+        tokens = (0, 0)
         t0 = time.perf_counter()
         try:
             response = self._client.messages.create(
@@ -524,6 +552,8 @@ class ClaudeClient:
                 messages=[{"role": "user", "content": prompt}],
                 **self._fast_kwargs(self._chat_model),
             )
+            tokens = _usage_tokens(response)
+            usage.record("chat", self._chat_model, *tokens)
             raw = "".join(b.text for b in response.content if b.type == "text").strip()
             parsed = _parse_chats(raw)
         except json.JSONDecodeError as e:
@@ -539,6 +569,7 @@ class ClaudeClient:
             self.last_chat_call.raw_response = raw
             self.last_chat_call.elapsed_s = time.perf_counter() - t0
             self.last_chat_call.error = err
+            self.last_chat_call.in_tokens, self.last_chat_call.out_tokens = tokens
         return parsed
 
 
@@ -595,6 +626,7 @@ class OpenAIClient:
                 }],
                 max_output_tokens=1024,
             )
+            usage.record("vision", self._vision_model, *_usage_tokens(response))
             return (response.output_text or "").strip() or VISION_ERROR_MARKER
         except Exception as e:
             logger.error(f"OpenAI Vision 분석 실패: {e}")
@@ -620,9 +652,12 @@ class OpenAIClient:
         raw = ""
         parsed: list[dict] = []
         err = ""
+        tokens = (0, 0)
         t0 = time.perf_counter()
         try:
             response = self._create(self._chat_model, input=prompt, max_output_tokens=1024)
+            tokens = _usage_tokens(response)
+            usage.record("chat", self._chat_model, *tokens)
             raw = (response.output_text or "").strip()
             parsed = _parse_chats(raw)
         except json.JSONDecodeError as e:
@@ -638,6 +673,7 @@ class OpenAIClient:
             self.last_chat_call.raw_response = raw
             self.last_chat_call.elapsed_s = time.perf_counter() - t0
             self.last_chat_call.error = err
+            self.last_chat_call.in_tokens, self.last_chat_call.out_tokens = tokens
         return parsed
 
 
@@ -646,7 +682,7 @@ PROVIDERS = ("gemini", "claude", "openai")
 # provider 별 기본 모델 (config 에 값이 없을 때).
 DEFAULT_MODELS = {
     "gemini": {"vision": "gemini-2.5-flash", "chat": "gemini-2.5-flash-lite"},
-    "claude": {"vision": "claude-sonnet-4-6", "chat": "claude-haiku-5-5"},
+    "claude": {"vision": "claude-haiku-5-5", "chat": "claude-haiku-5-5"},
     "openai": {"vision": "gpt-6-luna", "chat": "gpt-6-luna"},
 }
 
@@ -667,30 +703,49 @@ def selected_model(config: dict, kind: str) -> tuple[str, str]:
     return provider, ai.get(model_config_key(provider, kind)) or DEFAULT_MODELS[provider][kind]
 
 
-def _create_client(kind: str, config: dict, gemini_api_key: str,
-                   claude_api_key: str | None, openai_api_key: str | None):
+# 고른 provider 의 키가 없을 때 대신 쓸 순서. 비용·품질이 무난한 순.
+_FALLBACK_ORDER = ("openai", "gemini", "claude")
+
+
+def resolve_provider(config: dict, kind: str, keys: dict[str, str | None]) -> tuple[str, str, str | None]:
+    """실제로 쓸 (provider, model, 대체되기 전 provider|None).
+
+    고른 provider 의 키가 없으면 가지고 있는 키 중 하나(_FALLBACK_ORDER)의 기본 모델로 대체한다.
+    키가 하나도 없으면 ValueError — 이 경우 main 은 AI 프로세스를 띄우지 않는다."""
     provider, model = selected_model(config, kind)
-    key = {"claude": claude_api_key, "openai": openai_api_key}.get(provider)
-    if provider != "gemini" and not key:
-        # 키 없이 고른 provider 는 AI 프로세스가 죽지 않도록 Gemini 로 대체한다.
-        logger.warning(f"{kind}: {provider} 키가 없어 Gemini 로 대체합니다 (설정 모델 {model})")
-        provider = "gemini"
+    if keys.get(provider):
+        return provider, model, None
+    for alt in _FALLBACK_ORDER:
+        if keys.get(alt):
+            alt_model = (config.get("ai") or {}).get(model_config_key(alt, kind)) or DEFAULT_MODELS[alt][kind]
+            return alt, alt_model, provider
+    raise ValueError("API 키가 하나도 없습니다")
+
+
+def _create_client(kind: str, config: dict, gemini_api_key: str | None,
+                   claude_api_key: str | None, openai_api_key: str | None):
+    keys = {"gemini": gemini_api_key, "claude": claude_api_key, "openai": openai_api_key}
+    provider, model, fell_from = resolve_provider(config, kind, keys)
+    if fell_from:
+        # 키 없이 고른 provider 는 AI 프로세스가 죽지 않도록 있는 키로 대체한다.
+        logger.warning(f"{kind}: {fell_from} 키가 없어 {provider}/{model} 로 대체합니다")
+        config = {**config, "ai": {**(config.get("ai") or {}), model_config_key(provider, kind): model}}
     if provider == "claude":
-        return ClaudeClient(api_key=key, config=config)
+        return ClaudeClient(api_key=claude_api_key, config=config)
     if provider == "openai":
-        return OpenAIClient(api_key=key, config=config)
+        return OpenAIClient(api_key=openai_api_key, config=config)
     return GeminiClient(api_key=gemini_api_key, config=config)
 
 
-def create_vision_client(config: dict, gemini_api_key: str, claude_api_key: str | None = None,
+def create_vision_client(config: dict, gemini_api_key: str | None, claude_api_key: str | None = None,
                          openai_api_key: str | None = None):
-    """config["ai"]["vision_provider"] 에 따라 클라이언트 반환. 키가 없으면 Gemini 로 대체."""
+    """config["ai"]["vision_provider"] 에 따라 클라이언트 반환. 키가 없으면 있는 키로 대체."""
     return _create_client("vision", config, gemini_api_key, claude_api_key, openai_api_key)
 
 
-def create_chat_client(config: dict, gemini_api_key: str, claude_api_key: str | None = None,
+def create_chat_client(config: dict, gemini_api_key: str | None, claude_api_key: str | None = None,
                        openai_api_key: str | None = None):
-    """config["ai"]["chat_provider"] 에 따라 채팅 전용 클라이언트 반환. 키가 없으면 Gemini 로 대체."""
+    """config["ai"]["chat_provider"] 에 따라 채팅 전용 클라이언트 반환. 키가 없으면 있는 키로 대체."""
     return _create_client("chat", config, gemini_api_key, claude_api_key, openai_api_key)
 
 

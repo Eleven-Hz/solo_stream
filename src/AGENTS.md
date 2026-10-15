@@ -33,7 +33,7 @@
 - `_extract_game_name`은 `main.py`와 `ui/helpers.py`(`extract_game_name`) 두 곳에 중복 정의되어 있다 — 한쪽을 수정하면 다른 쪽도 같이 수정한다 (UI 프로세스와 AI 프로세스가 서로 import하지 않기 위함).
 
 ### Testing Requirements
-- 통합 실행: `run.bat` (= `python -m src.main`). 반드시 `.env.local`에 `GEMINI_API_KEY` 필요.
+- 통합 실행: `run.bat` (= `python -m src.main`). `.env.local`에 `GEMINI_API_KEY`·`OPENAI_API_KEY`·`CLAUDE_API_KEY` 중 하나 이상 필요(없는 provider 는 `model_client.resolve_provider` 가 있는 키로 대체, 프로필 자동 생성만 Gemini 전용).
 - 도메인 모듈 단위 평가는 `tests/<module>/run.py`로 수행 — see `tests/AGENTS.md`.
 
 ### Common Patterns

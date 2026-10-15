@@ -4,7 +4,7 @@
 # game_profiles
 
 ## Purpose
-게임별 자동 생성/수동 편집 프로필 YAML 캐시. `src/chat/game_profile_loader.load_profile(game_name)`이 `{slug}.yaml` 가 있으면 로드, 없으면 Gemini Google Search grounding으로 5단계 멀티턴 생성 후 이 디렉토리에 저장한다. 채팅 프롬프트와 Vision 프롬프트 양쪽에 컨텍스트로 주입된다 (`build_profile_context` / `build_vision_context`).
+게임별 자동 생성/수동 편집 프로필 YAML 캐시. `src/chat/game_profile_loader.load_profile(game_name)`이 `{slug}.yaml` 가 있으면 로드한다. 없으면 기본은 빈 프로필로 진행하고, 사용자가 설정 '게임 · 프로필'에서 프롬프트를 복사해 구독 채팅(ChatGPT/Claude/Gemini)에 붙여넣고 받은 답을 붙여넣어 저장한다(무료). '자동 생성' 버튼을 누를 때만 Gemini Google Search grounding으로 5단계 멀티턴 생성 후 이 디렉토리에 저장한다. 채팅 프롬프트와 Vision 프롬프트 양쪽에 컨텍스트로 주입된다 (`build_profile_context` / `build_vision_context`).
 
 ## Key Files
 | File | Description |

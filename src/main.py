@@ -166,6 +166,14 @@ def _drop_repeat_chats(
 
 # ── 라운드 로그 포맷 ─────────────────────────────────────────────────────────
 
+def _send_usage(ui_queue, source: str, snap: dict) -> None:
+    """사용량 스냅샷을 UI 로. 큐가 차 있으면 버린다 — 누적값이라 다음 스냅샷이 대신한다."""
+    try:
+        ui_queue.put_nowait({"system": True, "type": "usage", "source": source, "data": snap})
+    except Exception:
+        pass
+
+
 def _write_round_block(
     chat_log: logging.Logger,
     *,
@@ -218,7 +226,7 @@ def _write_round_block(
         lines.append("")
         lines.append(
             f"[CHAT 호출] {chat_debug.provider}/{chat_debug.model}"
-            f"  ({chat_debug.elapsed_s:.2f}s)"
+            f"  ({chat_debug.elapsed_s:.2f}s, 토큰 in={chat_debug.in_tokens} out={chat_debug.out_tokens})"
         )
         if chat_debug.prompt:
             prompt_for_log = chat_debug.prompt
@@ -263,7 +271,7 @@ def ai_process(
 
     from src.ai.model_client import (
         create_vision_client, create_chat_client, GeminiClient, is_transient_error,
-        model_config_key, selected_model,
+        model_config_key, resolve_provider,
     )
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
@@ -277,27 +285,33 @@ def ai_process(
     # schedule_chats 가 이 브로드캐스터를 통해 외부 소비자(project_ns)에게도 채팅을 보낸다.
     start_broadcaster(config)
 
-    provider_keys = {"claude": claude_api_key, "openai": openai_api_key}
+    # 실제 사용량: 호출마다 토큰을 모아 UI '사용량' 탭으로 보낸다(STT 는 stt_process 가 따로).
+    from src.utils import usage
+    usage.set_sink(usage.UsageMeter(on_change=lambda snap: _send_usage(ui_queue, "ai", snap)).add)
+
+    provider_keys = {"gemini": api_key, "claude": claude_api_key, "openai": openai_api_key}
+    _LABEL = {"gemini": "Gemini", "openai": "OpenAI", "claude": "Claude"}
 
     def _make_client(kind: str):
-        """설정된 provider 로 클라이언트를 만든다. 키가 없어 Gemini 로 대체되면 채팅창에 알린다."""
-        provider, model = selected_model(config, kind)
-        if provider != "gemini" and not provider_keys.get(provider):
+        """설정된 provider 로 클라이언트를 만든다. 키가 없어 다른 provider 로 대체되면 채팅창에 알린다."""
+        provider, model, fell_from = resolve_provider(config, kind, provider_keys)
+        if fell_from:
             label = "화면 분석" if kind == "vision" else "채팅 생성"
             ui_queue.put({
                 "name": "시스템",
-                "message": (f"ℹ {provider} 키가 없어 {label}을 Gemini로 대체합니다 — "
-                            f"설정 'AI 모델 · 키'에서 키를 추가하세요."),
+                "message": (f"ℹ {_LABEL[fell_from]} 키가 없어 {label}을 {_LABEL[provider]}({model})로 "
+                            f"대체합니다 — 설정 'AI 모델 · 키'에서 키를 추가하세요."),
             })
+        log.info(f"{kind}: {provider}/{model}" + (f" ({fell_from} 대체)" if fell_from else ""))
         factory = create_vision_client if kind == "vision" else create_chat_client
         return factory(config, gemini_api_key=api_key, claude_api_key=claude_api_key,
                        openai_api_key=openai_api_key)
 
     client = _make_client("vision")
     chat_client = _make_client("chat")
-    log.info(f"vision={selected_model(config, 'vision')} chat={selected_model(config, 'chat')}")
-    # 게임 프로필 생성은 항상 Gemini로 (Google Search 그라운딩 필요)
-    gemini_client = GeminiClient(api_key=api_key, config=config)
+    # 게임 프로필 '자동 생성'만 Gemini 전용(Google Search 그라운딩). Gemini 키가 없으면 None —
+    # 자동 생성 요청이 와도 빈 프로필로 진행하고 안내한다.
+    gemini_client = GeminiClient(api_key=api_key, config=config) if api_key else None
     bot_pool = load_personas(config["chat"]["persona_dir"])
     log.info(f"봇 풀 {len(bot_pool)}명 로딩: {[b['name'] for b in bot_pool]}")
 
@@ -349,7 +363,9 @@ def ai_process(
         #   partial : 일부 단계만 실패(나머지 정보는 있음)
         aborted = profile.get("_generation_aborted")
         gen_errors = profile.get("_generation_errors") or []
-        if aborted:
+        if profile.get("_missing"):
+            status, detail = "missing", ""
+        elif aborted:
             status, detail = "aborted", str(aborted)
         elif gen_errors:
             summary = " / ".join(gen_errors[:3])
@@ -364,7 +380,16 @@ def ai_process(
                       "status": status, "detail": detail})
 
         # 채팅창에도 1회성 안내(흘러가지만 즉시 인지용). 설정 탭에는 위 status로 상시 표시됨.
-        if status == "aborted":
+        if status == "missing":
+            ui_queue.put({
+                "name": "시스템",
+                "message": (
+                    f"ℹ '{prof_name}' 게임 프로필이 없어요. 화면만 보고 채팅합니다. "
+                    f"설정 '게임 · 프로필'에서 프롬프트를 복사해 ChatGPT·Claude·Gemini에 "
+                    f"붙여넣으면 무료로 만들 수 있어요."
+                ),
+            })
+        elif status == "aborted":
             ui_queue.put({
                 "name": "시스템",
                 "message": (
@@ -383,7 +408,7 @@ def ai_process(
                 ),
             })
 
-    game_profile = load_profile(game_name, ai_client=gemini_client, config=config)
+    game_profile = load_profile(game_name, ai_client=gemini_client, config=config)  # 없으면 missing(자동 생성 안 함)
     profile_context = build_profile_context(game_profile)
     vision_context = build_vision_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
@@ -474,8 +499,16 @@ def ai_process(
                 _current_window["title"] = setting["target_window"] or ""
             elif "game_name" in setting:
                 new_game = setting["game_name"]
-                log.info(f"게임 프로필 변경 요청: {new_game}")
-                game_profile = load_profile(new_game, ai_client=gemini_client, config=config)
+                # generate=True 는 설정의 '자동 생성(API)' 버튼 — 그때만 Gemini 검색으로 만든다.
+                auto_gen = bool(setting.get("generate"))
+                if auto_gen and gemini_client is None:
+                    auto_gen = False
+                    ui_queue.put({"name": "시스템", "message": (
+                        "ℹ 프로필 자동 생성은 Gemini 키가 있어야 해요(구글 검색 사용). "
+                        "'프롬프트 복사'로 무료로 만들 수 있어요.")})
+                log.info(f"게임 프로필 변경 요청: {new_game}{' (자동 생성)' if auto_gen else ''}")
+                game_profile = load_profile(new_game, ai_client=gemini_client, config=config,
+                                            auto_generate=auto_gen)
                 profile_context = build_profile_context(game_profile)
                 vision_context = build_vision_context(game_profile)
                 chat_history.clear()
@@ -797,14 +830,22 @@ def stt_process(
 
     from src.stt import STTPipeline, UtteranceEvent
     from src.stt.transcriber import create_transcriber
+    from src.utils import usage
+    if ui_queue is not None:
+        usage.set_sink(usage.UsageMeter(on_change=lambda snap: _send_usage(ui_queue, "stt", snap)).add)
 
     stt_cfg = config.get("stt", {}) or {}
     sample_rate = int(stt_cfg.get("sample_rate", 16000))
 
     provider = str(stt_cfg.get("provider", "gemini")).lower()
     model = stt_cfg.get("model", "gemini-2.5-flash")
-    # 기본값은 OpenAI(gpt-transcribe)지만 OpenAI 키는 선택 사항이다. 키가 없으면
-    # STT 를 죽이지 않고 Gemini 로 대체하고 채팅창에 한 번 알린다.
+    # 기본값은 OpenAI(gpt-transcribe). 고른 쪽 키가 없으면 STT 를 죽이지 않고
+    # 있는 쪽(OpenAI ↔ Gemini)으로 대체하고 채팅창에 한 번 알린다. (main 은 둘 중 하나라도
+    # 있어야 STT 프로세스를 띄운다.)
+    if provider == "gemini" and not api_key and openai_api_key:
+        model = "gpt-transcribe"
+        log.warning("Gemini 키가 없어 STT 를 OpenAI(gpt-transcribe)로 대체합니다")
+        provider = "openai"
     if provider == "openai" and not openai_api_key and api_key:
         model = stt_cfg.get("fallback_model", "gemini-2.5-flash")
         log.warning(f"OpenAI 키가 없어 STT 를 Gemini({model})로 대체합니다")
@@ -927,11 +968,12 @@ def main():
 
     # 키 미설정 시 graceful degrade: AI/STT 프로세스를 띄우지 않고 UI(오버레이)만 시작해
     # 첫 실행 온보딩(API 키 입력)을 노출한다. frozen 배포에서 콘솔 없이 조용히 죽던
-    # ValueError 크래시를 대체. Gemini 키는 vision/chat/STT 모두의 기본 키이므로 필수.
-    onboarding = not api_key
+    # ValueError 크래시를 대체. 키는 Gemini/OpenAI/Claude 중 아무거나 하나면 된다 —
+    # 고른 모델의 키가 없으면 model_client.resolve_provider 가 있는 키로 대체한다.
+    onboarding = not (api_key or openai_api_key or claude_api_key)
     if onboarding:
         logger.warning(
-            "Gemini API 키 미설정 — AI/STT 비활성. 오버레이 설정에서 키 입력 후 재시작하세요. "
+            "API 키가 하나도 없음 — AI/STT 비활성. 설정에서 키 입력 후 재시작하세요. "
             f"(키 저장 위치: {paths.user_data_dir() / '.env.local'})"
         )
 
@@ -948,7 +990,11 @@ def main():
     ai_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
     stt_settings_queue: multiprocessing.Queue = multiprocessing.Queue()
 
-    stt_enabled = bool((config.get("stt") or {}).get("enabled", False)) and not onboarding
+    # 음성 인식은 OpenAI 나 Gemini 키가 있어야 한다(Claude 는 받아쓰기 없음).
+    stt_enabled = (bool((config.get("stt") or {}).get("enabled", False)) and not onboarding
+                   and bool(api_key or openai_api_key))
+    if not onboarding and (config.get("stt") or {}).get("enabled") and not stt_enabled:
+        logger.warning("음성 인식: OpenAI/Gemini 키가 없어 끕니다 (Claude 키만 있음)")
     stt_queue: multiprocessing.Queue | None = (
         multiprocessing.Queue(maxsize=200) if stt_enabled else None
     )
