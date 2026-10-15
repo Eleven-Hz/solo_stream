@@ -56,7 +56,7 @@ from src.ui.workers import (
     start_worker,
 )
 from src.utils import paths
-from src.ai.model_client import model_config_key, selected_model  # SDK import 없음(지연 import)
+from src.ai.model_client import model_config_key, resolve_provider, selected_model  # SDK import 없음(지연 import)
 
 logger = logging.getLogger("solo_stream.ui")
 
@@ -104,6 +104,24 @@ _PAGES = [
     ("game", "게임 · 프로필"),
     ("usage", "사용량"),
 ]
+
+
+# 분석 주기(capture.interval_seconds). main 의 BASE/MIN/MAX_INTERVAL_S 와 같은 값.
+_BASE_INTERVAL = 15
+_MIN_INTERVAL, _MAX_INTERVAL = 5, 60
+
+
+def _interval_s(config: dict) -> float:
+    try:
+        sec = float((config.get("capture") or {}).get("interval_seconds", _BASE_INTERVAL) or _BASE_INTERVAL)
+    except (TypeError, ValueError):
+        sec = float(_BASE_INTERVAL)
+    return max(_MIN_INTERVAL, min(_MAX_INTERVAL, sec))
+
+
+def _interval_text(config: dict) -> str:
+    """분석 주기 문구('15초' 등). 설정에서 바꾸면 실행 중에도 바로 적용된다."""
+    return f"{_interval_s(config):g}초"
 
 
 def _model_text(provider: str, model: str, recommended: str | None = None) -> str:
@@ -819,8 +837,7 @@ class SettingsWindow(QWidget):
         h.addWidget(self._cap_preview)
         cv = QVBoxLayout()
         cv.setSpacing(8)
-        self._cap_desc = T.label("15초마다 게임 창을 찍고, 화면이 거의 그대로면 건너뛰어 비용을 아낍니다. "
-                                 "채팅창이 찍히지 않는지 여기서 확인할 수 있어요.", "sub", wrap=True)
+        self._cap_desc = T.label(self._cap_desc_text(), "sub", wrap=True)
         cv.addWidget(self._cap_desc)
         cap_btn = T.button("지금 찍어보기")
         cap_btn.clicked.connect(self._capture_preview)
@@ -1574,21 +1591,46 @@ class SettingsWindow(QWidget):
                                       for p, m in _VISION_MODELS], width=300)
         T.select_data(self._vision_combo, _pm(vp, vm), fallback_text=_model_text(vp, vm))
         self._vision_combo.currentIndexChanged.connect(lambda _: self._on_ai_model("vision"))
-        card.add_row(title="화면 분석", sub="15초마다 게임 화면을 읽어요", right=self._vision_combo)
+        row_v = card.add_row(title="화면 분석", sub=f"{_interval_text(self._config)}마다 게임 화면을 읽어요", right=self._vision_combo)
+        self._vision_sub = row_v.layout().itemAt(0).layout().itemAt(1).widget()
+
+        self._interval_spin = QSpinBox()
+        self._interval_spin.setRange(_MIN_INTERVAL, _MAX_INTERVAL)
+        self._interval_spin.setSuffix(" 초")
+        self._interval_spin.setValue(int(round(_interval_s(self._config))))
+        self._interval_spin.setFixedWidth(84)
+        self._interval_spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._interval_spin.valueChanged.connect(self._on_interval)
+        row_i = card.add_row(title="분석 주기",
+                             sub=f"게임 화면을 읽고 채팅을 만드는 간격 · 기본 {_BASE_INTERVAL}초 · 바로 적용",
+                             right=self._interval_spin)
+        self._interval_warn = T.label("", "sub", wrap=True)
+        self._interval_warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+        row_i.layout().itemAt(0).layout().addWidget(self._interval_warn)
+        self._update_interval_warn()
 
         cp, cm = selected_model(self._config, "chat")
         self._chat_combo = T.combo([(_model_text(p, m, _CHAT_RECOMMENDED), _pm(p, m))
                                     for p, m in _CHAT_MODELS], width=300)
         T.select_data(self._chat_combo, _pm(cp, cm), fallback_text=_model_text(cp, cm))
         self._chat_combo.currentIndexChanged.connect(lambda _: self._on_ai_model("chat"))
-        card.add_row(title="채팅 생성", sub="봇 채팅을 한 번에 몰아서 만들어요", right=self._chat_combo)
+        row_c = card.add_row(title="채팅 생성", sub="봇 채팅을 한 번에 몰아서 만들어요", right=self._chat_combo)
 
         pmodel = str(ai.get("profile_model", _PROFILE_MODELS[0]))
         self._profile_model_combo = T.combo([(_model_text("gemini", m), m) for m in _PROFILE_MODELS], width=300)
         T.select_data(self._profile_model_combo, pmodel, fallback_text=_model_text("gemini", pmodel))
         self._profile_model_combo.currentIndexChanged.connect(self._on_profile_model)
-        card.add_row(title="게임 프로필 생성", sub="구글 검색으로 게임 정보를 모아요(Gemini 전용) · 다음 생성부터 적용",
-                     right=self._profile_model_combo)
+        row_p = card.add_row(title="게임 프로필 자동 생성",
+                             sub="구글 검색으로 게임 정보를 모아요(Gemini 전용) · 다음 생성부터 적용",
+                             right=self._profile_model_combo)
+        # 행마다 '키 없음' 경고(제목/설명 아래). 고른 모델의 키가 없으면 무엇으로 대체되는지 알려준다.
+        self._model_warns: dict[str, QLabel] = {}
+        for kind, row in (("vision", row_v), ("chat", row_c), ("profile", row_p)):
+            warn = T.label("", "sub", wrap=True)
+            warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+            warn.setVisible(False)
+            row.layout().itemAt(0).layout().addWidget(warn)
+            self._model_warns[kind] = warn
 
         prompt_btn = T.button("편집…")
         prompt_btn.clicked.connect(self._edit_vision_prompt)
@@ -1597,11 +1639,8 @@ class SettingsWindow(QWidget):
         last = card.layout().itemAt(card.layout().count() - 1).widget()
         last.layout().itemAt(0).layout().addWidget(self._prompt_sub)
         self._update_prompt_sub()
-        self._ai_warn = T.label("", "sub", wrap=True)
-        self._ai_warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px; padding: 0 16px 14px 16px;")
-        self._ai_warn.setVisible(False)
-        card.add_widget(self._ai_warn)
         lay.addWidget(card)
+        self._refresh_model_warns()
         lay.addStretch(1)
         return page
 
@@ -1626,7 +1665,37 @@ class SettingsWindow(QWidget):
                 row["chip"].set_tone("warn", "음성 인식용 · 없으면 다른 키로 대체")
             else:
                 row["chip"].set_tone("neutral", "선택 사항 · 없음")
+        self._refresh_model_warns()
         self._refresh_ready() if hasattr(self, "_ready_key_badge") else None
+
+    def _refresh_model_warns(self):
+        """모델 행 아래 경고: 고른 모델의 키가 없으면 '키 없음 → 무엇으로 대체'를, 목록에는 '키 없음' 표시."""
+        if not hasattr(self, "_model_warns"):
+            return
+        keys = _read_env_keys()
+        for kind, combo, recommended in (("vision", self._vision_combo, _VISION_RECOMMENDED),
+                                         ("chat", self._chat_combo, _CHAT_RECOMMENDED)):
+            for i in range(combo.count()):
+                p, _, m = (combo.itemData(i) or "").partition("|")
+                # 칸이 좁아 '(추천)' 과 같이 붙이면 잘린다 — 키가 없으면 '(키 없음)' 이 대신 들어간다.
+                combo.setItemText(i, _model_text(p, m, recommended) if keys.get(p)
+                                  else f"{_model_text(p, m)}  (키 없음)")
+            provider = (combo.currentData() or "").partition("|")[0]
+            warn = self._model_warns[kind]
+            if not provider or keys.get(provider):
+                warn.setVisible(False)
+                continue
+            label = _PROVIDER_LABEL.get(provider, provider)
+            try:
+                alt, alt_model, _ = resolve_provider(self._config, kind, keys)
+                tail = f"키를 추가하기 전까지 {_PROVIDER_LABEL[alt]}({alt_model})로 대체돼요."
+            except ValueError:
+                tail = "위에서 키를 추가하세요."
+            warn.setText(f"⚠ {label} 키가 없어요 — {tail}")
+            warn.setVisible(True)
+        pw = self._model_warns["profile"]
+        pw.setText("⚠ Gemini 키가 없어 자동 생성은 못 써요 — '게임 · 프로필'의 '프롬프트 복사'로 무료로 만들 수 있어요.")
+        pw.setVisible(not keys["gemini"])
 
     def _check_key(self, provider: str):
         key = _read_env_keys()[provider]
@@ -1661,22 +1730,55 @@ class SettingsWindow(QWidget):
     def _on_ai_model(self, kind: str):
         combo = self._vision_combo if kind == "vision" else self._chat_combo
         provider, _, model = (combo.currentData() or "").partition("|")
-        if not _read_env_keys().get(provider):
-            # 키 없이 고르면 AI 프로세스가 다른 키로 대체해 버린다 — 고른 걸 적용하지 않고 안내한다.
-            # (키는 다시 시작해야 AI 프로세스에 들어가므로 '추가 후 재시작' 안내)
-            label = _PROVIDER_LABEL[provider]
-            self._ai_warn.setText(f"{label} 모델은 {label} 키가 있어야 쓸 수 있어요. "
-                                  "위에서 키를 추가하고 다시 시작한 뒤 고르세요.")
-            self._ai_warn.setVisible(True)
-            combo.blockSignals(True)
-            T.select_data(combo, _pm(*selected_model(self._config, kind)))
-            combo.blockSignals(False)
-            return
-        self._ai_warn.setVisible(False)
+        # 키가 없어도 선택은 저장한다 — AI 프로세스는 키가 생길 때까지 있는 키로 대체해 돌고,
+        # 행 아래 경고가 그 사실을 알려준다(키를 추가·재시작하면 고른 모델로 돈다).
         values = {f"{kind}_provider": provider, model_config_key(provider, kind): model}
         self._save("ai", values)
         self._queue.put({f"{kind}_provider": provider, f"{kind}_model": model})
         logger.info(f"{kind} 모델 변경: {provider} / {model}")
+        self._refresh_keys()
+        self._update_interval_warn()
+
+    def _on_interval(self, value: int):
+        """분석 주기 변경 → 저장 + 캡처/AI 프로세스에 바로 반영(채팅 간격·소재 윈도우도 비례 조정)."""
+        self._save("capture", {"interval_seconds": int(value)})
+        self._queue.put({"interval_seconds": int(value)})
+        logger.info(f"분석 주기 변경: {value}초")
+        text = _interval_text(self._config)
+        self._vision_sub.setText(f"{text}마다 게임 화면을 읽어요")
+        if hasattr(self, "_cap_desc"):
+            self._cap_desc.setText(self._cap_desc_text())
+        if hasattr(self, "_cost_spins"):
+            # 채팅은 화면 분석 라운드마다 한 번 — 예상 비용의 '시간당 채팅 생성' 기본값도 주기에 맞춘다.
+            self._cost_spins["chat_calls_per_hour"].setValue(3600.0 / _interval_s(self._config))
+        self._update_interval_warn()
+
+    def _update_interval_warn(self):
+        sec = _interval_s(self._config)
+        if sec >= _BASE_INTERVAL:
+            self._interval_warn.setVisible(False)
+            return
+        from src.utils import pricing
+        vm = selected_model(self._config, "vision")[1]
+        cm = selected_model(self._config, "chat")[1]
+
+        def per_hour(interval: float) -> float:
+            d = pricing.USAGE_DEFAULTS
+            return pricing.estimate_costs(
+                vision_model=vm, chat_model=cm, stt_model="", capture_interval_s=interval, hours=1.0,
+                speech_min_per_hour=0.0, screen_change_pct=d["screen_change_pct"],
+                chat_calls_per_hour=3600.0 / interval)["total_per_hour"]
+
+        base, now = per_hour(_BASE_INTERVAL), per_hour(sec)
+        cost = f" (화면 분석+채팅 예상 시간당 {pricing.format_usd(base)} → {pricing.format_usd(now)})" if base else ""
+        self._interval_warn.setText(
+            f"⚠ 기본 {_BASE_INTERVAL}초보다 짧으면 AI 호출이 약 {_BASE_INTERVAL / sec:.1f}배로 늘어 "
+            f"비용이 많이 나갈 수 있어요{cost}.")
+        self._interval_warn.setVisible(True)
+
+    def _cap_desc_text(self) -> str:
+        return (f"{_interval_text(self._config)}마다 게임 창을 찍고, 화면이 거의 그대로면 건너뛰어 비용을 아낍니다. "
+                "채팅창이 찍히지 않는지 여기서 확인할 수 있어요.")
 
     def _on_profile_model(self, _):
         model = self._profile_model_combo.currentData()
@@ -1890,7 +1992,7 @@ class SettingsWindow(QWidget):
             sp.setRange(lo, hi)
             sp.setSingleStep(step)
             sp.setDecimals(dec)
-            sp.setValue(float(d[key]))
+            sp.setValue(3600.0 / _interval_s(self._config) if key == "chat_calls_per_hour" else float(d[key]))
             sp.setFixedWidth(84)
             sp.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             sp.valueChanged.connect(self._recompute_cost)

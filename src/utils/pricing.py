@@ -64,7 +64,7 @@ USAGE_DEFAULTS = {
     "hours": 2.0,               # 세션 길이(시간)
     "speech_min_per_hour": 30.0,  # 시간당 실제 발화 분량(분)
     "screen_change_pct": 80.0,    # 캡처 주기 중 화면이 바뀌어 vision 호출되는 비율(%)
-    "chat_calls_per_hour": 240.0,  # 시간당 채팅 생성 횟수 (15초에 1번)
+    "chat_calls_per_hour": 240.0,  # 시간당 채팅 생성 횟수 (기본 15초 주기에 1번 — UI 는 3600/주기로 덮어씀)
 }
 
 

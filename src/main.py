@@ -44,7 +44,7 @@ def capture_process(
     from src.capture.screen import capture_screen
     from src.capture.change_detect import has_significant_change
 
-    interval = config["capture"]["interval_seconds"]
+    interval = _clamp_interval(config["capture"].get("interval_seconds", BASE_INTERVAL_S))
     threshold = config["capture"]["ssim_threshold"]
     target = config["capture"].get("target_window")
     resize_w = config["capture"].get("resize_width", 1024)
@@ -66,6 +66,9 @@ def capture_process(
                 target = setting["target_window"]
                 prev_frame = None
                 log.info(f"캡처 대상 변경: '{target}'")
+            elif "interval_seconds" in setting:
+                interval = _clamp_interval(setting["interval_seconds"])
+                log.info(f"캡처 주기 변경: {interval:g}s")
             elif "chat_active" in setting:
                 chat_active = setting["chat_active"]
                 log.info(f"캡처 {'시작' if chat_active else '정지'}")
@@ -90,6 +93,38 @@ def capture_process(
         except Exception as e:
             log.error(f"캡처 오류: {e}")
             time.sleep(interval)
+
+
+# ── 캡처 주기에 맞춘 페이싱 ──────────────────────────────────────────────────
+# chat.delay_min/max · topic_window_rounds 등 기본값은 15초 주기 기준으로 맞춰져 있다.
+# 주기를 바꾸면 같은 '시간 감각'이 유지되도록 비례해서 늘리고 줄인다.
+BASE_INTERVAL_S = 15.0
+MIN_INTERVAL_S = 5.0     # vision+chat 한 라운드가 3~6초라 이보다 짧으면 라운드가 밀린다
+MAX_INTERVAL_S = 60.0
+# 한 발화를 채팅 프롬프트에 넣는 최대 라운드 수. 주기가 짧으면 lookback 안에서 같은
+# 발화가 여러 라운드에 반복돼 봇들이 같은 말에 계속 반응하는 걸 막는다.
+MAX_SPEECH_ROUNDS = 2
+
+
+def _clamp_interval(sec) -> float:
+    try:
+        sec = float(sec)
+    except (TypeError, ValueError):
+        return BASE_INTERVAL_S
+    return max(MIN_INTERVAL_S, min(MAX_INTERVAL_S, sec))
+
+
+def _paced(config: dict, interval_s: float) -> tuple[float, float, int]:
+    """주기에 맞춘 (delay_min, delay_max, topic_window_rounds).
+
+    채팅은 한 라운드 안에서 메시지마다 delay 만큼 차례로 뜨므로, delay 를 주기에 비례시켜
+    다음 라운드와 겹치지 않게 한다. 소재 쏠림 윈도우는 '라운드 수'가 아니라 같은 시간(≈90초)을 보게 한다."""
+    scale = interval_s / BASE_INTERVAL_S
+    chat_cfg = config.get("chat", {}) or {}
+    d_min = float(chat_cfg.get("delay_min", 1.0)) * scale
+    d_max = float(chat_cfg.get("delay_max", 8.0)) * scale
+    window = max(3, round(int(chat_cfg.get("topic_window_rounds", 6)) / scale))
+    return round(d_min, 2), round(d_max, 2), window
 
 
 # ── 봇 호명 감지 ─────────────────────────────────────────────────────────────
@@ -433,8 +468,10 @@ def ai_process(
     _log_profile_header(profile_context, game_profile.get("name", "?"))
 
     batch_size = config["chat"]["batch_size"]
-    delay_min = config["chat"]["delay_min"]
-    delay_max = config["chat"]["delay_max"]
+    interval_s = _clamp_interval(config.get("capture", {}).get("interval_seconds", BASE_INTERVAL_S))
+    delay_min, delay_max, topic_window = _paced(config, interval_s)
+    topic_tracker.set_window(topic_window)
+    log.info(f"페이싱: 주기 {interval_s:g}s → 채팅 간격 {delay_min}~{delay_max}s, 소재 윈도우 {topic_window}라운드")
     chat_history: list[dict] = []
     round_num = 0
     chat_active = False  # 시작/종료 버튼으로 제어
@@ -488,6 +525,13 @@ def ai_process(
                     ai_cfg[model_config_key(new_provider, "chat")] = new_model
                 log.info(f"chat 모델 변경: {new_provider} / {new_model or '(모델 유지)'}")
                 chat_client = _make_client("chat")
+            elif "interval_seconds" in setting:
+                interval_s = _clamp_interval(setting["interval_seconds"])
+                config.setdefault("capture", {})["interval_seconds"] = interval_s
+                delay_min, delay_max, topic_window = _paced(config, interval_s)
+                topic_tracker.set_window(topic_window)
+                log.info(f"페이싱 변경: 주기 {interval_s:g}s → 채팅 간격 {delay_min}~{delay_max}s, "
+                         f"소재 윈도우 {topic_window}라운드")
             elif "profile_model" in setting:
                 # 다음 프로필 생성/재생성 때 load_profile(config=...)에서 읽힌다.
                 ai_cfg = config.setdefault("ai", {})
@@ -589,10 +633,12 @@ def ai_process(
 
             # 사용자 발화: 현재 시점 기준 lookback 내 발화만 사용
             user_speech_payload: list[dict] = []
+            speech_used: list[dict] = []
             if stt_enabled and user_speech_buffer:
                 for e in user_speech_buffer:
                     sec_ago = now - e["timestamp"]
-                    if sec_ago <= lookback_s:
+                    if sec_ago <= lookback_s and e.get("rounds", 0) < MAX_SPEECH_ROUNDS:
+                        speech_used.append(e)
                         user_speech_payload.append({
                             "text": e["text"],
                             "seconds_ago": sec_ago,
@@ -680,6 +726,10 @@ def ai_process(
                     "message": "✓ AI 서버 연결이 회복됐습니다. 채팅을 다시 생성합니다.",
                 })
             api_busy = now_busy
+            # 채팅이 만들어진 라운드만 발화 사용 횟수를 센다(실패 라운드의 발화는 다음에 다시 쓴다).
+            if not chat_err:
+                for e in speech_used:
+                    e["rounds"] = e.get("rounds", 0) + 1
 
             # 이번 라운드 발언자(batch)가 아닌 봇의 채팅은 버린다. 프롬프트에 다른 시청자
             # 목록(roster)이 들어가 LLM 이 그 봇들 채팅까지 지어내는 경우가 있다.

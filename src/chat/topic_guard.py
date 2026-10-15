@@ -83,6 +83,10 @@ class TopicTracker:
     def clear(self) -> None:
         self._rounds.clear()
 
+    def set_window(self, window_rounds: int) -> None:
+        """윈도우 라운드 수 변경(캡처 주기 변경 시). 최근 라운드는 유지한다."""
+        self._rounds = deque(self._rounds, maxlen=max(1, int(window_rounds)))
+
     def hot_keys(self, top: int = 5) -> list[str]:
         """최근 윈도우에서 서로 다른 발화 hot_min_count 개 이상에 나온 소재(빈도순)."""
         cnt: Counter = Counter()

@@ -22,7 +22,8 @@ PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 
 - 새 설정 항목 추가: `settings.py` 의 해당 `_build_page_*` 에 위젯 + 저장 핸들러(`self._save(...)`). 실행 중 반영이 필요하면 `self._queue.put({...})` 후 `src/main.py` 받는 프로세스의 settings_queue 루프에 elif 추가. 오버레이 표시 옵션이면 `ChatOverlay` 에 `set_*` 메서드를 만들고 설정 창에서 호출.
 - **적용 버튼을 만들지 않는다** — 바꾸는 즉시 저장이 원칙. 예외: 비용이 드는 동작(게임 창 적용 → 프로필 생성, 프로필 다시 만들기, 받아쓰기 테스트, 키 저장)과 여러 줄 편집(화면 분석 프롬프트 대화상자)만 명시적 버튼.
 - SDK import 는 UI 에 두지 않는다 — 키 확인은 `src/ai/model_client.check_api_key`, `src/stt/transcriber.check_openai_key` 를 워커에서 호출.
-- 키 없이 Claude/OpenAI 모델을 고르면 AI 프로세스가 Gemini 로 대체해 버리므로 `_on_ai_model` 이 거부·원복하고 안내한다. 비슷한 '키 필요' 선택지를 추가하면 같은 가드를 둔다. 모델 키 이름은 직접 조립하지 말고 `model_client.model_config_key` / `selected_model` 을 쓴다.
+- 키 없는 provider 의 모델도 고를 수 있다(저장됨). AI 프로세스는 키가 생길 때까지 `resolve_provider` 로 있는 키로 대체해 돌고, 설정 'AI 모델' 카드가 행마다 `_refresh_model_warns` 로 '⚠ X 키가 없어요 — Y로 대체' 경고와 목록의 '(키 없음)' 표시를 띄운다(키 저장·모델 변경 때 갱신). 비슷한 '키 필요' 선택지를 추가하면 같은 방식으로 경고한다. 모델 키 이름은 직접 조립하지 말고 `model_client.model_config_key` / `selected_model` 을 쓴다.
+- 분석 주기(`capture.interval_seconds`)는 'AI 모델' 카드의 스핀박스(5~60초)로 바꾸고 `{"interval_seconds"}` 로 캡처·AI 프로세스에 바로 반영된다. 15초 미만이면 예상 비용 증가 경고. 주기를 화면에 쓰는 문구는 `_interval_text` 로 만든다(숫자 하드코딩 금지).
 - 클릭 통과는 Ctrl+Shift+O 가 유일한 해제 수단이다. 단축키 등록에 실패하면(`hotkeys_ok=False`) 클릭 통과를 켤 수 없게 막아 둔다 — 이 가드를 없애지 말 것.
 - 클릭 통과·캡처 제외는 Qt 창 플래그가 아니라 winapi 로 확장 스타일/디스플레이 속성만 바꾼다(Qt 플래그 변경은 네이티브 창을 다시 만들어 설정이 풀린다).
 - 채팅 메시지: `_poll_queue` 가 100ms 마다 `ui_queue` drain → `_handle_message`. `system` 키 = 프로필 로드 등, `stt_transcript` = 내 말(설정 켜졌을 때만), 그 외 `{name, message}` 채팅(`name == "시스템"` 이면 시스템 줄). 본문은 `html.escape` 후 RichText 라벨.
