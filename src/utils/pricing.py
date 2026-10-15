@@ -15,13 +15,15 @@ UI '비용' 탭에서 현재 선택된 모델(vision/chat/stt) 기준으로 시�
 """
 from __future__ import annotations
 
-PRICING_AS_OF = "2026-05"
+PRICING_AS_OF = "2026-10"
 
 # 모델별 단가 (USD per 1,000,000 tokens). 일부 STT 모델은 분당 고정요금(audio_per_min).
 #   input        : 텍스트/이미지 입력 (vision·chat 에 사용)
 #   output       : 텍스트 출력
 #   audio_input  : 오디오 입력 (gemini STT 에 사용) — 없으면 input 으로 대체
 #   audio_per_min: 오디오 1분당 USD (openai transcribe 처럼 분당 과금 모델)
+#   token_mult   : 같은 한국어 프롬프트를 이 모델 토크나이저가 세는 배수(Gemini/OpenAI 기준 1.0).
+#                  Claude 는 한국어를 약 1.7배로 센다(2026-10 채팅 프롬프트 실측 9,800 vs 5,800).
 MODEL_PRICING: dict[str, dict[str, float]] = {
     # ── Gemini ──────────────────────────────────────────────
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0, "audio_input": 1.25},
@@ -33,6 +35,12 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-opus-4-7": {"input": 5.0, "output": 25.0},
     "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "token_mult": 1.7},
+    # ── OpenAI (vision / chat) ──────────────────────────────
+    "gpt-6-luna": {"input": 0.10, "output": 0.50},
+    "gpt-5-nano": {"input": 0.05, "output": 0.40},
+    "gpt-5-mini": {"input": 0.25, "output": 2.00},
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
     # ── OpenAI (STT transcribe) ─────────────────────────────
     "gpt-transcribe": {"audio_per_min": 0.0045},
     "gpt-4o-transcribe": {"input": 2.50, "output": 10.0, "audio_per_min": 0.006},
@@ -45,7 +53,7 @@ TOKENS = {
     "vision_image": 700,    # 캡처 이미지(≈1024px) 1장의 입력 토큰
     "vision_prompt": 700,   # vision 프롬프트(시스템+게임 프로필 등) 입력 토큰
     "vision_output": 250,   # vision 분석 출력 토큰
-    "chat_input": 1500,     # 채팅 생성 1회 입력 토큰(컨텍스트+페르소나)
+    "chat_input": 5800,     # 채팅 생성 1회 입력 토큰(규칙+프로필+페르소나+기록, 2026-10 실측)
     "chat_output": 120,     # 채팅 생성 1회 출력 토큰
     "stt_audio_per_min": 1920,   # gemini 오디오 토큰/분 (32 tok/sec)
     "stt_output_per_min": 400,   # 받아쓴 텍스트 출력 토큰/분
@@ -67,7 +75,7 @@ def get_pricing(model: str) -> dict[str, float] | None:
 
 def _text_call_cost(pricing: dict[str, float], in_tokens: int, out_tokens: int) -> float:
     """입력/출력 토큰 1회 비용(USD)."""
-    return (in_tokens * pricing.get("input", 0.0)
+    return (in_tokens * pricing.get("token_mult", 1.0) * pricing.get("input", 0.0)
             + out_tokens * pricing.get("output", 0.0)) / 1_000_000
 
 

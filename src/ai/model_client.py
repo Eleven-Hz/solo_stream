@@ -1,8 +1,10 @@
 """
 유일한 AI API 접점. 다른 모듈은 이 파일의 인터페이스만 사용한다.
-google.genai / anthropic SDK는 이 파일에서만 import한다.
+google.genai / anthropic / openai(채팅·vision) SDK는 이 파일에서만 import한다.
+(openai 의 STT 경로는 src/stt/transcriber.py 에 따로 있다.)
 
-vision_provider: "gemini" | "claude"
+vision_provider / chat_provider: "gemini" | "claude" | "openai"
+모델 이름은 provider 별 키에 둔다 — model_config_key() 참고.
 """
 import base64
 import json
@@ -22,14 +24,15 @@ VISION_ERROR_MARKER = "게임 화면 분석 중 오류가 발생했습니다."
 # config["ai"]["vision_prompt"] 가 있으면 그 값으로 대체된다.
 # {vision_focus_hint} 자리는 게임 프로필의 '주목할 항목'으로 코드가 채운다(없으면 빈 문자열).
 # 게임 정보/이전 위치 섹션은 코드가 본문 앞에 자동으로 붙이므로 여기 넣지 않는다.
-_DEFAULT_VISION_BODY = """스크린샷을 분석해 아래 형식으로만 답하세요.
+_DEFAULT_VISION_BODY = """스크린샷을 분석해 아래 형식으로만 답하세요. 시청자가 화면을 못 보고도 지금 장면을 떠올릴 수 있게 구체적으로 씁니다.
 
-묘사: <화면에 보이는 것을 2~3줄로 서술{vision_focus_hint}>
+묘사: <화면에 보이는 것을 3~5줄로 서술 — 캐릭터/적/NPC의 생김새·동작, 배경(장소 분위기·색감·날씨·시간대), 눈에 띄는 오브젝트나 이펙트{vision_focus_hint}>
+화면 글자: <대사·자막·퀘스트 문구·알림·메뉴 등 화면에 적힌 의미 있는 글자를 짧게 옮김. HP·SP·경험치 같은 HUD 수치는 제외. 없으면 이 줄 생략>
 위치: <게임 내 지명 — 게임 정보의 지명을 우선 사용. 화면에 지명 UI가 없으면 이전 위치를 유지. 정말 모르면 "알 수 없음">
-상황: <지금 하고 있는 행동 — 전투/탐험/대화/퀘스트/이동 등 한 줄>
+상황: <지금 하고 있는 행동과 흐름 — 전투/탐험/대화/퀘스트/이동/메뉴 조작 등. 전투면 상대와 우세·열세, 대화면 누구와 무슨 얘기인지 1~2줄>
 이벤트: <주목할 변화 (HP 위기·보스 등장·레벨업·중요 아이템 획득 등) — 없으면 이 줄 생략>
 
-규칙: 각 항목은 1~2줄. 항목 레이블("묘사:", "위치:", "상황:", "이벤트:") 유지. 추가 설명 금지."""
+규칙: 항목 레이블("묘사:", "화면 글자:", "위치:", "상황:", "이벤트:") 유지. 화면에 실제로 보이는 것만 쓰고 추측으로 지어내지 않는다. 렉·버그·프레임 드랍 같은 기술 문제는 화면에 명백히 보일 때만 적는다. 추가 설명 금지."""
 
 
 def _extract_focus_hint(game_profile_context: str) -> str:
@@ -81,9 +84,9 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 [최근 채팅 기록]
 {chat_history}
 
-[봇 목록 - {bot_count}명]
+{roster_section}[봇 목록 - {bot_count}명]
 {bots_info}
-
+{topic_section}
 ===규칙===
 - 각 봇은 반드시 1개의 메시지만 생성. 2개 이상 금지.
 - 메시지는 15자 이내. 실제 채팅처럼 짧게.
@@ -91,6 +94,8 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 - 게임 정보를 아는 시청자처럼: 게임 용어, 캐릭터명, 스킬명을 자연스럽게 사용.
 - HP/SP 수치는 직접 읽지 말고 "피 빵빵하네", "기력 다 썼다" 처럼 표현.
 - 봇마다 말투가 확실히 달라야 함. 같은 내용 다르게 말하기 금지.
+- **소재를 분산한다.** 한 라운드에서 같은 소재(같은 단어·같은 화제)는 최대 2명까지만. 나머지 봇은 화면의 다른 요소, 스트리머 발화, 다른 봇의 말, 자기 페르소나 관심사 등 서로 다른 소재로 말한다.
+- 렉·버그·끊김·프레임 같은 기술 문제는 [현재 게임 상황]에 명시됐을 때만 언급한다. 화면 정보가 없거나 채팅이 뜸하다고 렉을 추측하지 않는다.
 - **[최근 채팅 기록]이나 "내 최근 발언"에 이미 나온 문장을 그대로(또는 거의 똑같이) 다시 치지 않는다.** 같은 봇이 직전에 한 말을 복붙하지 말고, 상황이 그대로면 차라리 침묵(결과에서 제외)한다. 새로 할 말이 없으면 그 봇은 빼라.
 - 봇별 [자기 기억] 범위만큼만 자기 과거 발언을 참고한다. 범위 밖 발언은 기억 못 함.
 - 봇별 [타인 반응] 설정이 false이면 다른 봇 발언에 직접 반응하거나 닉네임 언급 금지.
@@ -148,6 +153,10 @@ def _build_bots_info(
 
         line += f" / [스트리머 발화 반응] {speech_weight}"
 
+        known = [str(x) for x in (b.get("known_streamers") or []) if x]
+        if known:
+            line += f" / 아는 다른 스트리머: {', '.join(known)} (다른 방송 얘기할 때 이 이름을 씀)"
+
         if name in mentioned_set:
             line += " / [호명됨] true"
 
@@ -186,7 +195,43 @@ def _build_user_speech_section(user_speech: list[dict] | None) -> str:
         lines.append(f'- {prefix}"{text}"')
     if len(lines) == 2:  # 헤더만 있고 발화 없음
         return ""
+    # STT 받아쓰기는 오인식이 섞인다("기술" → "술"). 뜬금없는 단어 하나에 봇들이
+    # 우르르 끌려가지 않도록 경고를 붙인다 (KNOWN_ISSUES 4-3).
+    lines.append(
+        "(음성 자동 받아쓰기라 오인식이 섞일 수 있음. 화면 상황·앞뒤 말과 안 맞는 뜬금없는 "
+        "단어는 잘못 들린 것일 수 있으니 그 단어 하나에 여러 봇이 꽂히지 말 것. "
+        "뜻이 애매하면 1명 정도만 \"뭐라고요?\"처럼 되묻거나 화면 상황 위주로 반응)"
+    )
     return "\n".join(lines) + "\n"
+
+
+def _build_roster_section(roster: list[dict] | None, speaking: list[dict]) -> str:
+    """[채팅방 시청자] 섹션 — 이번 라운드 발언자 외 활성 봇까지 이름을 알려준다.
+    봇이 다른 시청자를 닉네임으로 부르거나 언급할 수 있게 한다 (KNOWN_ISSUES 4-4)."""
+    if not roster:
+        return ""
+    speaking_names = {b["name"] for b in speaking}
+    others = [b["name"] for b in roster if b.get("name") and b["name"] not in speaking_names]
+    if not others:
+        return ""
+    return (
+        "[채팅방의 다른 시청자 — 이번 라운드엔 채팅 안 침]\n"
+        + ", ".join(others)
+        + "\n— 봇 목록의 봇들이 아는 단골이라 닉네임으로 부르거나 언급할 수는 있다. "
+        "단, 이 시청자들의 채팅은 절대 생성하지 말 것 (결과 JSON 에는 [봇 목록]의 봇만).\n\n"
+    )
+
+
+def _build_topic_section(avoid_topics: list[str] | None) -> str:
+    """최근 라운드에 과하게 나온 소재를 알려 쏠림을 피하게 한다 (KNOWN_ISSUES 4-1/4-2)."""
+    topics = [t for t in (avoid_topics or []) if t]
+    if not topics:
+        return ""
+    return (
+        "\n[최근 채팅에 너무 자주 나온 소재]\n"
+        + ", ".join(topics)
+        + "\n— 이번 라운드엔 이 소재를 피하고, 꼭 필요하면 1명만 언급한다.\n"
+    )
 
 
 def _build_mood_section(mood_hint: str | None) -> str:
@@ -196,6 +241,37 @@ def _build_mood_section(mood_hint: str | None) -> str:
     if not hint:
         return ""
     return f"[채팅창 분위기]\n{hint}\n\n"
+
+
+def _build_chat_prompt(
+    game_context: str,
+    bots: list[dict],
+    chat_history: list[dict],
+    game_profile_context: str = "",
+    user_speech: list[dict] | None = None,
+    default_speech_weight: str = "medium",
+    mentioned_names: list[str] | None = None,
+    mood_hint: str | None = None,
+    roster: list[dict] | None = None,
+    avoid_topics: list[str] | None = None,
+) -> str:
+    """모든 provider 가 같은 채팅 프롬프트를 쓰도록 한 곳에서 만든다."""
+    bots_info = _build_bots_info(bots, chat_history, default_speech_weight, mentioned_names)
+    history_text = (
+        "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
+        if chat_history else "(아직 채팅 없음)"
+    )
+    return _CHAT_PROMPT_TEMPLATE.format(
+        game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
+        mood_section=_build_mood_section(mood_hint),
+        game_context=_game_context_for_prompt(game_context),
+        user_speech_section=_build_user_speech_section(user_speech),
+        chat_history=history_text,
+        bots_info=bots_info,
+        bot_count=len(bots),
+        roster_section=_build_roster_section(roster, bots),
+        topic_section=_build_topic_section(avoid_topics),
+    )
 
 
 def _is_retryable_server_error(msg: str) -> bool:
@@ -335,20 +411,12 @@ class GeminiClient:
         default_speech_weight: str = "medium",
         mentioned_names: list[str] | None = None,
         mood_hint: str | None = None,
+        roster: list[dict] | None = None,
+        avoid_topics: list[str] | None = None,
     ) -> list[dict]:
-        bots_info = _build_bots_info(bots, chat_history, default_speech_weight, mentioned_names)
-        history_text = (
-            "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
-            if chat_history else "(아직 채팅 없음)"
-        )
-        prompt = _CHAT_PROMPT_TEMPLATE.format(
-            game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
-            mood_section=_build_mood_section(mood_hint),
-            game_context=_game_context_for_prompt(game_context),
-            user_speech_section=_build_user_speech_section(user_speech),
-            chat_history=history_text,
-            bots_info=bots_info,
-            bot_count=len(bots),
+        prompt = _build_chat_prompt(
+            game_context, bots, chat_history, game_profile_context, user_speech,
+            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics,
         )
         raw = ""
         parsed: list[dict] = []
@@ -388,13 +456,23 @@ class ClaudeClient:
         self._vision_prompt = (config["ai"].get("vision_prompt") or "").strip() or None
         self.last_chat_call = ChatCallDebug()
 
+    @staticmethod
+    def _fast_kwargs(model: str) -> dict:
+        """확장 사고를 끄고(지연·비용↓), 5세대 모델은 effort 도 low 로 둔다.
+        채팅·vision 은 짧은 정형 출력이라 사고가 품질을 거의 올리지 않는다."""
+        kw: dict = {"thinking": {"type": "disabled"}}
+        if re.match(r"claude-[a-z]+-5(-\d+)?$", model):  # claude-haiku-5-5, claude-sonnet-5 …
+            kw["extra_body"] = {"output_config": {"effort": "low"}}
+        return kw
+
     def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
         prompt = _build_vision_prompt(game_profile_context, previous_location, self._vision_prompt)
         try:
             image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
             response = self._client.messages.create(
                 model=self._vision_model,
-                max_tokens=768,
+                max_tokens=1024,
+                **self._fast_kwargs(self._vision_model),
                 system=_VISION_SYSTEM,
                 messages=[
                     {
@@ -413,7 +491,7 @@ class ClaudeClient:
                     }
                 ],
             )
-            return response.content[0].text.strip()
+            return "".join(b.text for b in response.content if b.type == "text").strip()
         except Exception as e:
             logger.error(f"Claude Vision 분석 실패: {e}")
             return VISION_ERROR_MARKER
@@ -428,20 +506,12 @@ class ClaudeClient:
         default_speech_weight: str = "medium",
         mentioned_names: list[str] | None = None,
         mood_hint: str | None = None,
+        roster: list[dict] | None = None,
+        avoid_topics: list[str] | None = None,
     ) -> list[dict]:
-        bots_info = _build_bots_info(bots, chat_history, default_speech_weight, mentioned_names)
-        history_text = (
-            "\n".join(f"{c['name']}: {c['message']}" for c in chat_history[-10:])
-            if chat_history else "(아직 채팅 없음)"
-        )
-        prompt = _CHAT_PROMPT_TEMPLATE.format(
-            game_profile_context=game_profile_context or "(게임 프로필 없음 — 화면만 보고 판단)",
-            mood_section=_build_mood_section(mood_hint),
-            game_context=_game_context_for_prompt(game_context),
-            user_speech_section=_build_user_speech_section(user_speech),
-            chat_history=history_text,
-            bots_info=bots_info,
-            bot_count=len(bots),
+        prompt = _build_chat_prompt(
+            game_context, bots, chat_history, game_profile_context, user_speech,
+            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics,
         )
         raw = ""
         parsed: list[dict] = []
@@ -452,8 +522,9 @@ class ClaudeClient:
                 model=self._chat_model,
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
+                **self._fast_kwargs(self._chat_model),
             )
-            raw = response.content[0].text.strip()
+            raw = "".join(b.text for b in response.content if b.type == "text").strip()
             parsed = _parse_chats(raw)
         except json.JSONDecodeError as e:
             logger.error(f"Claude 채팅 JSON 파싱 실패: {e}")
@@ -471,30 +542,156 @@ class ClaudeClient:
         return parsed
 
 
-def create_vision_client(config: dict, gemini_api_key: str, claude_api_key: str | None = None):
+class OpenAIClient:
+    """OpenAI Responses API 로 vision/채팅. 추론(reasoning)은 가능한 한 끈다.
+
+    모델마다 허용하는 reasoning.effort 가 달라(gpt-6-luna 는 "none", gpt-5-nano 는
+    "minimal" 부터, gpt-4.1·4o 계열은 reasoning 자체가 없음) 거절되면 다음 단계로 내려가고
+    모델별로 기억한다.
     """
-    config["ai"]["vision_provider"] 에 따라 클라이언트 반환.
-    "gemini" (기본값) 또는 "claude".
-    """
-    provider = config["ai"].get("vision_provider", "gemini").lower()
+
+    _EFFORT_STEPS = ("none", "minimal", None)
+    # 모델별로 통과한 단계 — 클라이언트를 다시 만들어도(설정 변경) 재탐색하지 않게 클래스에 둔다.
+    _effort_step: dict[str, int] = {}
+
+    def __init__(self, api_key: str, config: dict):
+        import openai
+        self._openai = openai
+        # SDK 자체 재시도(429/5xx 백오프)를 쓰되, 라운드가 밀리지 않게 짧게.
+        self._client = openai.OpenAI(api_key=api_key, max_retries=2, timeout=30.0)
+        ai = config["ai"]
+        self._vision_model = ai.get(model_config_key("openai", "vision")) or DEFAULT_MODELS["openai"]["vision"]
+        self._chat_model = ai.get(model_config_key("openai", "chat")) or DEFAULT_MODELS["openai"]["chat"]
+        self._vision_prompt = (ai.get("vision_prompt") or "").strip() or None
+        self.last_chat_call = ChatCallDebug()
+
+    def _create(self, model: str, **kw):
+        step = self._effort_step.get(model, 0)
+        while True:
+            effort = self._EFFORT_STEPS[step]
+            extra = {"reasoning": {"effort": effort}} if effort else {}
+            try:
+                return self._client.responses.create(model=model, **extra, **kw)
+            except self._openai.BadRequestError as e:
+                if "reasoning" not in str(e).lower() or step + 1 >= len(self._EFFORT_STEPS):
+                    raise
+                step += 1
+                self._effort_step[model] = step
+                logger.info(f"{model}: reasoning.effort={effort} 미지원 → {self._EFFORT_STEPS[step] or '(미지정)'}")
+
+    def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
+        prompt = _build_vision_prompt(game_profile_context, previous_location, self._vision_prompt)
+        try:
+            image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+            response = self._create(
+                self._vision_model,
+                instructions=_VISION_SYSTEM,
+                input=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{image_b64}"},
+                        {"type": "input_text", "text": prompt},
+                    ],
+                }],
+                max_output_tokens=1024,
+            )
+            return (response.output_text or "").strip() or VISION_ERROR_MARKER
+        except Exception as e:
+            logger.error(f"OpenAI Vision 분석 실패: {e}")
+            return VISION_ERROR_MARKER
+
+    def generate_chats(
+        self,
+        game_context: str,
+        bots: list[dict],
+        chat_history: list[dict],
+        game_profile_context: str = "",
+        user_speech: list[dict] | None = None,
+        default_speech_weight: str = "medium",
+        mentioned_names: list[str] | None = None,
+        mood_hint: str | None = None,
+        roster: list[dict] | None = None,
+        avoid_topics: list[str] | None = None,
+    ) -> list[dict]:
+        prompt = _build_chat_prompt(
+            game_context, bots, chat_history, game_profile_context, user_speech,
+            default_speech_weight, mentioned_names, mood_hint, roster, avoid_topics,
+        )
+        raw = ""
+        parsed: list[dict] = []
+        err = ""
+        t0 = time.perf_counter()
+        try:
+            response = self._create(self._chat_model, input=prompt, max_output_tokens=1024)
+            raw = (response.output_text or "").strip()
+            parsed = _parse_chats(raw)
+        except json.JSONDecodeError as e:
+            logger.error(f"OpenAI 채팅 JSON 파싱 실패: {e}")
+            err = str(e)
+        except Exception as e:
+            logger.error(f"OpenAI 채팅 생성 실패: {e}")
+            err = str(e)
+        finally:
+            self.last_chat_call.provider = "openai"
+            self.last_chat_call.model = self._chat_model
+            self.last_chat_call.prompt = prompt
+            self.last_chat_call.raw_response = raw
+            self.last_chat_call.elapsed_s = time.perf_counter() - t0
+            self.last_chat_call.error = err
+        return parsed
+
+
+PROVIDERS = ("gemini", "claude", "openai")
+
+# provider 별 기본 모델 (config 에 값이 없을 때).
+DEFAULT_MODELS = {
+    "gemini": {"vision": "gemini-2.5-flash", "chat": "gemini-2.5-flash-lite"},
+    "claude": {"vision": "claude-sonnet-4-6", "chat": "claude-haiku-5-5"},
+    "openai": {"vision": "gpt-6-luna", "chat": "gpt-6-luna"},
+}
+
+
+def model_config_key(provider: str, kind: str) -> str:
+    """config["ai"] 에서 provider·용도(vision|chat)별 모델 이름이 들어 있는 키.
+    gemini 는 예전 키(vision_model/chat_model)를 그대로 쓴다."""
+    base = f"{kind}_model"
+    return base if provider == "gemini" else f"{provider}_{base}"
+
+
+def selected_model(config: dict, kind: str) -> tuple[str, str]:
+    """현재 설정된 (provider, model). kind = "vision" | "chat"."""
+    ai = config.get("ai") or {}
+    provider = str(ai.get(f"{kind}_provider", "gemini")).lower()
+    if provider not in PROVIDERS:
+        provider = "gemini"
+    return provider, ai.get(model_config_key(provider, kind)) or DEFAULT_MODELS[provider][kind]
+
+
+def _create_client(kind: str, config: dict, gemini_api_key: str,
+                   claude_api_key: str | None, openai_api_key: str | None):
+    provider, model = selected_model(config, kind)
+    key = {"claude": claude_api_key, "openai": openai_api_key}.get(provider)
+    if provider != "gemini" and not key:
+        # 키 없이 고른 provider 는 AI 프로세스가 죽지 않도록 Gemini 로 대체한다.
+        logger.warning(f"{kind}: {provider} 키가 없어 Gemini 로 대체합니다 (설정 모델 {model})")
+        provider = "gemini"
     if provider == "claude":
-        if not claude_api_key:
-            raise ValueError("Claude vision을 사용하려면 CLAUDE_API_KEY가 필요합니다.")
-        return ClaudeClient(api_key=claude_api_key, config=config)
+        return ClaudeClient(api_key=key, config=config)
+    if provider == "openai":
+        return OpenAIClient(api_key=key, config=config)
     return GeminiClient(api_key=gemini_api_key, config=config)
 
 
-def create_chat_client(config: dict, gemini_api_key: str, claude_api_key: str | None = None):
-    """
-    config["ai"]["chat_provider"] 에 따라 채팅 전용 클라이언트 반환.
-    "gemini" (기본값) 또는 "claude".
-    """
-    provider = config["ai"].get("chat_provider", "gemini").lower()
-    if provider == "claude":
-        if not claude_api_key:
-            raise ValueError("Claude chat을 사용하려면 CLAUDE_API_KEY가 필요합니다.")
-        return ClaudeClient(api_key=claude_api_key, config=config)
-    return GeminiClient(api_key=gemini_api_key, config=config)
+def create_vision_client(config: dict, gemini_api_key: str, claude_api_key: str | None = None,
+                         openai_api_key: str | None = None):
+    """config["ai"]["vision_provider"] 에 따라 클라이언트 반환. 키가 없으면 Gemini 로 대체."""
+    return _create_client("vision", config, gemini_api_key, claude_api_key, openai_api_key)
+
+
+def create_chat_client(config: dict, gemini_api_key: str, claude_api_key: str | None = None,
+                       openai_api_key: str | None = None):
+    """config["ai"]["chat_provider"] 에 따라 채팅 전용 클라이언트 반환. 키가 없으면 Gemini 로 대체."""
+    return _create_client("chat", config, gemini_api_key, claude_api_key, openai_api_key)
 
 
 def check_api_key(provider: str, api_key: str) -> tuple[bool, str]:

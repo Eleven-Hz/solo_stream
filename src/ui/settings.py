@@ -53,6 +53,7 @@ from src.ui.workers import (
     start_worker,
 )
 from src.utils import paths
+from src.ai.model_client import model_config_key, selected_model  # SDK import 없음(지연 import)
 
 logger = logging.getLogger("solo_stream.ui")
 
@@ -60,13 +61,18 @@ logger = logging.getLogger("solo_stream.ui")
 _VISION_MODELS = [
     ("gemini", "gemini-2.5-flash"), ("gemini", "gemini-2.5-flash-lite"),
     ("gemini", "gemini-2.5-pro"), ("gemini", "gemini-2.0-flash"),
-    ("claude", "claude-sonnet-4-6"), ("claude", "claude-opus-4-7"), ("claude", "claude-haiku-4-5-20251001"),
+    ("openai", "gpt-6-luna"), ("openai", "gpt-5-mini"),
+    ("claude", "claude-haiku-5-5"), ("claude", "claude-sonnet-4-6"), ("claude", "claude-opus-4-7"),
 ]
+_VISION_RECOMMENDED = "gemini-2.5-flash"
 _CHAT_MODELS = [
+    ("openai", "gpt-6-luna"), ("openai", "gpt-5-nano"), ("openai", "gpt-5-mini"), ("openai", "gpt-4.1-nano"),
     ("gemini", "gemini-2.5-flash-lite"), ("gemini", "gemini-2.5-flash"),
     ("gemini", "gemini-2.5-pro"), ("gemini", "gemini-2.0-flash"),
-    ("claude", "claude-haiku-4-5-20251001"), ("claude", "claude-sonnet-4-6"), ("claude", "claude-opus-4-7"),
+    ("claude", "claude-haiku-5-5"), ("claude", "claude-haiku-4-5-20251001"), ("claude", "claude-sonnet-4-6"),
 ]
+# 2026-10 샘플 영상 20라운드 비교에서 발화 반응·자연스러움 1위(비용은 flash-lite 와 비슷).
+_CHAT_RECOMMENDED = "gpt-6-luna"
 # 게임 프로필 생성은 Google Search 그라운딩이 필요해 Gemini 전용.
 _PROFILE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"]
 # STT: gemini 는 generate_content(오디오 이해)로 받아쓰기가 되는 모델만.
@@ -770,16 +776,23 @@ class SettingsWindow(QWidget):
         stt = self._config.get("stt") or {}
         stt_on = bool(stt.get("enabled", False))
         need_openai = stt_on and str(stt.get("provider", "gemini")) == "openai"
+        ai_need = {selected_model(self._config, k)[0] for k in ("vision", "chat")} - {"gemini"}
+        missing_ai = [p for p in sorted(ai_need) if not keys[p]]
         done = 0
         # 키
         if not keys["gemini"]:
             self._ready_key_badge.set_state("warn")
             self._ready_key_sub.setText("Gemini 키가 필요해요 — 아래에 붙여넣고 저장")
             self._quick_key_row.setVisible(True)
-        elif need_openai and not keys["openai"]:
+        elif missing_ai or (need_openai and not keys["openai"]):
             self._ready_key_badge.set_state("warn")
-            self._ready_key_sub.setText("음성 인식(OpenAI)에 쓸 OpenAI 키가 없어요")
+            if missing_ai:
+                names = "·".join(_PROVIDER_LABEL[p] for p in missing_ai)
+                self._ready_key_sub.setText(f"{names} 키가 없어 고른 AI 모델 대신 Gemini로 대체돼요")
+            else:
+                self._ready_key_sub.setText("OpenAI 키가 없어 음성 인식은 Gemini로 대체돼요(정확도 낮음)")
             self._quick_key_row.setVisible(False)
+            done += 1  # Gemini 대체로 동작은 하므로 준비 완료로 친다
         else:
             self._ready_key_badge.set_state("ok")
             parts = [f"{_PROVIDER_LABEL[p]} 있음" for p in ("gemini", "openai", "claude") if keys[p]]
@@ -1439,16 +1452,16 @@ class SettingsWindow(QWidget):
         lay.addWidget(card)
 
         card = T.Card("모델")
-        vp = str(ai.get("vision_provider", "gemini"))
-        vm = ai.get("claude_vision_model" if vp == "claude" else "vision_model", "gemini-2.5-flash")
-        self._vision_combo = T.combo([(_model_text(p, m), _pm(p, m)) for p, m in _VISION_MODELS], width=300)
+        vp, vm = selected_model(self._config, "vision")
+        self._vision_combo = T.combo([(_model_text(p, m, _VISION_RECOMMENDED), _pm(p, m))
+                                      for p, m in _VISION_MODELS], width=300)
         T.select_data(self._vision_combo, _pm(vp, vm), fallback_text=_model_text(vp, vm))
         self._vision_combo.currentIndexChanged.connect(lambda _: self._on_ai_model("vision"))
         card.add_row(title="화면 분석", sub="15초마다 게임 화면을 읽어요", right=self._vision_combo)
 
-        cp = str(ai.get("chat_provider", "gemini"))
-        cm = ai.get("claude_chat_model" if cp == "claude" else "chat_model", "gemini-2.5-flash-lite")
-        self._chat_combo = T.combo([(_model_text(p, m), _pm(p, m)) for p, m in _CHAT_MODELS], width=300)
+        cp, cm = selected_model(self._config, "chat")
+        self._chat_combo = T.combo([(_model_text(p, m, _CHAT_RECOMMENDED), _pm(p, m))
+                                    for p, m in _CHAT_MODELS], width=300)
         T.select_data(self._chat_combo, _pm(cp, cm), fallback_text=_model_text(cp, cm))
         self._chat_combo.currentIndexChanged.connect(lambda _: self._on_ai_model("chat"))
         card.add_row(title="채팅 생성", sub="봇 채팅을 한 번에 몰아서 만들어요", right=self._chat_combo)
@@ -1486,8 +1499,10 @@ class SettingsWindow(QWidget):
             row["edit"].setText("변경" if has else "추가")
             if has:
                 row["chip"].set_tone("ok", "있음")
+            elif provider in {selected_model(self._config, k)[0] for k in ("vision", "chat")}:
+                row["chip"].set_tone("warn", "필요 · 없으면 Gemini 대체")
             elif provider == "openai" and str(stt.get("provider")) == "openai":
-                row["chip"].set_tone("warn", "필요")
+                row["chip"].set_tone("warn", "권장 · 없으면 Gemini 대체")
             elif row["optional"] or provider == "openai":
                 row["chip"].set_tone("neutral", "선택 사항 · 없음")
             else:
@@ -1527,21 +1542,19 @@ class SettingsWindow(QWidget):
     def _on_ai_model(self, kind: str):
         combo = self._vision_combo if kind == "vision" else self._chat_combo
         provider, _, model = (combo.currentData() or "").partition("|")
-        if provider == "claude" and not _read_env_keys()["claude"]:
-            # 키 없이 Claude 로 바꾸면 AI 프로세스가 클라이언트를 못 만든다 — 적용하지 않는다.
-            self._ai_warn.setText("Claude 모델은 Claude 키가 있어야 쓸 수 있어요. 위에서 키를 추가하고 다시 시작한 뒤 고르세요.")
+        if provider != "gemini" and not _read_env_keys()[provider]:
+            # 키 없이 고르면 AI 프로세스가 Gemini 로 대체해 버린다 — 고른 걸 적용하지 않고 안내한다.
+            # (키는 다시 시작해야 AI 프로세스에 들어가므로 '추가 후 재시작' 안내)
+            label = _PROVIDER_LABEL[provider]
+            self._ai_warn.setText(f"{label} 모델은 {label} 키가 있어야 쓸 수 있어요. "
+                                  "위에서 키를 추가하고 다시 시작한 뒤 고르세요.")
             self._ai_warn.setVisible(True)
-            ai = self._config.get("ai") or {}
-            pkey = "vision_provider" if kind == "vision" else "chat_provider"
-            p = str(ai.get(pkey, "gemini"))
-            mkey = ("claude_" if p == "claude" else "") + ("vision_model" if kind == "vision" else "chat_model")
             combo.blockSignals(True)
-            T.select_data(combo, _pm(p, ai.get(mkey, "")))
+            T.select_data(combo, _pm(*selected_model(self._config, kind)))
             combo.blockSignals(False)
             return
         self._ai_warn.setVisible(False)
-        values = {f"{kind}_provider": provider}
-        values[("claude_" if provider == "claude" else "") + f"{kind}_model"] = model
+        values = {f"{kind}_provider": provider, model_config_key(provider, kind): model}
         self._save("ai", values)
         self._queue.put({f"{kind}_provider": provider, f"{kind}_model": model})
         logger.info(f"{kind} 모델 변경: {provider} / {model}")
@@ -1761,10 +1774,9 @@ class SettingsWindow(QWidget):
         if not hasattr(self, "_cost_out"):
             return
         from src.utils import pricing
-        ai = self._config.get("ai") or {}
         stt = self._config.get("stt") or {}
-        vm = ai.get("claude_vision_model") if ai.get("vision_provider") == "claude" else ai.get("vision_model")
-        cm = ai.get("claude_chat_model") if ai.get("chat_provider") == "claude" else ai.get("chat_model")
+        vm = selected_model(self._config, "vision")[1]
+        cm = selected_model(self._config, "chat")[1]
         sm = stt.get("model") if stt.get("enabled") else ""
         interval = float((self._config.get("capture") or {}).get("interval_seconds", 15) or 15)
         sp = self._cost_spins

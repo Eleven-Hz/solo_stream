@@ -25,6 +25,7 @@
   - `react_chance` (float 0~1, 기본 1.0)
   - `user_speech_weight`: `off`/`low`/`medium`/`high` (없으면 `config.stt.default_weight`)
   - `triggers` (list, 옵션) — `{type, reaction}` 패턴 (현재 프롬프트에서 직접 사용은 안 함, 참고용)
+  - `known_streamers` (list[str], 옵션) — 이 봇이 "다른 방송" 얘기할 때 부르는 가상의 스트리머 이름. 프롬프트 봇 정보에 주입됨 (방랑객)
 - YAML에서 `user_speech_weight: off` 는 boolean False로 파싱될 수 있다 — loader가 `normalize_user_speech_weight`로 처리하므로 그대로 적어도 안전하지만, 명시적으로 `"off"` 문자열로 quote 하는 것을 권장.
 - 새 페르소나 파일을 추가하면 다음 실행부터 자동 로드 — 별도 등록 코드 없음.
 

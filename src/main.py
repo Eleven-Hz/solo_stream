@@ -124,9 +124,12 @@ def _detect_mentioned_bots(
 
 
 def _normalize_msg(text: str) -> str:
-    """중복 비교용 정규화: 공백 제거 + 소문자. ㅠㅠㅠㅠ 길이 차 등은 의도적으로
-    구분 유지(완전 동일 복붙만 잡는다)."""
-    return "".join((text or "").split()).lower()
+    """중복 비교용 정규화: 공백·문장부호 제거 + 소문자. ㅠㅠㅠㅠ 길이 차 등은 의도적으로
+    구분 유지(완전 동일 복붙만 잡는다). 문장부호는 떼어 단답 봇의 "흠." / "흠" 같은
+    사실상 같은 연속 단답도 잡는다(KNOWN_ISSUES 4-1). 부호만 있는 메시지("...")는 그대로 둔다."""
+    compact = "".join((text or "").split()).lower()
+    stripped = compact.strip(".,!?~…·")
+    return stripped or compact
 
 
 def _drop_repeat_chats(
@@ -252,12 +255,16 @@ def ai_process(
     api_key: str,
     claude_api_key: str | None = None,
     stt_queue: "multiprocessing.Queue | None" = None,
+    openai_api_key: str | None = None,
 ):
     setup_logger("solo_stream")
     setup_logger("solo_stream.ai")
     log = logging.getLogger("solo_stream.ai")
 
-    from src.ai.model_client import create_vision_client, create_chat_client, GeminiClient, is_transient_error
+    from src.ai.model_client import (
+        create_vision_client, create_chat_client, GeminiClient, is_transient_error,
+        model_config_key, selected_model,
+    )
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
@@ -270,12 +277,39 @@ def ai_process(
     # schedule_chats 가 이 브로드캐스터를 통해 외부 소비자(project_ns)에게도 채팅을 보낸다.
     start_broadcaster(config)
 
-    client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
-    chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+    provider_keys = {"claude": claude_api_key, "openai": openai_api_key}
+
+    def _make_client(kind: str):
+        """설정된 provider 로 클라이언트를 만든다. 키가 없어 Gemini 로 대체되면 채팅창에 알린다."""
+        provider, model = selected_model(config, kind)
+        if provider != "gemini" and not provider_keys.get(provider):
+            label = "화면 분석" if kind == "vision" else "채팅 생성"
+            ui_queue.put({
+                "name": "시스템",
+                "message": (f"ℹ {provider} 키가 없어 {label}을 Gemini로 대체합니다 — "
+                            f"설정 'AI 모델 · 키'에서 키를 추가하세요."),
+            })
+        factory = create_vision_client if kind == "vision" else create_chat_client
+        return factory(config, gemini_api_key=api_key, claude_api_key=claude_api_key,
+                       openai_api_key=openai_api_key)
+
+    client = _make_client("vision")
+    chat_client = _make_client("chat")
+    log.info(f"vision={selected_model(config, 'vision')} chat={selected_model(config, 'chat')}")
     # 게임 프로필 생성은 항상 Gemini로 (Google Search 그라운딩 필요)
     gemini_client = GeminiClient(api_key=api_key, config=config)
     bot_pool = load_personas(config["chat"]["persona_dir"])
     log.info(f"봇 풀 {len(bot_pool)}명 로딩: {[b['name'] for b in bot_pool]}")
+
+    # 소재(클리셰) 쏠림 억제 (KNOWN_ISSUES 4-1/4-2): 최근 라운드 과열 소재를 프롬프트로
+    # 피하게 하고, 라운드 안에서 같은 소재를 쓰는 봇 수를 후처리로 제한한다.
+    from src.chat.topic_guard import TopicTracker, limit_round_topics
+    chat_cfg = config.get("chat", {}) or {}
+    topic_tracker = TopicTracker(
+        window_rounds=int(chat_cfg.get("topic_window_rounds", 6)),
+        cliche_keywords=chat_cfg.get("cliche_keywords"),
+    )
+    topic_round_max = int(chat_cfg.get("topic_round_max", 2))
 
     chat_log = get_chat_logger()
     # 세션 시작 시 게임 프로필을 chat_log 에 한 번 박아두고, 라운드 로그에서는 생략한다.
@@ -412,29 +446,23 @@ def ai_process(
                 ai_cfg = config.setdefault("ai", {})
                 ai_cfg["vision_provider"] = new_provider
                 if new_model:
-                    if new_provider == "claude":
-                        ai_cfg["claude_vision_model"] = new_model
-                    else:
-                        ai_cfg["vision_model"] = new_model
+                    ai_cfg[model_config_key(new_provider, "vision")] = new_model
                 log.info(f"vision 변경: {new_provider} / {new_model or '(모델 유지)'}")
-                client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+                client = _make_client("vision")
             elif "vision_prompt" in setting:
                 ai_cfg = config.setdefault("ai", {})
                 ai_cfg["vision_prompt"] = setting["vision_prompt"]
                 log.info("vision 프롬프트 변경 — vision client 재생성")
-                client = create_vision_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+                client = _make_client("vision")
             elif "chat_provider" in setting:
                 new_provider = setting["chat_provider"]
                 new_model = setting.get("chat_model")
                 ai_cfg = config.setdefault("ai", {})
                 ai_cfg["chat_provider"] = new_provider
                 if new_model:
-                    if new_provider == "claude":
-                        ai_cfg["claude_chat_model"] = new_model
-                    else:
-                        ai_cfg["chat_model"] = new_model
+                    ai_cfg[model_config_key(new_provider, "chat")] = new_model
                 log.info(f"chat 모델 변경: {new_provider} / {new_model or '(모델 유지)'}")
-                chat_client = create_chat_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key)
+                chat_client = _make_client("chat")
             elif "profile_model" in setting:
                 # 다음 프로필 생성/재생성 때 load_profile(config=...)에서 읽힌다.
                 ai_cfg = config.setdefault("ai", {})
@@ -451,6 +479,7 @@ def ai_process(
                 profile_context = build_profile_context(game_profile)
                 vision_context = build_vision_context(game_profile)
                 chat_history.clear()
+                topic_tracker.clear()
                 last_location = ""
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
                 _log_profile_header(profile_context, game_profile.get("name", "?"))
@@ -585,6 +614,9 @@ def ai_process(
             # batch 봇의 emotion을 동적 라벨로 덮은 사본 사용 (원본 bot_pool은 보존)
             batch = [{**b, "emotion": emotion_labels.get(b["name"], b.get("emotion", "평온"))} for b in batch]
             log.info(f"이번 라운드 발언자 {len(batch)}명: {[b['name'] for b in batch]}")
+            hot_topics = topic_tracker.hot_keys()
+            if hot_topics:
+                log.info(f"과열 소재(이번 라운드 회피): {hot_topics}")
             chats = chat_client.generate_chats(
                 game_context=game_context,
                 bots=batch,
@@ -594,6 +626,8 @@ def ai_process(
                 default_speech_weight=default_weight,
                 mentioned_names=mentioned_names,
                 mood_hint=hype_profile.mood_hint or None,
+                roster=bot_pool,
+                avoid_topics=hot_topics,
             )
 
             # 채팅 생성이 503 등 서버 혼잡이면 채팅창에 안내. 매 라운드 반복되지
@@ -614,12 +648,33 @@ def ai_process(
                 })
             api_busy = now_busy
 
+            # 이번 라운드 발언자(batch)가 아닌 봇의 채팅은 버린다. 프롬프트에 다른 시청자
+            # 목록(roster)이 들어가 LLM 이 그 봇들 채팅까지 지어내는 경우가 있다.
+            batch_names = {b["name"] for b in batch}
+            outsiders = [c for c in chats if c.get("name") not in batch_names]
+            if outsiders:
+                log.info(f"발언자 외 채팅 {len(outsiders)}개 드롭: {[c.get('name') for c in outsiders]}")
+                chats = [c for c in chats if c.get("name") in batch_names]
+
             # 직전 라운드 발언을 그대로 복붙한 채팅 드롭 (B). hype delay 축소로 인접
             # 라운드 간격이 짧아지면 같은 메시지가 화면에 거의 동시에 떠 중복으로 보인다.
             before = len(chats)
             chats = _drop_repeat_chats(chats, chat_history)
             if len(chats) < before:
                 log.info(f"중복 복붙 {before - len(chats)}개 드롭")
+
+            # 같은 소재에 여러 봇이 몰린 채팅 드롭 (호명 봇은 면제)
+            chats, topic_dropped = limit_round_topics(
+                chats,
+                hot_keys=hot_topics,
+                cliche_keywords=topic_tracker.cliche_keywords,
+                per_round_max=topic_round_max,
+                exempt_names=set(mentioned_names),
+            )
+            if topic_dropped:
+                log.info("소재 쏠림 드롭: " + ", ".join(
+                    f"{c.get('name')}[{k}]" for c, k in topic_dropped))
+            topic_tracker.push_round([c.get("message", "") for c in chats])
 
             # 한 라운드의 전체 흐름을 chat_log 에 단일 블록으로 출력
             _write_round_block(
@@ -747,18 +802,34 @@ def stt_process(
     sample_rate = int(stt_cfg.get("sample_rate", 16000))
 
     provider = str(stt_cfg.get("provider", "gemini")).lower()
+    model = stt_cfg.get("model", "gemini-2.5-flash")
+    # 기본값은 OpenAI(gpt-transcribe)지만 OpenAI 키는 선택 사항이다. 키가 없으면
+    # STT 를 죽이지 않고 Gemini 로 대체하고 채팅창에 한 번 알린다.
+    if provider == "openai" and not openai_api_key and api_key:
+        model = stt_cfg.get("fallback_model", "gemini-2.5-flash")
+        log.warning(f"OpenAI 키가 없어 STT 를 Gemini({model})로 대체합니다")
+        provider = "gemini"
+        if ui_queue is not None:
+            try:
+                ui_queue.put_nowait({
+                    "name": "시스템",
+                    "message": ("ℹ OpenAI 키가 없어 음성 인식을 Gemini로 대체합니다. "
+                                "정확도가 낮을 수 있어요 — 설정 'AI 모델 · 키'에서 OpenAI 키를 추가하세요."),
+                })
+            except Exception:
+                pass
     transcriber = create_transcriber(
         provider,
         gemini_api_key=api_key,
         openai_api_key=openai_api_key,
-        model=stt_cfg.get("model", "gemini-2.5-flash"),
+        model=model,
         language=stt_cfg.get("language", "ko"),
         prompt=stt_cfg.get("transcribe_prompt"),
         normalize_target_level=float(stt_cfg.get("normalize_target_level", 0.1)),
         normalize_percentile=float(stt_cfg.get("normalize_percentile", 95.0)),
         normalize_max_gain=float(stt_cfg.get("normalize_max_gain", 20.0)),
     )
-    log.info(f"STT transcriber provider={provider} model={stt_cfg.get('model')}")
+    log.info(f"STT transcriber provider={provider} model={model}")
 
     pipeline = STTPipeline(
         transcriber=transcriber,
@@ -895,7 +966,8 @@ def main():
             ),
             multiprocessing.Process(
                 target=ai_process,
-                args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key, stt_queue),
+                args=(image_queue, ui_queue, ai_settings_queue, config, api_key, claude_api_key, stt_queue,
+                      openai_api_key),
                 name="AIProcess",
                 daemon=True,
             ),
