@@ -22,12 +22,13 @@
   - `name` (str) — 표시명, 한국어 병기 권장 (예: `CrossCode (크로스코드)`)
   - `description` (str) — 2~3문장 게임 설명
   - `vision_focus` (list[str]) — Vision 묘사 시 주목할 시각 요소 (이 항목들은 `_build_vision_prompt`가 묘사 힌트로 추출)
+  - `characters` (list[str], 선택) — 주인공·동료·주요 NPC `한국어명 (영문): 역할·관계`. 스포일러 금지(처음 만날 때 알 수 있는 정보만). 인물 없는 게임은 비워 둠
   - `systems` (list[str]) — 전투/성장/특수 게이지 등
   - `locations` (list[str]) — `한국어명 (영문): 설명` 형식
   - `enemies` (list[str]) — 동일 형식
   - `skills` (list[str]) — 동일 형식
   - `chat_tips` (list[str]) — 시청자 채팅 밈/반응 포인트
-  - `stt_terms` (list[str], 선택) — 받아쓰기 힌트에 넣을 고유명사(캐릭터·동료 이름 등). 지명·적·기술 이름은 자동으로 들어가니 그 밖의 것만 (`src/chat/flow.stt_hint_terms`)
+  - `stt_terms` (list[str], 선택) — 받아쓰기 힌트에 넣을 고유명사(별칭·용어 등). 인물·지명·적·기술 이름은 자동으로 들어가니 그 밖의 것만 (`src/chat/flow.stt_hint_terms`)
 - 자동 생성된 프로필은 한국어 번역이 어색할 수 있다 — 5단계 검수에도 빠지면 직접 수정하거나 UI의 "선택 창 게임 프로필 재생성" 버튼으로 다시 만든다.
 - 파일명 규칙: `_safe_filename(game_name)` — 소문자, 공백→`_`, 특수문자 제거, 64자 제한. 한글은 그대로 살림.
 - `default.yaml`은 `_load_default()`가 직접 읽는 fallback — 키를 빼면 자동 생성 실패 시 KeyError가 날 수 있어 주의.
@@ -36,6 +37,7 @@
 - 새 게임 프로필 추가 후 `tests/vision/run.py`로 Vision 묘사 품질, `tests/integration/run.py`로 채팅 톤이 게임 맥락에 맞는지 확인.
 
 ### Common Patterns
+- 프로필 전체가 채팅 프롬프트에 **매 라운드** 들어간다 — 항목 수·설명 길이가 곧 런타임 비용. 생성 프롬프트는 섹션별 개수 상한(인물 5~8, 시스템·스킬 6~10, 지역·적·채팅 포인트 8~12)과 설명 30자 안팎을 요구하고, 개수를 채우려 지어내지 말라고 명시한다.
 - 자동 생성은 5번의 Gemini 호출 (Google Search grounding) — 첫 실행 시 십수 초 소요 + API 비용 약간 발생. 캐시되므로 1회로 끝남.
 - 수동 편집 후에도 키 구조만 유지하면 그대로 사용됨 — `vision_focus`를 직접 다듬는 것이 가장 큰 품질 개선 포인트.
 

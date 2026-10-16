@@ -404,7 +404,7 @@ class _ProfilePasteDialog(QDialog):
             self._summary.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
             self._ok.setEnabled(False)
             return
-        labels = {"vision_focus": "화면 포인트", "systems": "시스템", "locations": "지역",
+        labels = {"vision_focus": "화면 포인트", "characters": "인물", "systems": "시스템", "locations": "지역",
                   "enemies": "적", "skills": "스킬", "chat_tips": "채팅 포인트"}
         counts = " · ".join(f"{labels[s]} {len(profile[s])}" for s in PROFILE_SECTIONS)
         msg = f"{profile['name']}  —  {counts}"

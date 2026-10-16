@@ -195,14 +195,14 @@ def _head(item: str) -> list[str]:
 
 
 def stt_hint_terms(profile: dict | None, limit: int = 60) -> list[str]:
-    """받아쓰기 힌트용 고유명사 — 프로필의 stt_terms(직접 지정) + 지명·적·기술 이름."""
+    """받아쓰기 힌트용 고유명사 — 프로필의 stt_terms(직접 지정) + 인물·지명·적·기술 이름."""
     if not profile:
         return []
     terms: list[str] = []
     name = str(profile.get("name") or "")
     terms += [t.strip() for t in re.split(r"[()]", name) if t.strip()]
     terms += [str(t).strip() for t in (profile.get("stt_terms") or []) if str(t).strip()]
-    for key in ("locations", "enemies", "skills"):
+    for key in ("characters", "locations", "enemies", "skills"):
         for item in profile.get(key) or []:
             terms += _head(item)
     seen, out = set(), []
