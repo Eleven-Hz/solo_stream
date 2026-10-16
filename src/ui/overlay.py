@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import logging
+import time
 from multiprocessing import Queue
 
 from PyQt6.QtCore import QPoint, QPropertyAnimation, QSize, Qt, QTimer
@@ -44,6 +45,9 @@ logger = logging.getLogger("solo_stream.ui")
 
 # 투명도(%) 이상이면 글자에 외곽 그림자를 넣는다(밝은 게임 화면 위 가독성).
 _SHADOW_FROM = 60
+# '입력 중' 표시를 끄는 메시지가 유실돼도 이 시간(초)이 지나면 저절로 사라진다.
+# 라운드 = 화면 분석(~5초) + 채팅 생성(~3초) + 채팅 표시 딜레이(최대 수십 초)라 넉넉히.
+_TYPING_TIMEOUT = 45.0
 # 최신 메시지에서 몇 줄 떨어지면 흐리게 할지(구간별 밝기).
 _FADE_STEPS = ((6, 1.0), (14, 0.8), (10 ** 9, 0.6))
 
@@ -114,6 +118,9 @@ class ChatOverlay(QWidget):
         self._transparency = transparency_from_config(self._config)
         self._fade = bool(self._config.get("fade_old", True))
         self._show_stt = bool(self._config.get("show_stt_history", False))
+        self._typing_on = bool(self._config.get("typing_indicator", True))
+        self._typing_rounds: dict[int, float] = {}  # 채팅 생성 중인 라운드 → 시작 시각(monotonic)
+        self._typing_tick = 0
         self._exclude_capture = bool(self._config.get("exclude_from_capture", True))
 
         # 슬라이더를 끄는 동안 매 틱마다 yaml 을 쓰지 않도록 저장은 잠깐 미룬다.
@@ -238,6 +245,18 @@ class ChatOverlay(QWidget):
         self._list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self._list.viewport().setMouseTracking(True)
         inner.addWidget(self._list, 1)
+
+        # ── '입력 중' 줄: AI 가 화면을 보고 채팅을 만드는 동안만 보인다(기록에는 안 남음)
+        self._typing_lbl = QLabel()
+        self._typing_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self._typing_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._typing_lbl.setVisible(False)
+        # 채팅 줄(목록 안쪽 여백)과 왼쪽 끝을 맞추고, 글자만 모드의 줄 받침 상자가 글자 폭만큼만 그려지게 감싼다.
+        typing_row = QHBoxLayout()
+        typing_row.setContentsMargins(20, 0, 20, 6)
+        typing_row.addWidget(self._typing_lbl)
+        typing_row.addStretch(1)
+        inner.addLayout(typing_row)
 
         # ── 하단바
         self._foot = QWidget()
@@ -499,6 +518,9 @@ class ChatOverlay(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll_queue)
         self._timer.start(100)
+        self._typing_timer = QTimer(self)
+        self._typing_timer.timeout.connect(self._update_typing)
+        self._typing_timer.start(400)
 
     def _poll_queue(self):
         while True:
@@ -531,6 +553,13 @@ class ChatOverlay(QWidget):
                 self._warn_btn.setToolTip(warning or "")
             elif msg.get("type") == "usage":
                 self._settings.set_usage(msg.get("source", ""), msg.get("data") or {})
+            elif msg.get("type") == "typing":
+                rid = msg.get("round")
+                if msg.get("on"):
+                    self._typing_rounds[rid] = time.monotonic()
+                else:
+                    self._typing_rounds.pop(rid, None)
+                self._update_typing()
             return
         if "stt_transcript" in msg:
             if self._show_stt:
@@ -539,6 +568,29 @@ class ChatOverlay(QWidget):
         name = msg.get("name", "")
         kind = "sys" if name == "시스템" else "chat"
         self._add_entry({"kind": kind, "name": name, "text": msg.get("message", "")})
+
+    def _update_typing(self):
+        """'시청자들이 채팅 입력 중' 줄 갱신. 라운드가 겹치면 하나라도 진행 중일 때 보인다.
+        끄는 메시지가 유실돼도 영원히 남지 않게 _TYPING_TIMEOUT 초가 지난 라운드는 버린다."""
+        now = time.monotonic()
+        for rid in [r for r, t in self._typing_rounds.items() if now - t > _TYPING_TIMEOUT]:
+            del self._typing_rounds[rid]
+        show = self._typing_on and self._chat_active and bool(self._typing_rounds)
+        if show:
+            self._typing_tick = (self._typing_tick + 1) % 3
+            dots = "·" * (self._typing_tick + 1)
+            self._typing_lbl.setText(
+                f'<span style="color:{T.ACCENT};">{dots:<3}</span>'
+                f'&nbsp;<span style="color:#8A8F9C;">시청자들이 채팅 입력 중</span>')
+        if self._typing_lbl.isVisible() != show:
+            self._typing_lbl.setVisible(show)
+            if show:
+                self._style_typing()
+            self._list.scrollToBottom()
+
+    def _style_typing(self):
+        self._typing_lbl.setStyleSheet(self._label_qss({"kind": "sys"}))
+        self._apply_outline(self._typing_lbl)
 
     def _entry_html(self, entry: dict, level: float) -> str:
         dim = 1.0 - level
@@ -648,6 +700,8 @@ class ChatOverlay(QWidget):
             lbl.setText(self._entry_html(entry, level))
             if refit:
                 self._fit(item, lbl)
+        if refit:
+            self._style_typing()
         self._list.scrollToBottom()
 
     def _relayout_messages(self):
@@ -665,6 +719,10 @@ class ChatOverlay(QWidget):
 
     def set_show_stt(self, show: bool):
         self._show_stt = bool(show)
+
+    def set_typing_indicator(self, on: bool):
+        self._typing_on = bool(on)
+        self._update_typing()
 
     def show_stt(self) -> bool:
         return self._show_stt

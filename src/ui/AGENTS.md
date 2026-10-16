@@ -9,7 +9,7 @@ PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 
 ## Key Files
 | File | Description |
 |------|-------------|
-| `overlay.py` | `ChatOverlay`(채팅 목록·드래그/리사이즈·우클릭 메뉴·투명도/글자만/클릭 통과/캡처 제외) + `run_overlay(config, ui_queue, settings_queue, onboarding)` 진입점(전역 단축키 등록 포함). 설정 창이 호출하는 공개 메서드: `set_transparency`, `set_click_through`, `set_fade`, `set_show_stt`, `set_font_size`, `set_max_messages`, `set_capture_exclusion`, `toggle_chat`. |
+| `overlay.py` | `ChatOverlay`(채팅 목록·드래그/리사이즈·우클릭 메뉴·투명도/글자만/클릭 통과/캡처 제외) + `run_overlay(config, ui_queue, settings_queue, onboarding)` 진입점(전역 단축키 등록 포함). 설정 창이 호출하는 공개 메서드: `set_transparency`, `set_click_through`, `set_fade`, `set_show_stt`, `set_typing_indicator`, `set_font_size`, `set_max_messages`, `set_capture_exclusion`, `toggle_chat`. |
 | `settings.py` | `SettingsWindow`. 페이지마다 `_build_page_*` 빌더. 저장은 `_save(section, values)`(config.local.yaml + 인메모리 config), 실행 중 반영은 `self._queue.put(...)`, 재시작 필요 항목은 `_need_restart("이유")` → 하단 바에 '재시작하면 적용' + 버튼. 모델 후보 목록(`_VISION_MODELS`/`_CHAT_MODELS`/`_STT_MODELS`/`_PROFILE_MODELS`)과 STT 실측 수치(`_STT_MEASURED`)도 여기. '사용량' 탭은 실제 사용(`set_usage(source, snap)` ← 오버레이가 `type=usage` 시스템 메시지를 전달)과 예상 비용(`pricing.estimate_costs`)을 함께 보여주고, 실제 사용이 들어오면 메뉴 배지가 누적액으로 바뀐다. |
 | `theme.py` | 색 토큰(`ACCENT`, `SURFACE` …), 폰트(`Malgun Gothic`/`Consolas`), QPainter 선 아이콘(`icon(name)`), 설정 창 공용 QSS(`settings_qss()`), 재사용 위젯(`Switch`, `Segmented`, `LevelMeter`, `StatusBadge`, `Chip`, `Card`, `row_box`, `combo`). |
 | `winapi.py` | ctypes Windows API: `set_exclude_from_capture`(WDA_EXCLUDEFROMCAPTURE), `set_click_through`(WS_EX_TRANSPARENT 토글), `remove_dwm_border`(Win11 테두리 제거), `GlobalHotkeys`(RegisterHotKey + 네이티브 이벤트 필터). 실패해도 예외 없이 False. |
@@ -26,7 +26,7 @@ PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 
 - 분석 주기(`capture.interval_seconds`)는 'AI 모델' 카드의 스핀박스(5~60초)로 바꾸고 `{"interval_seconds"}` 로 캡처·AI 프로세스에 바로 반영된다. 15초 미만이면 예상 비용 증가 경고. 주기를 화면에 쓰는 문구는 `_interval_text` 로 만든다(숫자 하드코딩 금지).
 - 클릭 통과는 Ctrl+Shift+O 가 유일한 해제 수단이다. 단축키 등록에 실패하면(`hotkeys_ok=False`) 클릭 통과를 켤 수 없게 막아 둔다 — 이 가드를 없애지 말 것.
 - 클릭 통과·캡처 제외는 Qt 창 플래그가 아니라 winapi 로 확장 스타일/디스플레이 속성만 바꾼다(Qt 플래그 변경은 네이티브 창을 다시 만들어 설정이 풀린다).
-- 채팅 메시지: `_poll_queue` 가 100ms 마다 `ui_queue` drain → `_handle_message`. `system` 키 = 프로필 로드 등, `stt_transcript` = 내 말(설정 켜졌을 때만), 그 외 `{name, message}` 채팅(`name == "시스템"` 이면 시스템 줄). 본문은 `html.escape` 후 RichText 라벨.
+- 채팅 메시지: `_poll_queue` 가 100ms 마다 `ui_queue` drain → `_handle_message`. `system` 키 = 프로필 로드·`type=typing`(라운드별 '입력 중' on/off — 채팅 목록 아래 별도 줄, 기록에 안 남음, 겹친 라운드가 모두 끝나야 꺼지고 45초 지나면 자동 해제) 등, `stt_transcript` = 내 말(설정 켜졌을 때만), 그 외 `{name, message}` 채팅(`name == "시스템"` 이면 시스템 줄). 본문은 `html.escape` 후 RichText 라벨.
 - 줄 높이는 `QListWidgetItem.setSizeHint` + `lbl.heightForWidth` 로 정한다. 높이를 재기 전에 `ensurePolished()` 를 불러야 스타일시트 폰트가 반영돼 줄이 겹치지 않는다. 창 크기가 바뀌면 `_relayout_messages` 가 다시 잰다.
 - `extract_game_name`(helpers.py)은 `src/main.py::_extract_game_name` 과 동일 구현 — 한쪽 정규식을 고치면 다른 쪽도 같이.
 

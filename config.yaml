@@ -55,6 +55,9 @@ ui:
   # STT 받아쓰기를 채팅창에 회색 인라인으로 항상 표시(불안정한 STT 확인용).
   # 설정 '오버레이' 페이지 또는 채팅창 우클릭 메뉴로 토글.
   show_stt_history: false
+  # AI 가 화면을 보고 채팅을 만드는 동안 채팅창 아래에 '시청자들이 채팅 입력 중' 표시(기록엔 안 남음).
+  # 설정 '오버레이' 페이지에서 토글.
+  typing_indicator: true
   width: 380
   height: 640
   window_excludes:

@@ -1111,6 +1111,13 @@ class SettingsWindow(QWidget):
         card.add_row(title="내 말(받아쓰기) 표시", sub="음성 인식 결과를 채팅 사이에 회색으로 보여줘요. 잘못 들렸는지 확인할 때 켜세요.",
                      right=self._show_stt_switch)
 
+        typing = T.Switch(bool(ui.get("typing_indicator", True)))
+        typing.setAccessibleName("입력 중 표시")
+        typing.toggled.connect(self._on_typing_indicator)
+        card.add_row(title="'입력 중' 표시",
+                     sub="AI가 화면을 보고 채팅을 만드는 동안 채팅창 아래에 '시청자들이 채팅 입력 중'을 띄워요. 기록에는 남지 않아요.",
+                     right=typing)
+
         excl = T.Switch(bool(ui.get("exclude_from_capture", True)))
         excl.setAccessibleName("화면 분석에서 채팅창 숨기기")
         excl.toggled.connect(self._on_capture_exclusion)
@@ -1145,6 +1152,11 @@ class SettingsWindow(QWidget):
         self._save("ui", {"show_stt_history": bool(on)})
         if self._overlay:
             self._overlay.set_show_stt(on)
+
+    def _on_typing_indicator(self, on: bool):
+        self._save("ui", {"typing_indicator": bool(on)})
+        if self._overlay:
+            self._overlay.set_typing_indicator(on)
 
     def _on_capture_exclusion(self, on: bool):
         self._save("ui", {"exclude_from_capture": bool(on)})

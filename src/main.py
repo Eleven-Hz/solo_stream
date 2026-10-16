@@ -478,6 +478,7 @@ def ai_process(
     log.info(f"페이싱: 주기 {interval_s:g}s → 채팅 간격 {delay_min}~{delay_max}s, 소재 윈도우 {topic_window}라운드")
     chat_history: list[dict] = []
     round_num = 0
+    typing_round = None  # '입력 중' 표시를 켜 둔 라운드(끝나면 꺼야 함)
     chat_active = False  # 시작/종료 버튼으로 제어
     last_location = ""  # 직전 라운드에서 확인된 위치
     # 직전 채팅 생성이 503 등 서버 혼잡이었는지. 상태가 바뀔 때만 채팅창에 안내해
@@ -650,6 +651,9 @@ def ai_process(
             speech_round = image_bytes is None
             last_round_start = time.time()
             round_num += 1
+            # 채팅창 하단 '입력 중' 표시. 이 라운드 채팅이 다 뜨면(schedule_chats) 또는 0개면 끈다.
+            ui_queue.put({"system": True, "type": "typing", "round": round_num, "on": True})
+            typing_round = round_num
             event_text = ""
             if speech_round:
                 log.info(f"=== 라운드 #{round_num} 발화 즉시 반응 (직전 화면 재사용) ===")
@@ -883,14 +887,21 @@ def ai_process(
                         d_min, d_max,
                         mentioned_names, hype_profile.skip_relief,
                     ),
+                    kwargs={"round_id": round_num},
                     daemon=True,
                 )
                 t.start()
+            else:
+                ui_queue.put({"system": True, "type": "typing", "round": round_num, "on": False})
+            typing_round = None
 
         except multiprocessing.queues.Empty:
             pass  # 타임아웃은 정상 — 다음 루프 계속
         except Exception as e:
             log.error(f"AI 프로세스 오류: {e}", exc_info=True)
+            if typing_round is not None:
+                ui_queue.put({"system": True, "type": "typing", "round": typing_round, "on": False})
+                typing_round = None
 
 
 def _extract_game_name(window_title: str) -> str:
