@@ -99,6 +99,10 @@ class GeminiTranscriber:
             f"max_gain={normalize_max_gain}"
         )
 
+    def set_prompt(self, prompt: str | None) -> None:
+        """도메인 힌트 교체(게임 프로필이 바뀌면 고유명사 목록이 달라진다)."""
+        self._extra_prompt = prompt or ""
+
     def _build_prompt(self) -> str:
         context_hint = self._extra_prompt.strip()
         return _TRANSCRIBE_PROMPT_TEMPLATE.format(
@@ -147,6 +151,11 @@ class GeminiTranscriber:
         t0 = time.perf_counter()
         try:
             response = self._call_with_retry(_call)
+            um = getattr(response, "usage_metadata", None)
+            if um is not None:
+                from src.utils import usage
+                usage.record("stt", self._model, getattr(um, "prompt_token_count", 0) or 0,
+                             getattr(um, "candidates_token_count", 0) or 0)
             text = (response.text or "").strip()
         except Exception as e:
             logger.error(f"transcribe 실패: {e}")
@@ -192,6 +201,10 @@ class OpenAITranscriber:
             f"max_gain={normalize_max_gain}"
         )
 
+    def set_prompt(self, prompt: str | None) -> None:
+        """도메인 힌트 교체(게임 프로필이 바뀌면 고유명사 목록이 달라진다)."""
+        self._prompt = (prompt or _OPENAI_DEFAULT_PROMPT).strip()
+
     def transcribe(self, pcm: np.ndarray, sample_rate: int = 16000) -> tuple[str, float]:
         pcm = normalize_pcm(
             pcm,
@@ -213,6 +226,9 @@ class OpenAITranscriber:
                 response_format="text",
             )
             text = (resp if isinstance(resp, str) else getattr(resp, "text", "")).strip()
+            # transcribe 모델은 오디오 분 단위 과금 — 보낸 길이로 기록한다.
+            from src.utils import usage
+            usage.record("stt", self._model, audio_sec=len(pcm) / float(sample_rate))
         except Exception as e:
             logger.error(f"transcribe 실패: {e}")
             text = ""
@@ -267,3 +283,18 @@ def create_transcriber(
         normalize_percentile=normalize_percentile,
         normalize_max_gain=normalize_max_gain,
     )
+
+
+def check_openai_key(api_key: str) -> tuple[bool, str]:
+    """OpenAI 키가 동작하는지 모델 목록 조회로 확인한다(과금 없음). (성공 여부, 안내 문구)."""
+    if not api_key:
+        return False, "키가 없습니다"
+    try:
+        from openai import OpenAI
+        OpenAI(api_key=api_key).models.list()
+        return True, "연결됨"
+    except Exception as e:
+        msg = str(e)
+        if "401" in msg or "invalid_api_key" in msg or "Incorrect API key" in msg:
+            return False, "키가 올바르지 않습니다"
+        return False, msg[:120]

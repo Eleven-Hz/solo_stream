@@ -340,7 +340,7 @@ def run(test_cfg: dict, app_config: dict, out, html_path: Path | None = None):
     game_raw = test_cfg.get("game") or ""
     game_name = _extract_game_name(game_raw)
     w(f"게임 프로필 로드: {game_name}")
-    game_profile = load_profile(game_name, ai_client=gemini_client, config=app_config)
+    game_profile = load_profile(game_name, ai_client=gemini_client, config=app_config, auto_generate=True)
     vision_profile_context = build_vision_context(game_profile)
     chat_profile_context = build_profile_context(game_profile)
 

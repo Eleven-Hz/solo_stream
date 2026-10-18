@@ -19,7 +19,7 @@
 | `capture/` | mss 기반 화면 캡처 + SSIM 변화 감지 — see `capture/AGENTS.md` |
 | `chat/` | 페르소나/게임 프로필 로더 + 봇별 타이밍 오케스트레이터 — see `chat/AGENTS.md` |
 | `stt/` | silero-vad + Gemini Audio 실시간 음성 인식 파이프라인 — see `stt/AGENTS.md` |
-| `ui/` | PyQt6 투명 오버레이 + 설정 패널 (탭: 게임/AI 모델/음성) — see `ui/AGENTS.md` |
+| `ui/` | PyQt6 투명 오버레이 + 별도 설정 창 (방송 준비/오버레이/음성/AI·키/게임/사용량) — see `ui/AGENTS.md` |
 | `utils/` | `config_loader`, `logger` 공용 유틸 — see `utils/AGENTS.md` |
 
 ## For AI Agents
@@ -29,17 +29,18 @@
 - 새 프로세스 간 메시지를 추가할 때:
   1. `broadcast_queue`에 들어갈 설정 dict 키를 정한다 (예: `{"chat_active": True}`)
   2. 받는 쪽 프로세스(`capture_process` / `ai_process` / `stt_process`)의 `while not settings_queue.empty():` 블록에 elif 분기 추가
-  3. UI 쪽 `SettingsPanel`에서 `self._settings_queue.put(...)` 호출 추가
-- `_extract_game_name`은 `main.py`와 `ui/overlay.py` 두 곳에 중복 정의되어 있다 — 한쪽을 수정하면 다른 쪽도 같이 수정한다 (UI 프로세스와 AI 프로세스가 서로 import하지 않기 위함).
+  3. UI 쪽 `src/ui/settings.py`의 `SettingsWindow`에서 `self._queue.put(...)` 호출 추가
+- `_extract_game_name`은 `main.py`와 `ui/helpers.py`(`extract_game_name`) 두 곳에 중복 정의되어 있다 — 한쪽을 수정하면 다른 쪽도 같이 수정한다 (UI 프로세스와 AI 프로세스가 서로 import하지 않기 위함).
 
 ### Testing Requirements
-- 통합 실행: `run.bat` (= `python -m src.main`). 반드시 `.env.local`에 `GEMINI_API_KEY` 필요.
+- 통합 실행: `run.bat` (= `python -m src.main`). `.env.local`에 `GEMINI_API_KEY`·`OPENAI_API_KEY`·`CLAUDE_API_KEY` 중 하나 이상 필요(없는 provider 는 `model_client.resolve_provider` 가 있는 키로 대체, 프로필 자동 생성만 Gemini 전용).
 - 도메인 모듈 단위 평가는 `tests/<module>/run.py`로 수행 — see `tests/AGENTS.md`.
 
 ### Common Patterns
 - 모든 로깅은 `setup_logger("solo_stream")` 후 `logging.getLogger("solo_stream.<subsystem>")` 로 자식 로거 사용 — 핸들러는 부모만 가진다.
 - 채팅 한 라운드의 vision/STT/프롬프트/응답은 `_write_round_block`이 `\n` join 멀티라인 메시지로 한 번에 `chat_log.info()` — `_BlockFormatter`가 첫 줄에만 타임스탬프를 찍어 시각적 블록을 유지.
-- 봇 호명: `ai_process`의 batch 선정부에서 `_detect_mentioned_bots(user_speech_payload, bot_pool)`로 발화에 이름이 불린 봇을 찾아 batch에 먼저 채우고(`mentioned_in_batch`), 남은 자리만 `random.sample`로 채운다. 호명 봇 이름은 `generate_chats(mentioned_names=...)`로 넘겨 프롬프트의 `[호명됨] true` 표시·강제 응답 규칙과 연결되고, 동일한 `mentioned_names`를 `schedule_chats(..., mentioned_names)`에도 넘겨 **호명 봇의 답변이 frequency 스킵으로 UI에서 누락되지 않게** 한다 (호명→batch 포함→LLM 응답까지 됐어도 orchestrator 스킵에 걸리면 화면에 안 뜸). 매칭은 발화·후보(봇 `name` + `aliases`)를 모두 공백 제거 후 부분문자열 비교 — STT가 이름을 풀어 받아쓰는 경우(예: "도네요정"→"돈의 요정")는 페르소나 `aliases`로 보완한다.
+- 라운드 종류: 화면 분석 라운드(캡처 주기마다) + **발화 즉시 반응 라운드**(`stt.instant_reply`). 화면이 안 왔을 때 새 발화가 있고 `_speech_round_due`(말 끝나고 debounce 1.5초 또는 첫 발화 후 max_wait 4초, 직전 라운드 시작부터 min_gap 5초, 다음 화면 분석까지 3초 넘게 남음)면 직전 화면(`last_game_context`)으로 채팅만 1회(봇 `instant_batch` 명, 표시 간격 0.4~3초). 발화는 `rounds` 로 사용 횟수를 세고 `MAX_SPEECH_ROUNDS` 번 쓰이면 버퍼에서 뺀다 — 한 번 쓰인 발화는 다음 라운드에 `reacted` 로 표시.
+- 봇 호명: `ai_process`의 batch 선정부에서 `_detect_mentioned_bots(user_speech_payload, bot_pool)`로 발화에 이름이 불린 봇을 찾아 `flow.pick_batch(must=...)` 로 batch에 먼저 채우고, 직전 발언자 `chat.carry_over` 명, 나머지는 무작위로 채운다. 호명 봇 이름은 `generate_chats(mentioned_names=...)`로 넘겨 프롬프트의 `[호명됨] true` 표시·강제 응답 규칙과 연결되고, 동일한 `mentioned_names`를 `schedule_chats(..., mentioned_names)`에도 넘겨 **호명 봇의 답변이 frequency 스킵으로 UI에서 누락되지 않게** 한다 (호명→batch 포함→LLM 응답까지 됐어도 orchestrator 스킵에 걸리면 화면에 안 뜸). 매칭은 발화·후보(봇 `name` + `aliases`)를 모두 공백 제거 후 부분문자열 비교 — STT가 이름을 풀어 받아쓰는 경우(예: "도네요정"→"돈의 요정")는 페르소나 `aliases`로 보완한다.
 - 봇 감정: `ai_process`가 `emotion_states`(봇별 `EmotionState`)를 보관하고 매 라운드 `update_emotions(...)`로 3신호(채팅 톤 + `이벤트:` 줄 + STT 발화) 갱신. 반환된 `{name: 라벨}`로 **batch 봇 dict의 `emotion`을 동적 라벨로 덮은 사본**을 만들어 `generate_chats`에 넘긴다 (원본 `bot_pool`의 정적 emotion/aliases/triggers는 보존). `이벤트:`는 `game_context`에서 `위치:`와 함께 파싱되며 없으면 빈 문자열 → 감정은 채팅/발화 신호로만 굴러간다. `_write_round_block`의 봇 요약에 `(weight/감정)`으로 표시.
 
 ## Dependencies

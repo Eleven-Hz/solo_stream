@@ -10,7 +10,7 @@
 | File | Description |
 |------|-------------|
 | `pipeline.py` | `STTPipeline` — 캡처 스레드(`_capture_loop`, 32ms 윈도우 단위 sounddevice InputStream + VAD 확률 계산 + 발화 패딩 ring-buffer + min_silence_ms로 종료 판정) + transcribe 스레드(`_transcribe_loop`, 큐 consumer + 결과를 `on_event` 콜백으로). `UtteranceEvent`: `timestamp/text/duration_s/elapsed_s`. |
-| `transcriber.py` | `GeminiTranscriber.transcribe(pcm, sample_rate)` — float32 PCM → 16-bit WAV bytes(`pcm_to_wav_bytes`) → Gemini `generate_content` (audio Part + 받아쓰기 프롬프트, `thinking_budget=0`). 429 재시도 포함. |
+| `transcriber.py` | `GeminiTranscriber.transcribe(pcm, sample_rate)` — float32 PCM → 16-bit WAV bytes(`pcm_to_wav_bytes`) → Gemini `generate_content` (audio Part + 받아쓰기 프롬프트, `thinking_budget=0`). 429 재시도 포함. 두 transcriber 모두 `set_prompt()` 로 힌트 교체 — `stt_process` 가 게임 프로필 고유명사(`src/chat/flow.stt_hint_terms`)를 붙여 만들고 `game_name` 설정이 오면 다시 만든다(실측: "가을에 몰락"→"가을의 몰락", "초보자 안고"→"초보자 항구"). |
 | `vad.py` | `SileroVAD` — silero_vad의 `get_speech_timestamps` 래퍼. **현재 pipeline.py에서는 직접 사용하지 않고** `load_silero_vad` + 윈도우별 직접 호출 패턴 사용. 이 모듈은 단위 평가용(`tests/stt/`)에서 segment 단위로 쓰임. |
 | `__init__.py` | `STTPipeline`, `UtteranceEvent` re-export |
 

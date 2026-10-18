@@ -8,10 +8,6 @@ build/
 dist/
 __pycache__/*
 *.pyc
-*/__init__.py
-*/*/__init__.py
-# src/__init__.py 는 앱 버전(__version__) 단일 소스라 추적해야 한다.
-!src/__init__.py
 
 # Environment
 .env.local
@@ -46,3 +42,5 @@ dev_history
 # oh my claude
 .omc
 .omc/*
+# 평가 러너 출력 폴더 (replay, ui 스크린샷 등)
+tests/*/output/
