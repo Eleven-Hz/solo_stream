@@ -77,6 +77,13 @@ def setup_logger(name: str = "solo_stream", level: int = logging.INFO) -> loggin
     # 콘솔 핸들러 (stdout) — 무콘솔(pythonw) 실행 시 stdout 이 None 일 수 있어 가드
     import sys
     if sys.stdout is not None:
+        # 한국어 Windows 콘솔은 cp949 라 '—' 같은 문자를 못 써 UnicodeEncodeError 가 난다.
+        # 인코딩은 그대로 두고(한글은 정상 표시) 못 쓰는 문자만 '?' 로 바꾼다. 파일 로그는 UTF-8 이라 무관.
+        if hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(errors="replace")
+            except Exception:
+                pass
         console = logging.StreamHandler(sys.stdout)
         console.setLevel(level)
         console.setFormatter(formatter)
