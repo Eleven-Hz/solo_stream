@@ -6,6 +6,9 @@
 ## Purpose
 게임별 자동 생성/수동 편집 프로필 YAML 캐시. `src/chat/game_profile_loader.load_profile(game_name)`이 `{slug}.yaml` 가 있으면 로드한다. 없으면 기본은 빈 프로필로 진행하고, 사용자가 설정 '게임 · 프로필'에서 프롬프트를 복사해 구독 채팅(ChatGPT/Claude/Gemini)에 붙여넣고 받은 답을 붙여넣어 저장한다(무료). '자동 생성' 버튼을 누를 때만 Gemini Google Search grounding으로 5단계 멀티턴 생성 후 이 디렉토리에 저장한다. 채팅 프롬프트와 Vision 프롬프트 양쪽에 컨텍스트로 주입된다 (`build_profile_context` / `build_vision_context`).
 
+## 배포·우선순위
+이 폴더의 `*.yaml` 은 배포본에 **읽기전용 기본 제공 프로필**로 들어간다(`solo_stream.spec`). 실행 시 `load_profile` 은 사용자 `%APPDATA%\SoloStream\game_profiles/` 를 먼저 보고, 같은 파일명이 없을 때만 여기 것을 쓴다. 저장·자동 생성은 항상 사용자 폴더에 쓴다. (DEV 모드에선 두 폴더가 같다.)
+
 ## Key Files
 | File | Description |
 |------|-------------|

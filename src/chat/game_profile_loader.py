@@ -1,6 +1,6 @@
 """
 게임 프로필 로더.
-- game_profiles/{게임명}.yaml 이 있으면 로드
+- 사용자 game_profiles/{게임명}.yaml 이 있으면 로드, 없으면 번들(앱과 함께 배포된) 프로필
 - 없으면: 기본은 '프로필 없음'(빈 프로필 + missing 표시) — 사용자가 build_manual_prompt() 를
   구독 채팅에 붙여넣고 받은 결과를 parse_profile_text()/save_profile() 로 넣는다(비용 0).
   auto_generate=True 일 때만 Gemini (Google Search grounding) 멀티턴으로 자동 생성 후 저장.
@@ -33,6 +33,9 @@ _RETRY_MAX_DELAY = 8.0    # 백오프 지연 상한(초)
 
 # 프로필은 런타임에 자동 생성·저장되므로 쓰기 가능한 사용자 데이터 폴더 기준.
 _PROFILE_DIR = paths.user_data_dir() / "game_profiles"
+# 앱과 함께 배포되는 읽기전용 프로필. 사용자 폴더에 같은 이름이 없을 때만 읽는다
+# (사용자가 만들거나 고친 프로필이 항상 이긴다 — 업데이트로 덮어쓰지 않음).
+_BUNDLED_PROFILE_DIR = paths.resource_dir() / "game_profiles"
 _DEFAULT_PROFILE_MODEL = "gemini-2.5-flash"
 
 # ── few-shot 예시 (CrossCode) ──────────────────────────────────────────────────
@@ -256,10 +259,14 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None,
     filename = _safe_filename(game_name)
     profile_path = _PROFILE_DIR / f"{filename}.yaml"
 
-    if profile_path.exists():
-        with open(profile_path, "r", encoding="utf-8") as f:
+    # 자동 생성 요청이면 번들 프로필로 대체하지 않는다(사용자가 새로 만들기를 고른 것).
+    found = profile_path if profile_path.exists() else (
+        None if auto_generate else bundled_profile_path_for(game_name))
+    if found is not None:
+        with open(found, "r", encoding="utf-8") as f:
             profile = yaml.safe_load(f)
-        logger.info(f"게임 프로필 로드: {profile_path.name}")
+        src = "" if found == profile_path else " (번들)"
+        logger.info(f"게임 프로필 로드{src}: {found.name}")
         return profile
 
     if ai_client is None or not auto_generate:
@@ -682,6 +689,24 @@ def parse_profile_text(text: str, fallback_name: str = "") -> tuple[dict, list[s
 
 def profile_path_for(game_name: str) -> Path:
     return _PROFILE_DIR / f"{_safe_filename(game_name)}.yaml"
+
+
+def bundled_profile_path_for(game_name: str) -> Path | None:
+    """앱과 함께 배포된 프로필 경로. 없거나 사용자 폴더와 같은 곳(DEV 모드)이면 None."""
+    if _BUNDLED_PROFILE_DIR.resolve() == _PROFILE_DIR.resolve():
+        return None
+    path = _BUNDLED_PROFILE_DIR / f"{_safe_filename(game_name)}.yaml"
+    return path if path.exists() else None
+
+
+def list_profile_files() -> dict[str, Path]:
+    """slug → 프로필 파일. 번들 위에 사용자 파일을 덮어 합친다(사용자 우선)."""
+    found: dict[str, Path] = {}
+    for d in (_BUNDLED_PROFILE_DIR, _PROFILE_DIR):
+        if d.exists():
+            for p in d.glob("*.yaml"):
+                found[p.stem] = p
+    return dict(sorted(found.items()))
 
 
 def save_profile(game_name: str, profile: dict) -> Path:

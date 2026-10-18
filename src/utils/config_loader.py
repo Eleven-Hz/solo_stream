@@ -26,6 +26,38 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+_MODEL_SECTIONS = ("ai", "stt")
+
+
+def _migrate_models(user_cfg: dict, migrations: dict) -> list[str]:
+    """사용자 설정에 저장된 퇴역 모델 이름을 번들 ``model_migrations`` 표대로 바꾼다.
+
+    번들 기본값은 업데이트 때 새 모델로 바뀌지만, 사용자가 UI 에서 고른 모델은
+    config.local.yaml 에 남아 계속 우선한다 → 서비스가 끝난 모델이면 호출이 실패한다.
+    ``ai``/``stt`` 섹션의 ``*model`` 키만 본다. 표의 값이 비어 있으면(null) 사용자 선택을
+    지워 번들 기본값을 따르게 한다. 바뀐 항목 설명 목록을 반환(없으면 빈 목록).
+    """
+    import logging
+
+    changed: list[str] = []
+    for section in _MODEL_SECTIONS:
+        sec = user_cfg.get(section)
+        if not isinstance(sec, dict):
+            continue
+        for key, val in list(sec.items()):
+            if not key.endswith("model") or not isinstance(val, str) or val not in migrations:
+                continue
+            new = migrations[val]
+            if new:
+                sec[key] = new
+            else:
+                del sec[key]
+            changed.append(f"{section}.{key}: {val} → {new or '(기본값)'}")
+    if changed:
+        logging.getLogger("solo_stream.config").info("퇴역 모델 이름 교체: " + ", ".join(changed))
+    return changed
+
+
 def load_config(config_path: str | None = None) -> dict:
     """앱 설정 로드.
 
@@ -54,6 +86,8 @@ def load_config(config_path: str | None = None) -> dict:
     if local_path.exists() and local_path.resolve() != bundled_path.resolve():
         with open(local_path, "r", encoding="utf-8") as f:
             user_cfg = yaml.safe_load(f) or {}
+        if _migrate_models(user_cfg, base.get("model_migrations") or {}):
+            paths.save_user_config(user_cfg)
         return _deep_merge(base, user_cfg)
 
     # 오버라이드 파일이 없으면 베이스(번들 기본) 그대로.
