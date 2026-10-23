@@ -845,12 +845,10 @@ def create_chat_client(config: dict, gemini_api_key: str | None, claude_api_key:
 
 def create_lookup_client(config: dict, gemini_api_key: str | None, claude_api_key: str | None = None,
                          openai_api_key: str | None = None):
-    """정확한 정보 봇의 웹 검색용 클라이언트(채팅 모델 사용). 채팅 provider 가 검색을 지원하면(openai·gemini)
-    그대로, 아니면 키가 있는 openai → gemini 순. 둘 다 키가 없으면 None(검색 끔)."""
+    """정확한 정보 봇의 웹 검색용 클라이언트. 채팅 provider 와 상관없이 키가 있는 openai(openai_chat_model)
+    → gemini(chat_model) 순 — gemini flash-lite 는 검색 답이 부정확해서 openai 우선. 둘 다 없으면 None(검색 끔)."""
     keys = {"gemini": gemini_api_key, "claude": claude_api_key, "openai": openai_api_key}
-    provider, _ = selected_model(config, "chat")
-    order = ([provider] if provider in ("openai", "gemini") else []) + ["openai", "gemini"]
-    for p in order:
+    for p in ("openai", "gemini"):
         if keys.get(p):
             cfg = {**config, "ai": {**(config.get("ai") or {}), "chat_provider": p}}
             return _create_client("chat", cfg, gemini_api_key, claude_api_key, openai_api_key)

@@ -55,7 +55,7 @@
 - **키 대체 순서**: 고른 provider 키가 없으면 `openai → gemini → claude` 순으로 있는 키의 기본 모델로 대체(`resolve_provider`). 키가 **있지만 무효**면 대체되지 않고 호출 오류가 난다.
 - **웹 검색(고인물 봇, 2026-10-23)**: OpenAI 는 Responses `tools=[{"type":"web_search"}]` — `reasoning.effort:"none"` 과 같이 써도 검색함(출력에 `web_search_call` 1~2개). Gemini 는 `GoogleSearch` 그라운딩. 검색 결과가 입력 토큰으로 잡혀 호출당 **입력 약 9~11k 토큰**(gpt-6-luna 기준 토큰값 약 $0.001) + provider 의 검색 호출 요금(사용량 탭에는 미반영). 지연 4~8초(gpt-6-luna), 5~9초(gemini-2.5-flash).
   - 한국어로 묻고 프로필 없이 검색하면 답이 엉성했다("사파이어 산맥 = 벌레 천지", "가을의 추락" 같은 표기). **영어로 검색 + 프로필 전체를 배경으로** 주자 "감염된 디그모", "대나무 숲", "마룬 밸리" 등 프로필·위키와 맞는 답.
-  - Gemini 는 답 앞에 영어 메모("The search results confirm…")를 붙이기도 함 → 한글이 든 첫 줄만 씀. gemini-2.5-flash-lite 는 답이 부정확("마름모 던전 다음엔 사원 던전").
+  - Gemini 는 답 앞에 영어 메모("The search results confirm…")를 붙이기도 함 → 한글이 든 첫 줄만 씀. gemini-2.5-flash-lite 는 답이 부정확("마름모 던전 다음엔 사원 던전") → 검색은 채팅 provider 와 상관없이 OpenAI 키가 있으면 `openai_chat_model`(gpt-6-luna)로 한다.
   - OpenAI 는 답 끝에 출처 링크 `([site](url))` 를 붙임 → 후처리로 제거.
 
 ## 단가 (USD / 1M 토큰, 2026-10)
