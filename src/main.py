@@ -304,7 +304,7 @@ def ai_process(
     log = logging.getLogger("solo_stream.ai")
 
     from src.ai.model_client import (
-        create_vision_client, create_chat_client, GeminiClient, is_transient_error,
+        create_vision_client, create_chat_client, create_lookup_client, GeminiClient, is_transient_error,
         model_config_key, resolve_provider,
     )
     from src.chat.persona_loader import load_personas
@@ -312,7 +312,7 @@ def ai_process(
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
     from src.chat.emotion import EmotionState, update_emotions
     from src.chat.hype import compute_hype, build_hype_profile
-    from src.export.websocket import start_broadcaster
+    from src.export.websocket import broadcast, start_broadcaster
     from src.utils.logger import get_chat_logger
 
     # 채팅 외부 출력(WS). 기본 비활성 — config 의 export.websocket.enabled 로 켠다.
@@ -346,6 +346,9 @@ def ai_process(
     # 게임 프로필 '자동 생성'만 Gemini 전용(Google Search 그라운딩). Gemini 키가 없으면 None —
     # 자동 생성 요청이 와도 빈 프로필로 진행하고 안내한다.
     gemini_client = GeminiClient(api_key=api_key, config=config) if api_key else None
+    # 정확한 정보 봇(페르소나 accurate — 고인물킹)의 웹 검색(src/chat/lookup.py). openai·gemini 키가 없으면 None.
+    lookup_client = create_lookup_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key,
+                                         openai_api_key=openai_api_key)
     bot_pool = load_personas(config["chat"]["persona_dir"])
     log.info(f"봇 풀 {len(bot_pool)}명 로딩: {[b['name'] for b in bot_pool]}")
 
@@ -363,6 +366,9 @@ def ai_process(
     carry_over = int(chat_cfg.get("carry_over", 1))
     reply_chance = float(chat_cfg.get("reply_chance", 0.7))
     bot_habits = flow.BotHabits()
+    from src.chat.lookup import LookupDesk
+    web_search = bool(chat_cfg.get("web_search", True))
+    lookup_desk = LookupDesk()
 
     chat_log = get_chat_logger()
     # 세션 시작 시 게임 프로필을 chat_log 에 한 번 박아두고, 라운드 로그에서는 생략한다.
@@ -558,6 +564,11 @@ def ai_process(
                     ai_cfg[model_config_key(new_provider, "chat")] = new_model
                 log.info(f"chat 모델 변경: {new_provider} / {new_model or '(모델 유지)'}")
                 chat_client = _make_client("chat")
+                lookup_client = create_lookup_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key,
+                                                     openai_api_key=openai_api_key)
+            elif "web_search" in setting:
+                web_search = bool(setting["web_search"])
+                log.info(f"고인물 웹 검색 {'켬' if web_search else '끔'}")
             elif "interval_seconds" in setting:
                 interval_s = _clamp_interval(setting["interval_seconds"])
                 config.setdefault("capture", {})["interval_seconds"] = interval_s
@@ -588,6 +599,7 @@ def ai_process(
                                             auto_generate=auto_gen)
                 profile_context = build_profile_context(game_profile)
                 vision_context = build_vision_context(game_profile)
+                lookup_desk = LookupDesk()  # 찾아 둔 답은 게임마다
                 chat_history.clear()
                 topic_tracker.clear()
                 bot_habits.clear()
@@ -637,6 +649,10 @@ def ai_process(
 
         # 1차 drain: 라운드 시작 전에 큐를 비워둠
         _drain_stt_queue()
+        # 그사이 채팅창에 올라간 웹 검색 답을 채팅 기록에 넣는다(다음 라운드 봇들이 보게)
+        for c in lookup_desk.pop_done():
+            chat_history.append(c)
+            chat_log.info(f"  [웹 검색 답] {c['name']}: {c['message']}")
 
         try:
             try:
@@ -764,8 +780,23 @@ def ai_process(
             # 발화 즉시 반응 라운드는 발화에 집중 — 봇끼리 받아치기는 화면 분석 라운드에서만
             reply = None if speech_round else flow.pick_reply(
                 batch, last_round_chats, chance=reply_chance, exclude=set(mentioned_names))
+            # 정확한 정보 봇이 질문을 맡으면 검색을 따로 띄우고, 이번 라운드엔 '찾아보는 중'만 말하게 한다
+            lookup = (lookup_desk.pick(batch, user_speech_payload)
+                      if web_search and lookup_client is not None else None)
+            if lookup:
+                lk_bot, lk_q = lookup
+                log.info(f"웹 검색 시작: {lk_bot['name']} \"{lk_q}\"")
+                lookup_desk.start(lookup_client, lk_bot, lk_q, game=game_profile.get("name", ""),
+                                  screen=game_context, profile=profile_context,
+                                  post=lambda c: (ui_queue.put(c), broadcast(c)))
+                if reply and reply[0] == lk_bot["name"]:
+                    reply = None
+            facts = lookup_desk.facts()
+            if facts:
+                batch = [{**b, "known_facts": facts} if b.get("accurate") else b for b in batch]
             round_notes = flow.build_round_notes(speech=user_speech_payload, bots=batch,
-                                                 reply=reply, speech_round=speech_round)
+                                                 reply=reply, speech_round=speech_round,
+                                                 lookup=(lookup[0]["name"], lookup[1]) if lookup else None)
             if reply:
                 log.info(f"받아치기: {reply[0]} → {reply[1]['name']}")
             chats = chat_client.generate_chats(
@@ -885,7 +916,8 @@ def ai_process(
                     args=(
                         chats, batch, ui_queue,
                         d_min, d_max,
-                        mentioned_names, hype_profile.skip_relief,
+                        # 검색 중인 봇의 '찾아볼게요'도 frequency 스킵 면제 — 답만 뜨면 뜬금없다
+                        mentioned_names + ([lookup[0]["name"]] if lookup else []), hype_profile.skip_relief,
                     ),
                     kwargs={"round_id": round_num},
                     daemon=True,

@@ -98,12 +98,14 @@ def assign_topics(
     need: int,
     *,
     rng: random.Random | None = None,
+    pinned: dict[str, str] | None = None,
 ) -> list[tuple[dict, list[str]]]:
     """주제별로 반응할 봇을 정한다 — [(주제, [봇 이름])] 시간순.
 
     질문·인사 > 계획 > 서술 순, 같으면 가장 최근 말을 우선해 MAX_TOPICS 개까지 고른다.
     이름이 불린 봇은 그 말을 맡고, 고른 주제마다 최소 1명, 남은 인원(need 까지)은 점수 높은 주제에 더 준다.
-    봇은 [스트리머 발화 반응]이 높은 순(off 제외)으로 배정해 반응 약한 봇이 질문을 떠안지 않게 한다."""
+    봇은 [스트리머 발화 반응]이 높은 순(off 제외)으로 배정해 반응 약한 봇이 질문을 떠안지 않게 한다.
+    pinned: {봇 이름: 그 봇이 맡을 말} — 웹 검색 중인 봇을 검색하는 질문에 묶는다(src/chat/lookup.py)."""
     from src.chat.persona_loader import normalize_user_speech_weight
 
     rng = rng or random
@@ -114,9 +116,11 @@ def assign_topics(
     def score(t: dict) -> int:
         return _KIND_SCORE.get(t["kind"], 1) + (1 if t["order"] == last else 0)
 
+    pinned = pinned or {}
+    pinned_texts = set(pinned.values())
     limit = min(MAX_TOPICS, len(bots), max(1, need))
-    chosen = sorted(sorted(topics, key=lambda t: (score(t), t["order"]), reverse=True)[:limit],
-                    key=lambda t: t["order"])
+    chosen = sorted(sorted(topics, key=lambda t: (t["text"] in pinned_texts, score(t), t["order"]),
+                           reverse=True)[:limit], key=lambda t: t["order"])
 
     order = {"high": 0, "medium": 1, "low": 2}
     pool = [b for b in bots if normalize_user_speech_weight(b.get("user_speech_weight"), default="medium") != "off"]
@@ -124,6 +128,11 @@ def assign_topics(
     pool.sort(key=lambda b: order.get(normalize_user_speech_weight(b.get("user_speech_weight"), default="medium"), 1))
 
     picks: dict[int, list[str]] = {t["order"]: [] for t in chosen}
+    for b in list(pool):
+        t = next((t for t in chosen if pinned.get(b["name"]) == t["text"]), None)
+        if t:
+            picks[t["order"]].append(b["name"])
+            pool.remove(b)
     for b in list(pool):
         keys = [str(k).replace(" ", "") for k in [b["name"], *(b.get("aliases") or [])] if k]
         for t in chosen:
@@ -148,11 +157,13 @@ def build_round_notes(
     reply: tuple[str, dict] | None = None,
     speech_round: bool = False,
     rng: random.Random | None = None,
+    lookup: tuple[str, str] | None = None,
 ) -> str:
     """이번 라운드의 대화 과제 — 누가 무엇에 반응해야 하는지 명시한다.
 
     speech 항목: {"text", "seconds_ago", "reacted"(이전 라운드에서 이미 반응했으면 True)}
     reply: (받아칠 봇 이름, 대상 채팅 {"name","message"})
+    lookup: (웹 검색 중인 봇 이름, 검색하는 질문) — 그 봇은 이번엔 '찾아보는 중'만 말한다
     """
     lines: list[str] = []
     n = len(bots)
@@ -163,7 +174,8 @@ def build_round_notes(
     if fresh:
         need = n if speech_round else max(2, (n + 1) // 2)
         topics = split_topics(fresh)
-        assigned = assign_topics(topics, bots, need, rng=rng) if len(topics) > 1 else []
+        pinned = {lookup[0]: next((t["text"] for t in topics if t["text"] == lookup[1]), "")} if lookup else None
+        assigned = assign_topics(topics, bots, need, rng=rng, pinned=pinned) if len(topics) > 1 else []
         if assigned:
             # 여러 말을 한꺼번에 던지면 LLM 은 봇마다 다 섞어 답하거나 마지막 말에만 몰린다
             # → 어느 봇이 어느 말을 맡을지 코드가 정한다
@@ -189,6 +201,9 @@ def build_round_notes(
             lines.append("- 스트리머가 할 일을 말했다 → 그 계획(장소·행동·이름)을 직접 언급하며 반응한다(응원·훈수·놀리기).")
     elif speech:
         lines.append("- 스트리머 발화는 이전 라운드에서 이미 반응했다 → 이어서 말하고 싶은 봇 1명 정도만 반응한다.")
+    if lookup:
+        lines.append(f"- {lookup[0]}은 \"{lookup[1]}\"을 지금 검색해 보는 중이다 → 이번 채팅은 \"잠만요 찾아볼게요\"처럼 "
+                     "짧게만 말하고(말투대로), 답 내용은 아직 말하지 않는다. 다른 봇들은 이 질문에 아무렇게나 반응해도 된다.")
     if reply:
         replier, target = reply
         lines.append(f"- {replier}는 [최근 채팅 기록]의 {target['name']}: \"{target['message']}\" 에 "

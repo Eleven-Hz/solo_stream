@@ -21,7 +21,7 @@ from src.utils import pricing
 logger = logging.getLogger("solo_stream.usage")
 
 # 항목(kind) 표시 이름 — UI 표와 로그에서 같은 순서로 쓴다.
-KIND_LABEL = {"vision": "화면 분석", "chat": "채팅 생성", "stt": "음성 인식", "profile": "게임 프로필"}
+KIND_LABEL = {"vision": "화면 분석", "chat": "채팅 생성", "lookup": "웹 검색", "stt": "음성 인식", "profile": "게임 프로필"}
 
 _sink: Callable[..., None] | None = None
 

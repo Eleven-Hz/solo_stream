@@ -1636,6 +1636,14 @@ class SettingsWindow(QWidget):
         self._chat_combo.currentIndexChanged.connect(lambda _: self._on_ai_model("chat"))
         row_c = card.add_row(title="채팅 생성", sub="봇 채팅을 한 번에 몰아서 만들어요", right=self._chat_combo)
 
+        ws = T.Switch(bool((self._config.get("chat") or {}).get("web_search", True)))
+        ws.setAccessibleName("고인물 봇 웹 검색")
+        ws.toggled.connect(self._on_web_search)
+        card.add_row(title="고인물 봇 웹 검색",
+                     sub="고인물 봇이 게임 질문을 받으면 검색해 보고 몇 초 뒤 답해요(OpenAI·Gemini 키 필요). "
+                         "검색 호출은 일반 채팅보다 비싸요.",
+                     right=ws)
+
         pmodel = str(ai.get("profile_model", _PROFILE_MODELS[0]))
         self._profile_model_combo = T.combo([(_model_text("gemini", m), m) for m in _PROFILE_MODELS], width=300)
         T.select_data(self._profile_model_combo, pmodel, fallback_text=_model_text("gemini", pmodel))
@@ -1758,6 +1766,10 @@ class SettingsWindow(QWidget):
         logger.info(f"{kind} 모델 변경: {provider} / {model}")
         self._refresh_keys()
         self._update_interval_warn()
+
+    def _on_web_search(self, on: bool):
+        self._save("chat", {"web_search": bool(on)})
+        self._queue.put({"web_search": bool(on)})
 
     def _on_interval(self, value: int):
         """분석 주기 변경 → 저장 + 캡처/AI 프로세스에 바로 반영(채팅 간격·소재 윈도우도 비례 조정)."""

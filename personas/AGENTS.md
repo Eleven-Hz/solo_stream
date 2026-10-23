@@ -25,7 +25,7 @@
   - `react_chance` (float 0~1, 기본 1.0)
   - `user_speech_weight`: `off`/`low`/`medium`/`high` (없으면 `config.stt.default_weight`)
   - `triggers` (list, 옵션) — `{type, reaction}` 패턴 (현재 프롬프트에서 직접 사용은 안 함, 참고용)
-  - `accurate` (bool, 옵션, 기본 false) — true면 프롬프트 봇 라인에 `[정확한 정보] true` → 근거([게임 정보]·화면 글자·발화) 있는 사실만 단정, 모르면 지어내지 않음. 다른 봇의 헛소리는 허용(KNOWN_ISSUES 4-6)이지만 고인물킹은 예외라 켜 둠
+  - `accurate` (bool, 옵션, 기본 false) — true면 프롬프트 봇 라인에 `[정확한 정보] true` → 근거([게임 정보]·화면 글자·발화) 있는 사실만 단정, 모르면 지어내지 않음. 다른 봇의 헛소리는 허용(KNOWN_ISSUES 4-6)이지만 고인물킹은 예외라 켜 둠. 이 봇이 질문을 맡으면 웹 검색해 따로 답한다(`src/chat/lookup.py`, `chat.web_search`)
   - `known_streamers` (list[str], 옵션) — 이 봇이 "다른 방송" 얘기할 때 부르는 가상의 스트리머 이름. 프롬프트 봇 정보에 주입됨 (방랑객)
 - YAML에서 `user_speech_weight: off` 는 boolean False로 파싱될 수 있다 — loader가 `normalize_user_speech_weight`로 처리하므로 그대로 적어도 안전하지만, 명시적으로 `"off"` 문자열로 quote 하는 것을 권장.
 - 새 페르소나 파일을 추가하면 다음 실행부터 자동 로드 — 별도 등록 코드 없음.
