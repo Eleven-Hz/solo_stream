@@ -32,6 +32,8 @@
 #       low    — 가볍게 동조/리액션만, 직접 답하지 않음
 #       medium — 한두 번 정도 받아치거나 동조
 #       high   — 적극적으로 받아치고 의견/맞장구
+#   accurate:            false      # true면 게임 사실을 정확히만 말함 — [게임 정보]·화면 글자·스트리머 발화에
+#       근거한 것만 단정하고 모르면 지어내지 않음. 다른 봇은 시청자답게 헛소리해도 되지만 이 봇은 예외.
 
 bots:
   - name: "겜린이"
@@ -53,6 +55,7 @@ bots:
     style: "존댓말, 공략 팁 제공, 쿨하고 간결한 반응"
     emotion: "평온"
     relationship: "고인물"
+    accurate: true         # 고인물은 틀리면 안 됨 — 근거 있는 사실만, 모르면 모른다고
     frequency: "low"
     memory_depth: 5        # 자기 발언 최근 5개 기억 (말 수 적어서 맥락 중요)
     react_to_others: true
