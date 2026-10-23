@@ -507,6 +507,11 @@ def build_vision_context(profile: dict) -> str:
         lines.append("등장인물 (대화창 이름과 대조):")
         for c in profile["characters"]:
             lines.append(f"  - {c.split(':')[0].strip()}")
+        # 주인공을 '파란 아바타' 같은 외형으로 부르면 채팅 봇이 다른 인물과 헷갈린다
+        hero = next((c for c in profile["characters"] if "주인공" in c), None)
+        if hero:
+            name = hero.split(":")[0].split("(")[0].strip()
+            lines.append(f"플레이어 캐릭터: {name} — 묘사·상황에서 조작 중인 주인공은 외형('파란 옷 캐릭터' 등) 대신 '{name}'(이)라고 쓴다")
     if profile.get("locations"):
         lines.append("지역 목록 (화면의 지명과 대조):")
         for loc in profile["locations"]:

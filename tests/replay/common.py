@@ -137,7 +137,7 @@ class ChatRound:
         hot = flow.exempt_current(self.tracker.hot_keys(), vision, speech_texts)
         reply = None if speech_round else flow.pick_reply(batch, self.last_chats, chance=self.reply_chance,
                                                           exclude=set(mnames), rng=rng)
-        notes = flow.build_round_notes(speech=speech, bots=batch, reply=reply, speech_round=speech_round)
+        notes = flow.build_round_notes(speech=speech, bots=batch, reply=reply, speech_round=speech_round, rng=rng)
         t0 = time.perf_counter()
         raw = client.generate_chats(game_context=vision, bots=batch, chat_history=self.history,
                                     game_profile_context=profile_ctx, user_speech=speech or None,
