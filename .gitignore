@@ -44,3 +44,6 @@ dev_history
 .omc/*
 # 평가 러너 출력 폴더 (replay, ui 스크린샷 등)
 tests/*/output/
+
+# 설정 창 시청자 봇 페이지 저장 파일 (DEV 모드면 personas/ 에 생김)
+personas/settings_bots.yaml

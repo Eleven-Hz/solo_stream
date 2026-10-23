@@ -4,7 +4,7 @@
 # ui
 
 ## Purpose
-PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 Frameless / Always-on-top / Tool window 로 게임 위에 떠 있고, 상단바(LIVE·시작/일시정지·설정·닫기)와 하단바(투명도 슬라이더·[배경 있음|글자만]·클릭 통과)를 가진다. 설정은 왼쪽 메뉴(방송 준비/오버레이/음성 인식/AI 모델·키/게임·프로필/사용량)가 있는 별도 창이며 모든 항목이 바꾸는 즉시 자동 저장된다.
+PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 Frameless / Always-on-top / Tool window 로 게임 위에 떠 있고, 상단바(LIVE·시작/일시정지·설정·닫기)와 하단바(투명도 슬라이더·[배경 있음|글자만]·클릭 통과)를 가진다. 설정은 왼쪽 메뉴(방송 준비/오버레이/음성 인식/시청자 봇/AI 모델·키/게임·프로필/사용량)가 있는 별도 창이며 모든 항목이 바꾸는 즉시 자동 저장된다.
 
 ## Key Files
 | File | Description |
@@ -23,6 +23,7 @@ PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 
 - **적용 버튼을 만들지 않는다** — 바꾸는 즉시 저장이 원칙. 예외: 비용이 드는 동작(게임 창 적용 → 프로필 생성, 프로필 다시 만들기, 받아쓰기 테스트, 키 저장)과 여러 줄 편집(화면 분석 프롬프트 대화상자)만 명시적 버튼.
 - SDK import 는 UI 에 두지 않는다 — 키 확인은 `src/ai/model_client.check_api_key`, `src/stt/transcriber.check_openai_key` 를 워커에서 호출.
 - 키 없는 provider 의 모델도 고를 수 있다(저장됨). AI 프로세스는 키가 생길 때까지 `resolve_provider` 로 있는 키로 대체해 돌고, 설정 'AI 모델' 카드가 행마다 `_refresh_model_warns` 로 '⚠ X 키가 없어요 — Y로 대체' 경고와 목록의 '(키 없음)' 표시를 띄운다(키 저장·모델 변경 때 갱신). 비슷한 '키 필요' 선택지를 추가하면 같은 방식으로 경고한다. 모델 키 이름은 직접 조립하지 말고 `model_client.model_config_key` / `selected_model` 을 쓴다.
+- '시청자 봇' 페이지: `persona_loader.persona_entries` 목록(켜기 스위치·편집·'+ 새 봇') → 바꾸면 즉시 `save_persona_entries` + `{"personas_reload": True}`. 편집은 `_BotDialog`(주요 항목 + 접힌 '고급': 기억 개수·반응 확률·별칭, 화면에 없는 필드는 보존). 기본 봇은 이름 변경 불가·'기본값으로 되돌리기', 내가 만든 봇만 삭제. 마지막 한 명은 끌 수 없다.
 - '고인물 봇 웹 검색' 스위치('AI 모델' 카드) → `chat.web_search` 저장 + `{"web_search": bool}` 브로드캐스트(AI 프로세스 즉시 반영).
 - 분석 주기(`capture.interval_seconds`)는 'AI 모델' 카드의 스핀박스(5~60초)로 바꾸고 `{"interval_seconds"}` 로 캡처·AI 프로세스에 바로 반영된다. 15초 미만이면 예상 비용 증가 경고. 주기를 화면에 쓰는 문구는 `_interval_text` 로 만든다(숫자 하드코딩 금지).
 - 클릭 통과는 Ctrl+Shift+O 가 유일한 해제 수단이다. 단축키 등록에 실패하면(`hotkeys_ok=False`) 클릭 통과를 켤 수 없게 막아 둔다 — 이 가드를 없애지 말 것.
@@ -32,7 +33,7 @@ PyQt6 기반 투명 오버레이 채팅창 + 별도 설정 창. 오버레이는 
 - `extract_game_name`(helpers.py)은 `src/main.py::_extract_game_name` 과 동일 구현 — 한쪽 정규식을 고치면 다른 쪽도 같이.
 
 ### Testing Requirements
-- `tests/ui/smoke_settings_tabs.py` — 가짜 게임 화면 위에 오버레이를 띄워 투명도 단계·메시지 종류·캡처 제외와 설정 6페이지를 실제 화면 캡처 PNG 로 남긴다(API 호출 없음, 몇 초간 창이 뜬다). `QWidget.render()` 는 그래픽 효과·반투명 합성을 실제와 다르게 그려 쓰지 않는다.
+- `tests/ui/smoke_settings_tabs.py` — 가짜 게임 화면 위에 오버레이를 띄워 투명도 단계·메시지 종류·캡처 제외와 설정 7페이지를 실제 화면 캡처 PNG 로 남긴다(API 호출 없음, 몇 초간 창이 뜬다). `QWidget.render()` 는 그래픽 효과·반투명 합성을 실제와 다르게 그려 쓰지 않는다.
 - `tests/ui/test_ui.py` — 가짜 메시지를 흘려 넣는 수동 확인용.
 - 최종 확인은 `run.bat` 로 실제 실행.
 

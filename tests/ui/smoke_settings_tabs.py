@@ -142,7 +142,7 @@ def main():
     sw.show()
     from src.ui import winapi
     winapi.set_exclude_from_capture(int(sw.winId()), False)
-    for key in ("ready", "overlay", "voice", "ai", "game", "usage"):
+    for key in ("ready", "overlay", "voice", "bots", "ai", "game", "usage"):
         sw.open_page(key, show=False)
         _grab(sw.frameGeometry(), out / f"settings_{key}.png")
     sw._shutdown()

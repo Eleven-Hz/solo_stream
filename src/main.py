@@ -569,6 +569,22 @@ def ai_process(
             elif "web_search" in setting:
                 web_search = bool(setting["web_search"])
                 log.info(f"고인물 웹 검색 {'켬' if web_search else '끔'}")
+            elif "personas_reload" in setting:
+                # 설정 '시청자 봇' 페이지에서 켜기/끄기·수정·새 봇 → 다음 라운드부터 새 봇 풀
+                try:
+                    new_pool = load_personas(config["chat"]["persona_dir"])
+                except Exception as e:
+                    log.error(f"봇 다시 읽기 실패 — 기존 봇 유지: {e}")
+                else:
+                    old = {b["name"]: b for b in bot_pool}
+                    for b in new_pool:
+                        o = old.get(b["name"])
+                        # 새 봇이거나 기본 감정·관계가 바뀌면 감정 상태를 새로 시작
+                        if o is None or (o.get("emotion"), o.get("relationship")) != (b.get("emotion"), b.get("relationship")):
+                            emotion_states[b["name"]] = EmotionState(b["name"], b.get("emotion", "평온"),
+                                                                     b.get("relationship", ""))
+                    bot_pool = new_pool
+                    log.info(f"봇 풀 다시 읽음 {len(bot_pool)}명: {[b['name'] for b in bot_pool]}")
             elif "interval_seconds" in setting:
                 interval_s = _clamp_interval(setting["interval_seconds"])
                 config.setdefault("capture", {})["interval_seconds"] = interval_s
