@@ -2183,6 +2183,19 @@ class SettingsWindow(QWidget):
         add.clicked.connect(lambda: self._edit_bot(None))
         page, lay = self._page("시청자 봇", "채팅을 치는 봇들이에요. 켜고 끄거나 말투·성격을 바꾸면 다음 채팅부터 바로 반영돼요.",
                                header_right=add)
+        # 예전 버전 봇 설정이 지금 기본 봇을 가리면 경고 + 초기화 버튼
+        self._bots_alert = T.Card()
+        w, h = T.row_box(spacing=12)
+        self._bots_alert_lbl = T.label("", "sub", wrap=True)
+        self._bots_alert_lbl.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+        self._bots_alert_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)  # 경로 복사용
+        h.addWidget(self._bots_alert_lbl, 1)
+        fix = T.button(f"v{APP_VERSION} 기본 봇으로 초기화")
+        fix.clicked.connect(self._reset_bots)
+        h.addWidget(fix, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._bots_alert.add_row(w)
+        self._bots_alert.setStyleSheet(f"QFrame#card {{ border: 1px solid {T.rgba(T.WARN, 0.5)}; }}")
+        lay.addWidget(self._bots_alert)
         self._bots_summary = T.label("", "sub", wrap=True)
         lay.addWidget(self._bots_summary)
         self._bots_holder = QVBoxLayout()
@@ -2192,6 +2205,13 @@ class SettingsWindow(QWidget):
                        "personas/settings_bots.yaml 에 저장돼요.", "sub", wrap=True)
         hint.setStyleSheet(f"color: {T.FAINT}; font-size: 12px;")
         lay.addWidget(hint)
+        card = T.Card()
+        reset = T.button("초기화…")
+        reset.clicked.connect(self._reset_bots)
+        card.add_row(title=f"v{APP_VERSION} 기본 봇으로 초기화",
+                     sub="켜기/끄기·편집·새 봇을 모두 지우고 지금 버전의 기본 봇으로 돌아가요. 지운 설정은 같은 폴더에 백업돼요.",
+                     right=reset)
+        lay.addWidget(card)
         lay.addStretch(1)
         self._bot_entries: list[dict] = []
         self._reload_bots()
@@ -2228,7 +2248,14 @@ class SettingsWindow(QWidget):
             rh = QHBoxLayout(right)
             rh.setContentsMargins(0, 0, 0, 0)
             rh.setSpacing(10)
-            tag, tone = ("내 봇", "ok") if not e["builtin"] else ("수정함", "warn") if e["edited"] else ("", "")
+            if not e["builtin"]:
+                tag, tone = "내 봇", "ok"
+            elif e.get("outdated"):
+                tag, tone = "기본값 바뀜", "error"
+            elif e["edited"]:
+                tag, tone = "수정함", "warn"
+            else:
+                tag, tone = "", ""
             if b.get("accurate"):
                 rh.addWidget(T.Chip("정확한 정보"))
             if tag:
@@ -2250,6 +2277,80 @@ class SettingsWindow(QWidget):
             text += f"  ⚠ 켜진 봇이 {batch}명보다 적으면 매번 같은 봇만 말해요."
         self._bots_summary.setText(text)
         self._bots_summary.setStyleSheet(f"color: {T.WARN if on < batch else T.MUTED}; font-size: 12px;")
+        self._update_bots_alert()
+
+    def _update_bots_alert(self):
+        """예전 버전 봇 설정 경고 — 페이지 위 배너 + 왼쪽 메뉴 '시청자 봇' 옆 ⚠."""
+        from src.chat.persona_loader import stale_persona_files
+        try:
+            stale = stale_persona_files(self._persona_dir())
+        except Exception as e:
+            logger.error(f"예전 봇 파일 확인 실패: {e}")
+            stale = []
+        outdated = [e["bot"]["name"] for e in self._bot_entries if e.get("outdated")]
+        lines = []
+        if stale:
+            import datetime
+            files = ", ".join(f"{f.name}({datetime.date.fromtimestamp(f.stat().st_mtime)})" for f in stale)
+            lines.append(f"⚠ 예전 버전의 기본 봇 파일이 남아 있어 v{APP_VERSION} 기본 봇을 덮고 있어요 — {files}. "
+                         "새 봇·바뀐 말투가 안 보일 수 있어요.")
+        if outdated:
+            lines.append(f"⚠ 고쳐 둔 봇 {len(outdated)}명({', '.join(outdated[:5])}{' 등' if len(outdated) > 5 else ''})의 "
+                         f"기본값이 업데이트로 바뀌었어요. 새 기본값을 쓰려면 그 봇의 '기본값으로 되돌리기'나 초기화를 하세요.")
+        if lines:
+            lines.append("초기화해도 기존 파일은 지우지 않고 아래 폴더에 '파일이름.bak-날짜시각' 으로 백업해 둬요.\n"
+                         f"📁 {self._persona_user_dir()}")
+        self._bots_alert_lbl.setText("\n".join(lines))
+        self._bots_alert.setVisible(bool(lines))
+        idx = [k for k, _ in _PAGES].index("bots")
+        self._nav_buttons[idx].set_meta("⚠" if lines else "", T.WARN)
+
+    def _reset_bots(self):
+        from src.chat.persona_loader import reset_personas
+        ans = QMessageBox.question(
+            self, "기본 봇으로 초기화",
+            f"켜기/끄기·편집·새 봇을 모두 지우고 v{APP_VERSION} 기본 봇으로 돌아갈까요?\n\n"
+            f"지금 봇 설정 파일과 예전 기본 봇 파일은 지우지 않고 아래 폴더에 '파일이름.bak-날짜시각' 으로 백업돼요.\n"
+            f"{self._persona_user_dir()}\n\n직접 넣은 다른 봇 파일은 그대로예요.")
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            moved = reset_personas(self._persona_dir())
+        except Exception as e:
+            logger.error(f"봇 초기화 실패: {e}")
+            self._save_lbl.setText(f"초기화 실패: {e}")
+            self._save_lbl.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            return
+        self._queue.put({"personas_reload": True})
+        self._flash_saved()
+        self._reload_bots()
+        logger.info(f"기본 봇으로 초기화 — 백업 {[m.name for m in moved]}")
+        self._show_reset_done(moved)
+
+    def _persona_user_dir(self) -> Path:
+        return paths.user_data_dir() / self._persona_dir()
+
+    def _show_reset_done(self, moved: list[Path]):
+        """초기화 결과 — 백업한 파일 이름과 폴더, '백업 폴더 열기'."""
+        box = QMessageBox(self)
+        box.setWindowTitle("기본 봇으로 초기화")
+        if moved:
+            files = "\n".join(f"  • {m.name}" for m in moved)
+            box.setText(f"v{APP_VERSION} 기본 봇으로 초기화했어요.\n\n기존 파일은 이렇게 백업했어요:\n{files}\n\n"
+                        f"백업 폴더:\n{moved[0].parent}\n\n"
+                        "되돌리려면 백업 파일 이름 끝의 '.bak-날짜시각' 을 지우면 돼요.")
+        else:
+            box.setText(f"이미 v{APP_VERSION} 기본 봇 그대로라 백업할 파일이 없었어요.")
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        open_btn = box.addButton("백업 폴더 열기", QMessageBox.ButtonRole.ActionRole) if moved else None
+        box.addButton("확인", QMessageBox.ButtonRole.AcceptRole)
+        box.exec()
+        if open_btn is not None and box.clickedButton() is open_btn:
+            import os
+            try:
+                os.startfile(str(moved[0].parent))  # type: ignore[attr-defined]
+            except Exception as e:
+                logger.error(f"백업 폴더 열기 실패: {e}")
 
     def _save_bots(self):
         from src.chat.persona_loader import save_persona_entries

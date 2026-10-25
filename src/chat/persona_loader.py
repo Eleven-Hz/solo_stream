@@ -1,5 +1,7 @@
 """YAML 파일에서 봇 페르소나를 로딩한다."""
+import hashlib
 import logging
+import time
 from pathlib import Path
 
 import yaml
@@ -149,12 +151,27 @@ def _is_edit(entry: dict) -> bool:
     return any(k not in ("name", "disabled") for k in entry)
 
 
-def persona_entries(persona_dir: str) -> list[dict]:
-    """설정 창 목록용. ``[{bot, builtin, edited, enabled}]`` — 기본 봇 순서 뒤에 설정 창에서 만든 봇.
+def _bot_hash(bot: dict) -> str:
+    return hashlib.md5(yaml.safe_dump(bot, allow_unicode=True, sort_keys=True).encode("utf-8")).hexdigest()[:12]
 
-    builtin: 기본(번들·직접 둔 파일) 봇 / edited: 설정 창에서 내용을 바꿈 / enabled: 켜져 있음.
+
+def _load_ui_meta(persona_dir: str) -> dict:
+    f = _ui_file(persona_dir)
+    if not f.is_file():
+        return {}
+    with open(f, "r", encoding="utf-8") as fp:
+        return yaml.safe_load(fp) or {}
+
+
+def persona_entries(persona_dir: str) -> list[dict]:
+    """설정 창 목록용. ``[{bot, builtin, edited, enabled, outdated}]`` — 기본 봇 순서 뒤에 설정 창에서 만든 봇.
+
+    builtin: 기본(번들·직접 둔 파일) 봇 / edited: 설정 창에서 내용을 바꿈 / enabled: 켜져 있음 /
+    outdated: 고친 뒤에 앱 업데이트로 그 기본 봇이 바뀜(고친 내용은 예전 기본값 기준).
     꺼진 봇도 다시 켤 수 있게 목록에 남긴다."""
-    ui = {b["name"]: b for b in _load_ui_bots(persona_dir) if b.get("name")}
+    meta = _load_ui_meta(persona_dir)
+    based_on = meta.get("based_on") or {}
+    ui = {b["name"]: b for b in (meta.get("bots") or []) if b.get("name")}
     out = []
     for b in _base_bots(persona_dir):
         if not b.get("name"):
@@ -162,17 +179,25 @@ def persona_entries(persona_dir: str) -> list[dict]:
         o = ui.pop(b["name"], None)
         edited = bool(o) and _is_edit(o)
         bot = {k: v for k, v in (o if edited else b).items() if k != "disabled"}
-        out.append({"bot": bot, "builtin": True, "edited": edited, "enabled": not (o and o.get("disabled"))})
+        outdated = edited and b["name"] in based_on and based_on[b["name"]] != _bot_hash(b)
+        out.append({"bot": bot, "builtin": True, "edited": edited, "enabled": not (o and o.get("disabled")),
+                    "outdated": outdated})
     for o in ui.values():
         if _is_edit(o):
             bot = {k: v for k, v in o.items() if k != "disabled"}
-            out.append({"bot": bot, "builtin": False, "edited": False, "enabled": not o.get("disabled")})
+            out.append({"bot": bot, "builtin": False, "edited": False, "enabled": not o.get("disabled"),
+                        "outdated": False})
     return out
 
 
 def save_persona_entries(persona_dir: str, entries: list[dict]) -> Path:
-    """``persona_entries`` 형식 목록을 설정 창 파일에 저장 — 기본값 그대로인 봇은 적지 않는다."""
-    bots = []
+    """``persona_entries`` 형식 목록을 설정 창 파일에 저장 — 기본값 그대로인 봇은 적지 않는다.
+
+    고친 기본 봇은 ``based_on`` 에 '고칠 때의 기본 봇' 해시를 남겨, 나중에 기본 봇이 바뀌면 outdated 로 알린다."""
+    from src import __version__
+    prev = _load_ui_meta(persona_dir).get("based_on") or {}
+    base = {b["name"]: b for b in _base_bots(persona_dir) if b.get("name")}
+    bots, based_on = [], {}
     for e in entries:
         name = e["bot"].get("name")
         if e["builtin"] and not e["edited"]:
@@ -183,9 +208,43 @@ def save_persona_entries(persona_dir: str, entries: list[dict]) -> Path:
         if not e["enabled"]:
             bot["disabled"] = True
         bots.append(bot)
+        if e["builtin"] and name in base:
+            based_on[name] = prev.get(name) or _bot_hash(base[name])
     f = _ui_file(persona_dir)
     f.parent.mkdir(parents=True, exist_ok=True)
-    body = yaml.safe_dump({"bots": bots}, allow_unicode=True, sort_keys=False)
+    data = {"version": __version__, "bots": bots}
+    if based_on:
+        data["based_on"] = based_on
+    body = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
     f.write_text(_UI_FILE_HEADER + body, encoding="utf-8")
     logger.info(f"페르소나 저장: {f.name} ({len(bots)}개 항목)")
     return f
+
+
+def stale_persona_files(persona_dir: str) -> list[Path]:
+    """번들 기본 파일과 **같은 이름**의 사용자 파일 — 예전 버전이 user_data 로 복사해 둔 기본 봇(옛 시딩).
+
+    같은 name 이라 지금 버전 기본 봇을 통째로 덮는다(KNOWN_ISSUES 7-1). DEV 모드(같은 폴더)면 없음."""
+    if Path(persona_dir).is_absolute():
+        return []
+    bundled_dir = paths.resource_dir() / persona_dir
+    user_dir = paths.user_data_dir() / persona_dir
+    if not user_dir.is_dir() or user_dir.resolve() == bundled_dir.resolve():
+        return []
+    names = {f.name for f in bundled_dir.glob("*.yaml")} - {UI_FILE}
+    return sorted(f for f in user_dir.glob("*.yaml") if f.name in names)
+
+
+def reset_personas(persona_dir: str) -> list[Path]:
+    """지금 버전 기본 봇으로 초기화 — 설정 창 파일과 옛 기본 봇 복사본을 ``*.bak-날짜`` 로 옮긴다(지우지 않음).
+
+    사용자가 직접 둔 다른 파일(my_bots.yaml 등)은 건드리지 않는다. 옮긴 파일 경로 목록 반환."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    moved = []
+    for f in [*stale_persona_files(persona_dir), _ui_file(persona_dir)]:
+        if f.is_file():
+            dest = f.with_name(f"{f.name}.bak-{stamp}")
+            f.rename(dest)
+            moved.append(dest)
+            logger.info(f"페르소나 초기화: {f.name} → {dest.name}")
+    return moved

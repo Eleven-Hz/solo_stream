@@ -29,7 +29,8 @@
   - `known_streamers` (list[str], 옵션) — 이 봇이 "다른 방송" 얘기할 때 부르는 가상의 스트리머 이름. 프롬프트 봇 정보에 주입됨 (방랑객)
 - YAML에서 `user_speech_weight: off` 는 boolean False로 파싱될 수 있다 — loader가 `normalize_user_speech_weight`로 처리하므로 그대로 적어도 안전하지만, 명시적으로 `"off"` 문자열로 quote 하는 것을 권장.
 - 새 페르소나 파일을 추가하면 다음 실행부터 자동 로드 — 별도 등록 코드 없음.
-- 설정 창 '시청자 봇' 페이지(켜기/끄기·편집·새 봇)는 사용자 데이터 폴더의 `personas/settings_bots.yaml`(`persona_loader.UI_FILE`)에만 쓴다 — 번들·직접 둔 파일을 다 합친 뒤 **맨 마지막에** 덮는다. 기본값 그대로인 봇은 적지 않고, 끈 기본 봇은 `{name, disabled: true}`, 고친 봇·새 봇은 봇 전체(끄면 `disabled: true` 추가 — 내용은 남아 다시 켤 수 있음). DEV 모드면 이 프로젝트의 `personas/` 에 생기며 gitignore 대상. 저장하면 `{"personas_reload": True}` 로 AI 프로세스가 다음 라운드부터 새 봇 풀을 쓴다.
+- 설정 창 '시청자 봇' 페이지(켜기/끄기·편집·새 봇)는 사용자 데이터 폴더의 `personas/settings_bots.yaml`(`persona_loader.UI_FILE`)에만 쓴다 — 번들·직접 둔 파일을 다 합친 뒤 **맨 마지막에** 덮는다. 기본값 그대로인 봇은 적지 않고, 끈 기본 봇은 `{name, disabled: true}`, 고친 봇·새 봇은 봇 전체(끄면 `disabled: true` 추가 — 내용은 남아 다시 켤 수 있음). DEV 모드면 이 프로젝트의 `personas/` 에 생기며 gitignore 대상. 저장하면 `{"personas_reload": True}` 로 AI 프로세스가 다음 라운드부터 새 봇 풀을 쓴다. 파일에 `version`(저장한 앱 버전)과 `based_on`(고친 기본 봇의 '고칠 때 기본값' 해시)을 남겨, 업데이트로 그 기본 봇이 바뀌면 `outdated` 로 알린다.
+- 예전 버전 경고·초기화: `stale_persona_files` = 사용자 폴더에 번들과 **같은 파일 이름**(예: 옛 시딩 `default_bots.yaml`)이 있으면 지금 기본 봇을 덮는 옛 복사본으로 본다. 설정 '시청자 봇' 페이지가 배너·메뉴 ⚠ 로 알리고, 'vX 기본 봇으로 초기화'(`reset_personas`)는 그 파일과 설정 창 파일을 `*.bak-날짜` 로 옮긴다(삭제 안 함, 직접 둔 다른 파일은 그대로).
 
 ### Testing Requirements
 - 페르소나 변경 후 실제 `run.bat`로 라운드 몇 번 돌려보고 `logs/chat_*.log`의 라운드 블록에서 의도한 말투/반응 강도가 나오는지 사람이 확인.
