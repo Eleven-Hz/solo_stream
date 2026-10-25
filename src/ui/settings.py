@@ -1160,10 +1160,13 @@ class SettingsWindow(QWidget):
                                               "'프롬프트 복사'로 무료로 만들 수 있어요.")
             self._game_profile_status.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
             return
+        from src.chat.game_profile_loader import bundled_profile_path_for
         profile_path = paths.user_data_dir() / "game_profiles" / f"{profile_filename(game_name)}.yaml"
         msg = f"'{game_name}' 프로필을 Gemini 검색으로 자동 생성할까요?\n검색 6번 — API 비용이 들고 수십 초 걸려요."
         if profile_path.exists():
             msg += "\n\n지금 있는 프로필은 지워지고 새로 만든 것으로 바뀝니다."
+        elif bundled_profile_path_for(game_name):
+            msg += "\n\n앱 기본 제공 프로필 대신 새로 만든 것을 쓰게 됩니다(기본 제공 파일은 그대로)."
         if QMessageBox.question(self, "자동 생성", msg) != QMessageBox.StandardButton.Yes:
             return
         if profile_path.exists():
@@ -2105,17 +2108,16 @@ class SettingsWindow(QWidget):
         c.blockSignals(True)
         c.clear()
         c.addItem("자동 (창 이름에서 찾기)", userData=None)
-        profile_dir = paths.user_data_dir() / "game_profiles"
-        if profile_dir.exists():
-            for p in sorted(profile_dir.glob("*.yaml")):
-                if p.stem == "default":
-                    continue
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        display = (yaml.safe_load(f) or {}).get("name") or p.stem
-                except Exception:
-                    display = p.stem
-                c.addItem(display, userData=p.stem)
+        from src.chat.game_profile_loader import list_profile_files
+        for stem, p in list_profile_files().items():
+            if stem == "default":
+                continue
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    display = (yaml.safe_load(f) or {}).get("name") or stem
+            except Exception:
+                display = stem
+            c.addItem(display, userData=stem)
         idx = c.findText(current)
         c.setCurrentIndex(max(idx, 0))
         c.blockSignals(False)

@@ -17,6 +17,10 @@ ai:
   # 이미지 분석 프롬프트(묘사/위치/상황/이벤트 형식·분량 규칙).
   # 비워두면 코드 기본값을 사용한다. 설정 'AI 모델' 탭에서 편집/저장.
   vision_prompt: ""
+# 서비스가 끝난 모델 이름 → 바꿀 이름. 사용자가 저장한 선택(config.local.yaml 의 ai/stt *model)에만
+# 적용되고, 바뀐 값은 config.local.yaml 에 다시 저장된다. 값이 null 이면 사용자 선택을 지워 위 기본값을 따른다.
+# 모델을 목록에서 뺄 때 여기에 한 줄 추가한다. 예) gemini-2.0-flash: gemini-2.5-flash
+model_migrations: {}
 capture:
   # 분석 주기(초, 5~60). 설정 'AI 모델' 탭에서 바꾸면 바로 적용된다. 채팅 간격(chat.delay_*)과
   # 소재 윈도우(chat.topic_window_rounds)는 15초 기준값이라 주기에 비례해 자동 조정된다(main._paced).
