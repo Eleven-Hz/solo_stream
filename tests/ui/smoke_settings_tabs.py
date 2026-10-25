@@ -115,7 +115,22 @@ def main():
     ov._hovered = False
     ov._update_chrome(animate=False)
     _grab(area, out / "overlay_t100_live_nohover.png")
+    # '입력 중' 표시: 라운드 시작 메시지로 켜지고, 끝 메시지로 꺼진다(라운드가 겹치면 둘 다 끝나야 꺼짐).
+    ov._handle_message({"system": True, "type": "typing", "round": 1, "on": True})
+    assert ov._typing_lbl.isVisible(), "'입력 중'이 안 보임"
+    _grab(area, out / "overlay_typing_t100.png")
     ov.set_transparency(15, save=False)
+    ov._handle_message({"system": True, "type": "typing", "round": 2, "on": True})
+    ov._handle_message({"system": True, "type": "typing", "round": 1, "on": False})
+    assert ov._typing_lbl.isVisible(), "겹친 라운드가 남았는데 꺼짐"
+    _grab(area, out / "overlay_typing_t15.png")
+    ov._handle_message({"system": True, "type": "typing", "round": 2, "on": False})
+    assert not ov._typing_lbl.isVisible(), "'입력 중'이 안 꺼짐"
+    ov.set_typing_indicator(False)
+    ov._handle_message({"system": True, "type": "typing", "round": 3, "on": True})
+    assert not ov._typing_lbl.isVisible(), "설정에서 껐는데 보임"
+    ov._handle_message({"system": True, "type": "typing", "round": 3, "on": False})
+    ov.set_typing_indicator(True)
     # 캡처 제외: 켜면 화면 캡처에 오버레이가 찍히지 않아야 한다.
     ov.set_capture_exclusion(True)
     _grab(area, out / "overlay_capture_excluded.png")
@@ -127,7 +142,7 @@ def main():
     sw.show()
     from src.ui import winapi
     winapi.set_exclude_from_capture(int(sw.winId()), False)
-    for key in ("ready", "overlay", "voice", "ai", "game", "usage"):
+    for key in ("ready", "overlay", "voice", "bots", "ai", "game", "usage"):
         sw.open_page(key, show=False)
         _grab(sw.frameGeometry(), out / f"settings_{key}.png")
     sw._shutdown()

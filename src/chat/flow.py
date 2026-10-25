@@ -23,6 +23,28 @@ from src.chat.topic_guard import extract_keys
 _GREETING_RE = re.compile(r"안녕|하이|ㅎㅇ|반갑|어서\s*오|좋은\s*(아침|저녁|밤)|왔어요|왔습니다")
 _BYE_RE = re.compile(r"잘\s*가|다음에\s*봐|ㅂㅂ|바이|수고|들어가|마치겠|끝내겠")
 _PLAN_RE = re.compile(r"가보|가봅|해보|해봅|갑시다|합시다|하죠|보시죠|가시죠|볼까|할게|갈게")
+# 받아쓰기는 물음표를 자주 빠뜨려서 어미·의문사로도 질문을 잡는다. 단 의문사만 보면
+# "어떻게 구워줬던 걸로 기억하는데"처럼 서술문까지 질문이 돼 봇이 답을 지어내므로,
+# 의문사는 문장이 서술 어미로 끝나지 않을 때만 인정한다.
+_Q_END_RE = re.compile(r"(까요|나요|가요|ㄹ까|을까|할까|건가|던가|더라|뭐죠|뭐지|뭐야|냐|니)$")
+_Q_WORD_RE = re.compile(r"뭐|무슨|누구|어디|어떤|어떻게|왜|몇")
+# 끝의 "뭐"는 "딱히 뭐", "인데 뭐" 같은 군말
+_STATEMENT_END_RE = re.compile(r"(데|다|네|군|고|서|게|뭐)$")
+
+
+def _is_question(text: str) -> bool:
+    for sent in re.split(r"(?<=[.?!])\s+|\s*/\s*", text):
+        s = sent.strip()
+        if "?" in s and len(s.strip("?!.~ ")) > 1:  # "어?" 같은 감탄은 제외
+            return True
+        s = s.rstrip(".!~… ")
+        if not s:
+            continue
+        if _Q_END_RE.search(s):
+            return True
+        if _Q_WORD_RE.search(s) and not _STATEMENT_END_RE.search(s):
+            return True
+    return False
 
 
 def speech_kind(text: str) -> str:
@@ -32,11 +54,100 @@ def speech_kind(text: str) -> str:
         return "greeting"
     if _BYE_RE.search(t):
         return "bye"
-    if "?" in t or re.search(r"(까요|나요|가요|ㄹ까|을까|할까|뭐죠|뭐지|뭐야|누구|어디|어떤|어떻게|왜|몇)", t):
+    if _is_question(t):
         return "question"
     if _PLAN_RE.search(t):
         return "plan"
     return "statement"
+
+
+_SENT_SPLIT_RE = re.compile(r"(?<=[.?!])\s+|\s*/\s*")
+MAX_TOPICS = 3
+_KIND_SCORE = {"question": 3, "greeting": 3, "bye": 3, "plan": 2, "statement": 1}
+
+
+def split_topics(speech: list[dict]) -> list[dict]:
+    """새 발화를 주제 단위로 나눈다 — [{"text", "kind", "order"}] 시간순.
+
+    받아쓰기 한 덩어리 안에서도 질문·계획·인사 문장마다 따로 나누고, 그 뒤 서술은 같은 덩어리 안에서
+    앞 주제에 붙인다("시트론 집이었나? 루크 집이었던 것 같은데."는 한 주제). "어허." 같은 군말은 뺀다."""
+    units: list[list[str]] = []
+    for u in speech:
+        cur: list[str] | None = None
+        for s in (x.strip() for x in _SENT_SPLIT_RE.split(u.get("text") or "")):
+            if not s:
+                continue
+            if cur is None or speech_kind(s) != "statement":
+                cur = [s]
+                units.append(cur)
+            else:
+                cur.append(s)
+    topics = []
+    for parts in units:
+        text = " ".join(parts)
+        kind = speech_kind(text)
+        if kind == "statement" and len(re.sub(r"[\s.?!~…,]", "", text)) <= 3:
+            continue
+        topics.append({"text": text, "kind": kind, "order": len(topics)})
+    return topics
+
+
+def assign_topics(
+    topics: list[dict],
+    bots: list[dict],
+    need: int,
+    *,
+    rng: random.Random | None = None,
+    pinned: dict[str, str] | None = None,
+) -> list[tuple[dict, list[str]]]:
+    """주제별로 반응할 봇을 정한다 — [(주제, [봇 이름])] 시간순.
+
+    질문·인사 > 계획 > 서술 순, 같으면 가장 최근 말을 우선해 MAX_TOPICS 개까지 고른다.
+    이름이 불린 봇은 그 말을 맡고, 고른 주제마다 최소 1명, 남은 인원(need 까지)은 점수 높은 주제에 더 준다.
+    봇은 [스트리머 발화 반응]이 높은 순(off 제외)으로 배정해 반응 약한 봇이 질문을 떠안지 않게 한다.
+    pinned: {봇 이름: 그 봇이 맡을 말} — 웹 검색 중인 봇을 검색하는 질문에 묶는다(src/chat/lookup.py)."""
+    from src.chat.persona_loader import normalize_user_speech_weight
+
+    rng = rng or random
+    if not topics or not bots:
+        return []
+    last = topics[-1]["order"]
+
+    def score(t: dict) -> int:
+        return _KIND_SCORE.get(t["kind"], 1) + (1 if t["order"] == last else 0)
+
+    pinned = pinned or {}
+    pinned_texts = set(pinned.values())
+    limit = min(MAX_TOPICS, len(bots), max(1, need))
+    chosen = sorted(sorted(topics, key=lambda t: (t["text"] in pinned_texts, score(t), t["order"]),
+                           reverse=True)[:limit], key=lambda t: t["order"])
+
+    order = {"high": 0, "medium": 1, "low": 2}
+    pool = [b for b in bots if normalize_user_speech_weight(b.get("user_speech_weight"), default="medium") != "off"]
+    rng.shuffle(pool)
+    pool.sort(key=lambda b: order.get(normalize_user_speech_weight(b.get("user_speech_weight"), default="medium"), 1))
+
+    picks: dict[int, list[str]] = {t["order"]: [] for t in chosen}
+    for b in list(pool):
+        t = next((t for t in chosen if pinned.get(b["name"]) == t["text"]), None)
+        if t:
+            picks[t["order"]].append(b["name"])
+            pool.remove(b)
+    for b in list(pool):
+        keys = [str(k).replace(" ", "") for k in [b["name"], *(b.get("aliases") or [])] if k]
+        for t in chosen:
+            if any(k in t["text"].replace(" ", "") for k in keys):
+                picks[t["order"]].append(b["name"])
+                pool.remove(b)
+                break
+    by_score = sorted(chosen, key=lambda t: (score(t), t["order"]), reverse=True)
+    for t in by_score:
+        if not picks[t["order"]] and pool:
+            picks[t["order"]].append(pool.pop(0)["name"])
+    while pool and sum(len(v) for v in picks.values()) < need:
+        t = min(by_score, key=lambda t: len(picks[t["order"]]) / score(t))
+        picks[t["order"]].append(pool.pop(0)["name"])
+    return [(t, picks[t["order"]]) for t in chosen if picks[t["order"]]]
 
 
 def build_round_notes(
@@ -45,11 +156,14 @@ def build_round_notes(
     bots: list[dict],
     reply: tuple[str, dict] | None = None,
     speech_round: bool = False,
+    rng: random.Random | None = None,
+    lookup: tuple[str, str] | None = None,
 ) -> str:
     """이번 라운드의 대화 과제 — 누가 무엇에 반응해야 하는지 명시한다.
 
     speech 항목: {"text", "seconds_ago", "reacted"(이전 라운드에서 이미 반응했으면 True)}
     reply: (받아칠 봇 이름, 대상 채팅 {"name","message"})
+    lookup: (웹 검색 중인 봇 이름, 검색하는 질문) — 그 봇은 이번엔 '찾아보는 중'만 말한다
     """
     lines: list[str] = []
     n = len(bots)
@@ -59,20 +173,37 @@ def build_round_notes(
                      "화면은 직전과 같으니 화면 묘사를 반복하지 말고 발화에 반응한다.")
     if fresh:
         need = n if speech_round else max(2, (n + 1) // 2)
-        quoted = " / ".join(f'"{u["text"].strip()}"' for u in fresh)
-        lines.append(f"- 스트리머가 새로 한 말: {quoted} → 봇 {need}명 이상이 이 말에 직접 반응한다 "
-                     "(맞장구·대답·되묻기·놀리기 등 페르소나대로). 나머지는 화면·다른 채팅 얘기를 해도 된다.")
+        topics = split_topics(fresh)
+        pinned = {lookup[0]: next((t["text"] for t in topics if t["text"] == lookup[1]), "")} if lookup else None
+        assigned = assign_topics(topics, bots, need, rng=rng, pinned=pinned) if len(topics) > 1 else []
+        if assigned:
+            # 여러 말을 한꺼번에 던지면 LLM 은 봇마다 다 섞어 답하거나 마지막 말에만 몰린다
+            # → 어느 봇이 어느 말을 맡을지 코드가 정한다
+            lines.append("- 스트리머가 새로 한 말이 여러 개다 → 봇마다 아래에서 맡은 말에만 반응한다 "
+                         "(맞장구·대답·되묻기·놀리기 등 페르소나대로). 한 채팅에 여러 말을 한꺼번에 답하지 않는다.")
+            for t, names in assigned:
+                label = " (질문)" if t["kind"] == "question" else ""
+                lines.append(f'  · "{t["text"]}"{label} → {", ".join(names)}')
+            lines.append("  나머지 봇은 화면·다른 채팅 얘기를 하거나 위 말 중 하나에 가볍게 반응해도 된다.")
+        else:
+            quoted = " / ".join(f'"{u["text"].strip()}"' for u in fresh)
+            lines.append(f"- 스트리머가 새로 한 말: {quoted} → 봇 {need}명 이상이 이 말에 직접 반응한다 "
+                         "(맞장구·대답·되묻기·놀리기 등 페르소나대로). 나머지는 화면·다른 채팅 얘기를 해도 된다.")
         kinds = {speech_kind(u["text"]) for u in fresh}
         if "greeting" in kinds:
             lines.append("- 스트리머가 인사했다 → 반응하는 봇은 먼저 인사로 받는다 (\"하이~\", \"ㅎㅇㅎㅇ\", \"오셨어요\" 등 각자 말투로).")
         if "bye" in kinds:
             lines.append("- 스트리머가 작별 인사를 했다 → 인사로 배웅한다.")
         if "question" in kinds:
-            lines.append("- 질문이 있다 → 최소 1명은 구체적인 내용으로 답한다(회피 금지).")
+            who = "질문을 맡은 봇은" if assigned else "최소 1명은"
+            lines.append(f"- 질문이 있다 → {who} 구체적인 내용으로 답한다(회피 금지).")
         if "plan" in kinds:
             lines.append("- 스트리머가 할 일을 말했다 → 그 계획(장소·행동·이름)을 직접 언급하며 반응한다(응원·훈수·놀리기).")
     elif speech:
         lines.append("- 스트리머 발화는 이전 라운드에서 이미 반응했다 → 이어서 말하고 싶은 봇 1명 정도만 반응한다.")
+    if lookup:
+        lines.append(f"- {lookup[0]}은 \"{lookup[1]}\"을 지금 검색해 보는 중이다 → 이번 채팅은 \"잠만요 찾아볼게요\"처럼 "
+                     "짧게만 말하고(말투대로), 답 내용은 아직 말하지 않는다. 다른 봇들은 이 질문에 아무렇게나 반응해도 된다.")
     if reply:
         replier, target = reply
         lines.append(f"- {replier}는 [최근 채팅 기록]의 {target['name']}: \"{target['message']}\" 에 "
@@ -195,14 +326,14 @@ def _head(item: str) -> list[str]:
 
 
 def stt_hint_terms(profile: dict | None, limit: int = 60) -> list[str]:
-    """받아쓰기 힌트용 고유명사 — 프로필의 stt_terms(직접 지정) + 지명·적·기술 이름."""
+    """받아쓰기 힌트용 고유명사 — 프로필의 stt_terms(직접 지정) + 인물·지명·적·기술 이름."""
     if not profile:
         return []
     terms: list[str] = []
     name = str(profile.get("name") or "")
     terms += [t.strip() for t in re.split(r"[()]", name) if t.strip()]
     terms += [str(t).strip() for t in (profile.get("stt_terms") or []) if str(t).strip()]
-    for key in ("locations", "enemies", "skills"):
+    for key in ("characters", "locations", "enemies", "skills"):
         for item in profile.get(key) or []:
             terms += _head(item)
     seen, out = set(), []

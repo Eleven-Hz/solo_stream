@@ -44,6 +44,10 @@ chat:
   # reply_chance 확률로 1명이 앞 채팅을 받아친다(봇의 react_to_others/react_chance 적용).
   carry_over: 1
   reply_chance: 0.7
+  # 정확한 정보 봇(페르소나 accurate: true — 고인물킹)이 스트리머 질문을 맡으면 웹 검색해서 따로 답한다
+  # (src/chat/lookup.py). 채팅 모델(openai·gemini)의 검색 도구 사용 — 검색 호출 단가는 일반 채팅보다 비싸다.
+  # 설정 'AI 모델 · 키' 페이지에서 토글.
+  web_search: true
 ui:
   # 채팅창 배경 투명도(0~100). 100 = 배경 없이 글자만(외곽 그림자). 오버레이 하단 슬라이더로 조절.
   # (옛 opacity 키는 더 이상 쓰지 않는다 — 없으면 opacity 에서 환산)
@@ -59,6 +63,9 @@ ui:
   # STT 받아쓰기를 채팅창에 회색 인라인으로 항상 표시(불안정한 STT 확인용).
   # 설정 '오버레이' 페이지 또는 채팅창 우클릭 메뉴로 토글.
   show_stt_history: false
+  # AI 가 화면을 보고 채팅을 만드는 동안 채팅창 아래에 '시청자들이 채팅 입력 중' 표시(기록엔 안 남음).
+  # 설정 '오버레이' 페이지에서 토글.
+  typing_indicator: true
   width: 380
   height: 640
   window_excludes:

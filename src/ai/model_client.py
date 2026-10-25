@@ -126,6 +126,7 @@ _CHAT_PROMPT_TEMPLATE = """당신은 게임 스트리밍 방송의 시청자 봇
 - 스트리머 발화가 질문이면(물음표가 없어도 "어디", "뭐", "어떤", "할까" 등 묻는 말투 포함) 호명된 봇이 없더라도 봇 중 최소 1명은 그 질문에 **구체적인 내용으로 직접 답한다**. "글쎄", "음..." 같은 회피 금지.
   · 게임 내 질문(다음 지역/공략/어디로)이면 고인물·분석 성향 봇이 게임 정보를 근거로 실제 답을 제시한다.
   · 게임 추천·취향 질문이면(예: "이거랑 비슷한 게임 뭐 있어?") 시청자답게 실제 게임 제목 등 구체적 답을 1개 이상 댄다.
+- 봇은 시청자답게 게임 사실을 틀리거나 아는 척해도 된다. 단 **[정확한 정보] true인 봇은 예외** — 게임 사실은 [게임 정보]·[현재 게임 상황]의 화면 글자·스트리머 발화에 근거한 것만 정확히 말한다(지명·인물·스킬 이름은 [게임 정보] 표기 그대로). 근거가 없으면 지어내지 말고 "그건 확실치 않네요"처럼 말하거나 근거 있는 다른 얘기를 한다. 스트리머의 짐작이나 다른 봇의 틀린 말에 맞장구치지 않고, 틀렸으면 바로잡아도 된다.
 - 봇별 [스트리머 발화 반응]에 따라 스트리머가 한 말에 대한 반응 강도를 다르게 한다.
   · off    — 스트리머 발화를 무시. 화면 상황만 보고 채팅.
   · low    — 들었다는 정도. 가벼운 동조/리액션만 (예: "ㅇㅈ", "ㄹㅇ"). 직접 답하지 않음.
@@ -176,6 +177,14 @@ def _build_bots_info(
         known = [str(x) for x in (b.get("known_streamers") or []) if x]
         if known:
             line += f" / 아는 다른 스트리머: {', '.join(known)} (다른 방송 얘기할 때 이 이름을 씀)"
+
+        if b.get("accurate"):
+            line += (" / [정확한 정보] true — [게임 정보]·화면 글자에 적힌 사실만 말함. 거기 없는 사실"
+                     "(누구 집·진행 순서·보상 등)은 추측해 단정하지 말고 \"그건 확실치 않네요\"")
+
+        facts = b.get("known_facts") or []
+        if facts:
+            line += " / 이 봇이 검색해 둔 정보: " + "; ".join(f'"{q}" → {a}' for q, a in facts)
 
         avoid = [str(w) for w in (b.get("avoid_words") or []) if w]
         if avoid:
@@ -371,6 +380,51 @@ def _parse_chats(text: str) -> list[dict]:
     return result
 
 
+# 정확한 정보 봇(고인물)의 웹 검색 답 — src/chat/lookup.py 가 라운드와 따로 돌린다.
+_LOOKUP_PROMPT = """게임 "{game}" 방송 채팅창의 고인물 시청자 "{bot}"로서 스트리머 질문에 답한다.
+
+[게임 정보 — 이 방송의 게임 프로필. 이름 표기는 이걸 따른다]
+{profile}
+
+[지금 화면]
+{screen}
+
+[스트리머 질문] "{question}"
+
+절차:
+1. 질문을 영어로 바꿔 웹 검색한다(영문 위키·공략이 가장 자세함 — 예: "<영문 게임명> wiki <영문 지명/인물명>").
+2. 검색 결과에 **직접 적힌** 사실로만 답한다. 결과끼리 다르거나 직접 적힌 답이 없으면 SKIP.
+
+규칙:
+- 이 게임과 관련 없는 질문(일상·잡담·취향·방송 얘기)이면 SKIP 한 단어만 출력.
+- 답은 채팅 한 줄(40자 이내)만 출력. 말투: {style}. 인사·출처·링크·따옴표·부연 설명 금지.
+- 지명·인물·아이템 이름은 [게임 정보] 표기 그대로, 거기 없으면 한국어판 표기(모르면 원어).
+- 스포일러(인물의 정체·배신·죽음·결말) 금지 — 그런 답이면 "스포라 말 아낄게요" 정도로."""
+
+
+def _build_lookup_prompt(question: str, game: str, bot: dict, screen: str, profile: str = "") -> str:
+    return _LOOKUP_PROMPT.format(game=game or "?", bot=bot.get("name", "?"), style=bot.get("style", "간결하게"),
+                                 profile=profile or "(없음)", screen=_game_context_for_prompt(screen),
+                                 question=question)
+
+
+def _lookup_text(raw: str) -> str:
+    """검색 답에서 채팅 한 줄만 남긴다. SKIP·빈 답이면 "".
+    Gemini 는 답 앞에 영어 메모("The search results confirm…")를 붙이기도 해서 한글이 든 첫 줄을 쓴다."""
+    lines = [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
+    if any(ln.upper().startswith("SKIP") for ln in lines):
+        return ""
+    korean = [ln for ln in lines if re.search(r"[가-힣]", ln)]
+    text = korean[0] if korean else ""
+    # 붙어 나온 출처 링크 — "([위키](https://…))", "[위키](https://…)", 맨 URL
+    text = re.sub(r"\s*\(?\[[^\]]*\]\([^)]*\)\)?", "", text)
+    text = re.sub(r"\s*\(?https?://\S+", "", text).strip()
+    while text.endswith(")") and text.count(")") > text.count("("):  # URL 속 괄호가 남긴 꼬리
+        text = text[:-1].rstrip()
+    text = text.strip("\"'“”‘’` ")
+    return "" if not text or text.upper().startswith("SKIP") else text
+
+
 class GeminiClient:
     def __init__(self, api_key: str, config: dict):
         from google import genai
@@ -481,6 +535,22 @@ class GeminiClient:
             self.last_chat_call.error = err
             self.last_chat_call.in_tokens, self.last_chat_call.out_tokens = tokens
         return parsed
+
+    def lookup_answer(self, question: str, game: str, bot: dict, screen: str = "", profile: str = "") -> str:
+        """Google 검색 그라운딩으로 질문에 답한 채팅 한 줄. 게임 무관·못 찾음·실패면 ""."""
+        from google.genai import types
+        prompt = _build_lookup_prompt(question, game, bot, screen, profile)
+        try:
+            response = self._call_with_retry(lambda: self._client.models.generate_content(
+                model=self._chat_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]),
+            ))
+            usage.record("lookup", self._chat_model, *_gemini_tokens(response))
+            return _lookup_text(response.text or "")
+        except Exception as e:
+            logger.error(f"웹 검색 답 실패: {e}")
+            return ""
 
 
 class ClaudeClient:
@@ -688,6 +758,18 @@ class OpenAIClient:
             self.last_chat_call.in_tokens, self.last_chat_call.out_tokens = tokens
         return parsed
 
+    def lookup_answer(self, question: str, game: str, bot: dict, screen: str = "", profile: str = "") -> str:
+        """web_search 도구로 질문에 답한 채팅 한 줄. 게임 무관·못 찾음·실패면 ""."""
+        prompt = _build_lookup_prompt(question, game, bot, screen, profile)
+        try:
+            response = self._create(self._chat_model, input=prompt, tools=[{"type": "web_search"}],
+                                    max_output_tokens=1024)
+            usage.record("lookup", self._chat_model, *_usage_tokens(response))
+            return _lookup_text(response.output_text or "")
+        except Exception as e:
+            logger.error(f"OpenAI 웹 검색 답 실패: {e}")
+            return ""
+
 
 PROVIDERS = ("gemini", "claude", "openai")
 
@@ -759,6 +841,18 @@ def create_chat_client(config: dict, gemini_api_key: str | None, claude_api_key:
                        openai_api_key: str | None = None):
     """config["ai"]["chat_provider"] 에 따라 채팅 전용 클라이언트 반환. 키가 없으면 있는 키로 대체."""
     return _create_client("chat", config, gemini_api_key, claude_api_key, openai_api_key)
+
+
+def create_lookup_client(config: dict, gemini_api_key: str | None, claude_api_key: str | None = None,
+                         openai_api_key: str | None = None):
+    """정확한 정보 봇의 웹 검색용 클라이언트. 채팅 provider 와 상관없이 키가 있는 openai(openai_chat_model)
+    → gemini(chat_model) 순 — gemini flash-lite 는 검색 답이 부정확해서 openai 우선. 둘 다 없으면 None(검색 끔)."""
+    keys = {"gemini": gemini_api_key, "claude": claude_api_key, "openai": openai_api_key}
+    for p in ("openai", "gemini"):
+        if keys.get(p):
+            cfg = {**config, "ai": {**(config.get("ai") or {}), "chat_provider": p}}
+            return _create_client("chat", cfg, gemini_api_key, claude_api_key, openai_api_key)
+    return None
 
 
 def check_api_key(provider: str, api_key: str) -> tuple[bool, str]:

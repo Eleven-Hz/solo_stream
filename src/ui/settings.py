@@ -1,7 +1,7 @@
 """
 설정 창 (오버레이와 분리된 별도 창).
 
-왼쪽 메뉴: 방송 준비 · 오버레이 · 음성 인식 · AI 모델·키 · 게임·프로필 · 사용량.
+왼쪽 메뉴: 방송 준비 · 오버레이 · 음성 인식 · 시청자 봇 · AI 모델·키 · 게임·프로필 · 사용량.
 모든 항목은 바꾸는 즉시 config.local.yaml 에 저장되고(적용 버튼 없음), 실행 중 프로세스에
 바로 반영할 수 있는 값은 settings_queue 로 브로드캐스트한다. 재시작해야 적용되는 값은
 하단 바에 '재시작하면 적용' 으로 모아 보여 준다.
@@ -100,6 +100,7 @@ _PAGES = [
     ("ready", "방송 준비"),
     ("overlay", "오버레이"),
     ("voice", "음성 인식"),
+    ("bots", "시청자 봇"),
     ("ai", "AI 모델 · 키"),
     ("game", "게임 · 프로필"),
     ("usage", "사용량"),
@@ -404,7 +405,7 @@ class _ProfilePasteDialog(QDialog):
             self._summary.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
             self._ok.setEnabled(False)
             return
-        labels = {"vision_focus": "화면 포인트", "systems": "시스템", "locations": "지역",
+        labels = {"vision_focus": "화면 포인트", "characters": "인물", "systems": "시스템", "locations": "지역",
                   "enemies": "적", "skills": "스킬", "chat_tips": "채팅 포인트"}
         counts = " · ".join(f"{labels[s]} {len(profile[s])}" for s in PROFILE_SECTIONS)
         msg = f"{profile['name']}  —  {counts}"
@@ -414,6 +415,183 @@ class _ProfilePasteDialog(QDialog):
         self._summary.setStyleSheet(f"color: {T.WARN if warnings else T.TEXT_2}; font-size: 12px;")
         self.profile = profile
         self._ok.setEnabled(True)
+
+
+_FREQ_OPTIONS = [("low", "가끔"), ("medium", "보통"), ("high", "자주")]
+_WEIGHT_OPTIONS = [("", "기본값"), ("off", "안 함"), ("low", "가볍게"), ("medium", "보통"), ("high", "적극")]
+_EMOTIONS = ["흥분", "신남", "평온", "긴장", "실망", "짜증", "우울"]  # src/chat/emotion._BASE_EMOTION_SCORE
+
+
+class _BotDialog(QDialog):
+    """시청자 봇 한 명 편집(주요 항목 + 접힌 '고급'). 화면에 없는 필드(triggers 등)는 그대로 둔다.
+
+    끝나면 self.action: "save"(self.bot) / "reset"(기본 봇을 기본값으로) / "delete"(내가 만든 봇 삭제)."""
+
+    def __init__(self, entry: dict | None, taken_names: set[str], parent=None):
+        super().__init__(parent)
+        self._entry = entry
+        self._taken = taken_names
+        self.action = ""
+        self.bot: dict = dict(entry["bot"]) if entry else {}
+        b = self.bot
+        builtin = bool(entry and entry["builtin"])
+        self.setWindowTitle("시청자 봇 편집" if entry else "새 시청자 봇")
+        self.setModal(True)
+        self.resize(560, 600)
+        self.setStyleSheet(f"QDialog {{ background: {T.BG}; }}" + T.settings_qss())
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        lay.addWidget(T.label(b.get("name") or "새 시청자 봇", "lbl"))
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+        form.setColumnStretch(1, 1)
+        row = 0
+
+        def add(title: str, w: QWidget, tip: str = ""):
+            nonlocal row
+            lbl = T.label(title, "sub")
+            lbl.setMinimumWidth(110)
+            form.addWidget(lbl, row, 0, Qt.AlignmentFlag.AlignVCenter)
+            form.addWidget(w, row, 1)
+            if tip:
+                row += 1
+                form.addWidget(T.label(tip, "sub", wrap=True), row, 1)
+            row += 1
+
+        self._name = QLineEdit(b.get("name", ""))
+        self._name.setPlaceholderText("채팅창에 보일 닉네임")
+        self._name.setReadOnly(builtin)
+        add("이름", self._name, "기본 봇은 이름을 바꿀 수 없어요 — 다른 이름이 필요하면 새 봇으로 만드세요." if builtin else "")
+        self._style = QLineEdit(b.get("style", ""))
+        self._style.setPlaceholderText("예: 반말, 이모티콘 많이, 짧은 문장, 초보 질문")
+        add("말투", self._style)
+        self._rel = QLineEdit(b.get("relationship", ""))
+        self._rel.setPlaceholderText("예: 찐팬 / 뉴비팬 / 고인물 / 트롤러 / 안티")
+        add("스트리머와의 관계", self._rel)
+        self._emotion = T.combo([(e, e) for e in _EMOTIONS], b.get("emotion", "평온"))
+        T.select_data(self._emotion, b.get("emotion", "평온"), fallback_text=b.get("emotion", "평온"))
+        add("기본 감정", self._emotion, "방송 분위기에 따라 바뀌다가 이 감정으로 돌아와요.")
+        self._freq = T.Segmented(_FREQ_OPTIONS, b.get("frequency", "medium"))
+        add("말하는 빈도", self._freq)
+        from src.chat.persona_loader import normalize_user_speech_weight
+        weight = "" if "user_speech_weight" not in b else normalize_user_speech_weight(b["user_speech_weight"])
+        self._weight = T.Segmented(_WEIGHT_OPTIONS, weight)
+        add("내 말에 반응", self._weight, "기본값은 '음성 인식' 페이지의 반응 강도를 따라요.")
+        self._react = T.Switch(bool(b.get("react_to_others", True)))
+        add("다른 봇에 반응", self._react)
+        self._accurate = T.Switch(bool(b.get("accurate", False)))
+        add("정확한 정보", self._accurate,
+            "켜면 게임 사실을 지어내지 않고, 질문을 받으면 웹 검색해서 답해요(고인물 봇).")
+        lay.addLayout(form)
+
+        self._adv_btn = T.button("고급")
+        self._adv_btn.setIcon(T.icon("chevron_right", T.TEXT_2, 10, stroke=2))
+        self._adv_btn.clicked.connect(self._toggle_adv)
+        lay.addWidget(self._adv_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        self._adv = QWidget()
+        adv = QGridLayout(self._adv)
+        adv.setContentsMargins(0, 0, 0, 0)
+        adv.setHorizontalSpacing(12)
+        adv.setColumnStretch(1, 1)
+        self._memory = QSpinBox()
+        self._memory.setRange(0, 10)
+        self._memory.setValue(int(b.get("memory_depth", 0) or 0))
+        self._chance = QSpinBox()
+        self._chance.setRange(0, 100)
+        self._chance.setSuffix(" %")
+        self._chance.setValue(round(float(b.get("react_chance", 1.0)) * 100))
+        self._aliases = QLineEdit(", ".join(b.get("aliases") or []))
+        self._aliases.setPlaceholderText("쉼표로 구분 — 예: 도네 요정, 돈의 요정")
+        for i, (title, w, tip) in enumerate((
+            ("기억하는 자기 말", self._memory, "최근 몇 개까지 자기가 한 말을 기억할지"),
+            ("다른 봇 반응 확률", self._chance, ""),
+            ("부르는 다른 이름", self._aliases, "음성 인식이 이름을 다르게 받아쓸 때도 이 봇을 부른 걸로 봐요."),
+        )):
+            lbl = T.label(title, "sub")
+            lbl.setMinimumWidth(110)
+            if tip:
+                w.setToolTip(tip)
+            adv.addWidget(lbl, i, 0)
+            adv.addWidget(w, i, 1)
+        self._adv.setVisible(False)
+        lay.addWidget(self._adv)
+        lay.addStretch(1)
+
+        self._err = T.label("", "sub", wrap=True)
+        self._err.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+        lay.addWidget(self._err)
+        btns = QHBoxLayout()
+        if entry and builtin and entry["edited"]:
+            reset = T.button("기본값으로 되돌리기")
+            reset.clicked.connect(lambda: self._finish("reset"))
+            btns.addWidget(reset)
+        elif entry and not builtin:
+            delete = T.button("삭제")
+            delete.setStyleSheet(f"QPushButton {{ color: {T.ERROR}; }}")
+            delete.clicked.connect(self._confirm_delete)
+            btns.addWidget(delete)
+        btns.addStretch(1)
+        cancel = T.button("취소")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        ok = T.button("저장")
+        ok.setStyleSheet(f"QPushButton {{ background: {T.ACCENT}; color: {T.ACCENT_FG}; border: none; "
+                         "border-radius: 7px; height: 32px; padding: 0 16px; font-weight: 700; }")
+        ok.clicked.connect(self._save)
+        btns.addWidget(ok)
+        lay.addLayout(btns)
+
+    def _toggle_adv(self):
+        show = not self._adv.isVisible()
+        self._adv.setVisible(show)
+        self._adv_btn.setIcon(T.icon("chevron_down" if show else "chevron_right", T.TEXT_2, 10, stroke=2))
+
+    def _finish(self, action: str):
+        self.action = action
+        self.accept()
+
+    def _confirm_delete(self):
+        if QMessageBox.question(self, "봇 삭제", f"'{self.bot.get('name')}' 봇을 삭제할까요?") == \
+                QMessageBox.StandardButton.Yes:
+            self._finish("delete")
+
+    def _save(self):
+        name = self._name.text().strip()
+        style = self._style.text().strip()
+        self._err.setText("")
+        if not name:
+            self._err.setText("이름을 적어 주세요.")
+            return
+        if name in self._taken:
+            self._err.setText(f"'{name}' 이름의 봇이 이미 있어요.")
+            return
+        if not style:
+            self._err.setText("말투를 적어 주세요 — 봇마다 말투가 달라야 채팅이 살아나요.")
+            return
+        b = self.bot
+        b.update({
+            "name": name, "style": style, "relationship": self._rel.text().strip() or "시청자",
+            "emotion": self._emotion.currentData() or "평온", "frequency": self._freq.value(),
+            "react_to_others": self._react.isChecked(), "memory_depth": self._memory.value(),
+            "react_chance": round(self._chance.value() / 100, 2),
+        })
+        if self._weight.value():
+            b["user_speech_weight"] = self._weight.value()
+        else:
+            b.pop("user_speech_weight", None)
+        if self._accurate.isChecked():
+            b["accurate"] = True
+        else:
+            b.pop("accurate", None)
+        aliases = [a.strip() for a in self._aliases.text().split(",") if a.strip()]
+        if aliases:
+            b["aliases"] = aliases
+        else:
+            b.pop("aliases", None)
+        self._finish("save")
 
 
 # ── 설정 창 ──────────────────────────────────────────────────────────────────
@@ -601,6 +779,7 @@ class SettingsWindow(QWidget):
         self._stack.addWidget(self._build_page_ready())
         self._stack.addWidget(self._build_page_overlay())
         self._stack.addWidget(self._build_page_voice())
+        self._stack.addWidget(self._build_page_bots())
         self._stack.addWidget(self._build_page_ai())
         self._stack.addWidget(self._build_page_game())
         self._stack.addWidget(self._build_page_usage())
@@ -1114,6 +1293,13 @@ class SettingsWindow(QWidget):
         card.add_row(title="내 말(받아쓰기) 표시", sub="음성 인식 결과를 채팅 사이에 회색으로 보여줘요. 잘못 들렸는지 확인할 때 켜세요.",
                      right=self._show_stt_switch)
 
+        typing = T.Switch(bool(ui.get("typing_indicator", True)))
+        typing.setAccessibleName("입력 중 표시")
+        typing.toggled.connect(self._on_typing_indicator)
+        card.add_row(title="'입력 중' 표시",
+                     sub="AI가 화면을 보고 채팅을 만드는 동안 채팅창 아래에 '시청자들이 채팅 입력 중'을 띄워요. 기록에는 남지 않아요.",
+                     right=typing)
+
         excl = T.Switch(bool(ui.get("exclude_from_capture", True)))
         excl.setAccessibleName("화면 분석에서 채팅창 숨기기")
         excl.toggled.connect(self._on_capture_exclusion)
@@ -1148,6 +1334,11 @@ class SettingsWindow(QWidget):
         self._save("ui", {"show_stt_history": bool(on)})
         if self._overlay:
             self._overlay.set_show_stt(on)
+
+    def _on_typing_indicator(self, on: bool):
+        self._save("ui", {"typing_indicator": bool(on)})
+        if self._overlay:
+            self._overlay.set_typing_indicator(on)
 
     def _on_capture_exclusion(self, on: bool):
         self._save("ui", {"exclude_from_capture": bool(on)})
@@ -1627,6 +1818,14 @@ class SettingsWindow(QWidget):
         self._chat_combo.currentIndexChanged.connect(lambda _: self._on_ai_model("chat"))
         row_c = card.add_row(title="채팅 생성", sub="봇 채팅을 한 번에 몰아서 만들어요", right=self._chat_combo)
 
+        ws = T.Switch(bool((self._config.get("chat") or {}).get("web_search", True)))
+        ws.setAccessibleName("고인물 봇 웹 검색")
+        ws.toggled.connect(self._on_web_search)
+        card.add_row(title="고인물 봇 웹 검색",
+                     sub="고인물 봇이 게임 질문을 받으면 검색해 보고 몇 초 뒤 답해요(OpenAI·Gemini 키 필요). "
+                         "검색 호출은 일반 채팅보다 비싸요.",
+                     right=ws)
+
         pmodel = str(ai.get("profile_model", _PROFILE_MODELS[0]))
         self._profile_model_combo = T.combo([(_model_text("gemini", m), m) for m in _PROFILE_MODELS], width=300)
         T.select_data(self._profile_model_combo, pmodel, fallback_text=_model_text("gemini", pmodel))
@@ -1749,6 +1948,10 @@ class SettingsWindow(QWidget):
         logger.info(f"{kind} 모델 변경: {provider} / {model}")
         self._refresh_keys()
         self._update_interval_warn()
+
+    def _on_web_search(self, on: bool):
+        self._save("chat", {"web_search": bool(on)})
+        self._queue.put({"web_search": bool(on)})
 
     def _on_interval(self, value: int):
         """분석 주기 변경 → 저장 + 캡처/AI 프로세스에 바로 반영(채팅 간격·소재 윈도우도 비례 조정)."""
@@ -1974,6 +2177,226 @@ class SettingsWindow(QWidget):
             os.startfile(str(paths.ensure_user_data()))  # type: ignore[attr-defined]
         except Exception as e:
             logger.error(f"데이터 폴더 열기 실패: {e}")
+
+    # ── 시청자 봇 ────────────────────────────────────────────────────────────
+
+    def _build_page_bots(self) -> QWidget:
+        add = T.button("+ 새 봇")
+        add.clicked.connect(lambda: self._edit_bot(None))
+        page, lay = self._page("시청자 봇", "채팅을 치는 봇들이에요. 켜고 끄거나 말투·성격을 바꾸면 다음 채팅부터 바로 반영돼요.",
+                               header_right=add)
+        # 예전 버전 봇 설정이 지금 기본 봇을 가리면 경고 + 초기화 버튼
+        self._bots_alert = T.Card()
+        w, h = T.row_box(spacing=12)
+        self._bots_alert_lbl = T.label("", "sub", wrap=True)
+        self._bots_alert_lbl.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+        self._bots_alert_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)  # 경로 복사용
+        h.addWidget(self._bots_alert_lbl, 1)
+        fix = T.button(f"v{APP_VERSION} 기본 봇으로 초기화")
+        fix.clicked.connect(self._reset_bots)
+        h.addWidget(fix, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._bots_alert.add_row(w)
+        self._bots_alert.setStyleSheet(f"QFrame#card {{ border: 1px solid {T.rgba(T.WARN, 0.5)}; }}")
+        lay.addWidget(self._bots_alert)
+        self._bots_summary = T.label("", "sub", wrap=True)
+        lay.addWidget(self._bots_summary)
+        self._bots_holder = QVBoxLayout()
+        self._bots_holder.setSpacing(0)
+        lay.addLayout(self._bots_holder)
+        hint = T.label("기본 봇은 앱에 들어 있어 지워지지 않고 끄거나 고칠 수만 있어요. 바꾼 내용은 데이터 폴더의 "
+                       "personas/settings_bots.yaml 에 저장돼요.", "sub", wrap=True)
+        hint.setStyleSheet(f"color: {T.FAINT}; font-size: 12px;")
+        lay.addWidget(hint)
+        card = T.Card()
+        reset = T.button("초기화…")
+        reset.clicked.connect(self._reset_bots)
+        card.add_row(title=f"v{APP_VERSION} 기본 봇으로 초기화",
+                     sub="켜기/끄기·편집·새 봇을 모두 지우고 지금 버전의 기본 봇으로 돌아가요. 지운 설정은 같은 폴더에 백업돼요.",
+                     right=reset)
+        lay.addWidget(card)
+        lay.addStretch(1)
+        self._bot_entries: list[dict] = []
+        self._reload_bots()
+        return page
+
+    def _persona_dir(self) -> str:
+        return (self._config.get("chat") or {}).get("persona_dir", "personas")
+
+    def _reload_bots(self):
+        from src.chat.persona_loader import persona_entries
+        try:
+            self._bot_entries = persona_entries(self._persona_dir())
+        except Exception as e:
+            logger.error(f"봇 목록 읽기 실패: {e}")
+            self._bot_entries = []
+        self._render_bots()
+
+    def _render_bots(self):
+        while self._bots_holder.count():
+            it = self._bots_holder.takeAt(0)
+            if it and it.widget():
+                it.widget().deleteLater()
+        card = T.Card()
+        for i, e in enumerate(self._bot_entries):
+            b = e["bot"]
+            name = b.get("name", "")
+            dot = QLabel(name[:1])
+            dot.setFixedSize(30, 30)
+            dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            color = T.name_color(name) if e["enabled"] else T.FAINT
+            dot.setStyleSheet(f"background: {T.rgba(color, 0.18)}; color: {color}; border-radius: 15px; "
+                              "font-weight: 700; font-size: 13px;")
+            right = QWidget()
+            rh = QHBoxLayout(right)
+            rh.setContentsMargins(0, 0, 0, 0)
+            rh.setSpacing(10)
+            if not e["builtin"]:
+                tag, tone = "내 봇", "ok"
+            elif e.get("outdated"):
+                tag, tone = "기본값 바뀜", "error"
+            elif e["edited"]:
+                tag, tone = "수정함", "warn"
+            else:
+                tag, tone = "", ""
+            if b.get("accurate"):
+                rh.addWidget(T.Chip("정확한 정보"))
+            if tag:
+                rh.addWidget(T.Chip(tag, tone))
+            edit = T.button("편집")
+            edit.clicked.connect(lambda _=False, idx=i: self._edit_bot(idx))
+            rh.addWidget(edit)
+            sw = T.Switch(e["enabled"])
+            sw.setAccessibleName(f"{name} 켜기")
+            sw.toggled.connect(lambda on, idx=i, s=sw: self._toggle_bot(idx, on, s))
+            rh.addWidget(sw)
+            sub = " · ".join(x for x in (b.get("relationship"), b.get("style")) if x)
+            card.add_row(title=name, sub=sub, left=dot, right=right)
+        self._bots_holder.addWidget(card)
+        on = sum(e["enabled"] for e in self._bot_entries)
+        batch = int((self._config.get("chat") or {}).get("batch_size", 5))
+        text = f"켜진 봇 {on}명 / 전체 {len(self._bot_entries)}명 · 한 번에 {batch}명 정도가 채팅해요."
+        if on < batch:
+            text += f"  ⚠ 켜진 봇이 {batch}명보다 적으면 매번 같은 봇만 말해요."
+        self._bots_summary.setText(text)
+        self._bots_summary.setStyleSheet(f"color: {T.WARN if on < batch else T.MUTED}; font-size: 12px;")
+        self._update_bots_alert()
+
+    def _update_bots_alert(self):
+        """예전 버전 봇 설정 경고 — 페이지 위 배너 + 왼쪽 메뉴 '시청자 봇' 옆 ⚠."""
+        from src.chat.persona_loader import stale_persona_files
+        try:
+            stale = stale_persona_files(self._persona_dir())
+        except Exception as e:
+            logger.error(f"예전 봇 파일 확인 실패: {e}")
+            stale = []
+        outdated = [e["bot"]["name"] for e in self._bot_entries if e.get("outdated")]
+        lines = []
+        if stale:
+            import datetime
+            files = ", ".join(f"{f.name}({datetime.date.fromtimestamp(f.stat().st_mtime)})" for f in stale)
+            lines.append(f"⚠ 예전 버전의 기본 봇 파일이 남아 있어 v{APP_VERSION} 기본 봇을 덮고 있어요 — {files}. "
+                         "새 봇·바뀐 말투가 안 보일 수 있어요.")
+        if outdated:
+            lines.append(f"⚠ 고쳐 둔 봇 {len(outdated)}명({', '.join(outdated[:5])}{' 등' if len(outdated) > 5 else ''})의 "
+                         f"기본값이 업데이트로 바뀌었어요. 새 기본값을 쓰려면 그 봇의 '기본값으로 되돌리기'나 초기화를 하세요.")
+        if lines:
+            lines.append("초기화해도 기존 파일은 지우지 않고 아래 폴더에 '파일이름.bak-날짜시각' 으로 백업해 둬요.\n"
+                         f"📁 {self._persona_user_dir()}")
+        self._bots_alert_lbl.setText("\n".join(lines))
+        self._bots_alert.setVisible(bool(lines))
+        idx = [k for k, _ in _PAGES].index("bots")
+        self._nav_buttons[idx].set_meta("⚠" if lines else "", T.WARN)
+
+    def _reset_bots(self):
+        from src.chat.persona_loader import reset_personas
+        ans = QMessageBox.question(
+            self, "기본 봇으로 초기화",
+            f"켜기/끄기·편집·새 봇을 모두 지우고 v{APP_VERSION} 기본 봇으로 돌아갈까요?\n\n"
+            f"지금 봇 설정 파일과 예전 기본 봇 파일은 지우지 않고 아래 폴더에 '파일이름.bak-날짜시각' 으로 백업돼요.\n"
+            f"{self._persona_user_dir()}\n\n직접 넣은 다른 봇 파일은 그대로예요.")
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            moved = reset_personas(self._persona_dir())
+        except Exception as e:
+            logger.error(f"봇 초기화 실패: {e}")
+            self._save_lbl.setText(f"초기화 실패: {e}")
+            self._save_lbl.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            return
+        self._queue.put({"personas_reload": True})
+        self._flash_saved()
+        self._reload_bots()
+        logger.info(f"기본 봇으로 초기화 — 백업 {[m.name for m in moved]}")
+        self._show_reset_done(moved)
+
+    def _persona_user_dir(self) -> Path:
+        return paths.user_data_dir() / self._persona_dir()
+
+    def _show_reset_done(self, moved: list[Path]):
+        """초기화 결과 — 백업한 파일 이름과 폴더, '백업 폴더 열기'."""
+        box = QMessageBox(self)
+        box.setWindowTitle("기본 봇으로 초기화")
+        if moved:
+            files = "\n".join(f"  • {m.name}" for m in moved)
+            box.setText(f"v{APP_VERSION} 기본 봇으로 초기화했어요.\n\n기존 파일은 이렇게 백업했어요:\n{files}\n\n"
+                        f"백업 폴더:\n{moved[0].parent}\n\n"
+                        "되돌리려면 백업 파일 이름 끝의 '.bak-날짜시각' 을 지우면 돼요.")
+        else:
+            box.setText(f"이미 v{APP_VERSION} 기본 봇 그대로라 백업할 파일이 없었어요.")
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        open_btn = box.addButton("백업 폴더 열기", QMessageBox.ButtonRole.ActionRole) if moved else None
+        box.addButton("확인", QMessageBox.ButtonRole.AcceptRole)
+        box.exec()
+        if open_btn is not None and box.clickedButton() is open_btn:
+            import os
+            try:
+                os.startfile(str(moved[0].parent))  # type: ignore[attr-defined]
+            except Exception as e:
+                logger.error(f"백업 폴더 열기 실패: {e}")
+
+    def _save_bots(self):
+        from src.chat.persona_loader import save_persona_entries
+        try:
+            save_persona_entries(self._persona_dir(), self._bot_entries)
+        except Exception as e:
+            logger.error(f"봇 저장 실패: {e}")
+            self._save_lbl.setText(f"저장 실패: {e}")
+            self._save_lbl.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            return
+        self._queue.put({"personas_reload": True})
+        self._flash_saved()
+        self._reload_bots()
+
+    def _toggle_bot(self, idx: int, on: bool, sw):
+        if not on and sum(e["enabled"] for e in self._bot_entries) <= 1:
+            sw.blockSignals(True)
+            sw.setChecked(True)
+            sw.blockSignals(False)
+            self._bots_summary.setText("⚠ 봇이 한 명은 켜져 있어야 해요.")
+            self._bots_summary.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+            return
+        self._bot_entries[idx]["enabled"] = bool(on)
+        # 스위치 애니메이션이 끝난 뒤 목록을 다시 그린다
+        QTimer.singleShot(0, self._save_bots)
+
+    def _edit_bot(self, idx: int | None):
+        entry = self._bot_entries[idx] if idx is not None else None
+        taken = {e["bot"].get("name") for j, e in enumerate(self._bot_entries) if j != idx}
+        dlg = _BotDialog(entry, taken, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dlg.action == "delete" and idx is not None:
+            del self._bot_entries[idx]
+        elif dlg.action == "reset" and entry:
+            entry["edited"] = False
+        elif dlg.action == "save":
+            if entry:
+                entry["bot"] = dlg.bot
+                if entry["builtin"]:
+                    entry["edited"] = True
+            else:
+                self._bot_entries.append({"bot": dlg.bot, "builtin": False, "edited": False, "enabled": True})
+        self._save_bots()
 
     # ── 6. 사용량 ────────────────────────────────────────────────────────────
 
