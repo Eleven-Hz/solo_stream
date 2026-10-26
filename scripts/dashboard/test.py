@@ -14,13 +14,14 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 DASH = Path(__file__).resolve().parent
 PORT = 8798
 BASE = f"http://127.0.0.1:{PORT}"
-TABS = ["overview", "review", "features", "howto", "issues", "content", "dev"]
+TABS = ["overview", "checks", "review", "features", "howto", "issues", "content", "dev"]
 fails: list[str] = []
 
 
@@ -101,7 +102,22 @@ def main() -> int:
            "반려하면 사유만 남고 데이터 그대로")
         code, _ = post("/api/proposals/..%2Fdata/approve", {})
         ok(code == 409, "잘못된 id 막음")
-        ok(sha(DASH / "data/features.json") == real, "진짜 data/ 는 그대로")
+
+        # 내 확인: 사용자가 상태·메모를 바로 바꾼다
+        real_checks = sha(DASH / "data/checks.json")
+        cid = json.loads((tmp / "data/checks.json").read_text(encoding="utf-8"))[0]["id"]
+        code, _ = post(f"/api/checks/{cid}", {"status": "통과"}, origin="https://evil.example")
+        ok(code == 403, "확인: 다른 Origin 막음")
+        code, r = post(f"/api/checks/{cid}", {"status": "실패", "note": "보스 등장 라운드에 이벤트 줄 없음"}, origin=BASE)
+        row = next(x for x in json.loads((tmp / "data/checks.json").read_text(encoding="utf-8")) if x["id"] == cid)
+        ok(code == 200 and row["status"] == "실패" and row["note"].startswith("보스") and row["updated"], "확인: 상태·메모·시각 저장")
+        code, r = post(f"/api/checks/{cid}", {"status": "완료"})
+        ok(code == 409 and "모르는 상태" in r.get("error", ""), "확인: 모르는 상태 막음")
+        code, r = post("/api/checks/" + urllib.parse.quote("없는-항목"), {"status": "통과"})
+        ok(code == 409 and "없는 확인 항목" in r.get("error", ""), "확인: 없는 항목 막음")
+        html = urllib.request.urlopen(BASE + "/").read().decode("utf-8")
+        ok("보스 등장 라운드에 이벤트 줄 없음" in html, "확인: 새로 고치면 바뀐 상태가 보임")
+        ok(sha(DASH / "data/features.json") == real and sha(DASH / "data/checks.json") == real_checks, "진짜 data/ 는 그대로")
 
         exe = browser()
         if not exe:

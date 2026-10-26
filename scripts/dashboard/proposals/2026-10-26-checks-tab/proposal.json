@@ -1,0 +1,137 @@
+{
+  "title": "개발 순서 — '내 확인' 탭을 기능 만들기 순서에 넣기",
+  "created": "2026-10-26T11:00:00+09:00",
+  "author": "Claude",
+  "status": "pending",
+  "summary": "현황판에 '내 확인' 탭(data/checks.json)을 새로 만들었다 — 실제 앱에서 사용자가 봐야 하는 것을 적고, 사용자가 상태(대기·통과·실패·보류)와 메모를 바로 바꾼다(상신 없이).\n개발 순서 '기능 하나 만들기'의 두 단계를 거기에 맞춘다: 현황 확인 때 실패·보류 메모를 먼저 읽고, 실제 앱 확인 단계는 확인 항목을 상신으로 올려 사용자가 탭에서 결과를 남긴다.\n처음 항목 7개(1단계 이벤트 흥분도 4개, 실제 마이크 4-8, 고인물 웹 검색 4-10, 현황판 bat)는 기능을 만들면서 같이 넣었다.",
+  "commits": [],
+  "files": [
+    "scripts/dashboard/data/checks.json",
+    "scripts/dashboard/page.html",
+    "scripts/dashboard/server.py",
+    "scripts/dashboard/proposals.py",
+    "scripts/dashboard/test.py",
+    "AGENTS.md"
+  ],
+  "changes": [
+    {
+      "dataset": "workflows",
+      "op": "update",
+      "key": "feature",
+      "from": {
+        "steps": [
+          {
+            "title": "현황 확인",
+            "what": "현황판 기능 표(data/features.json)와 docs/확장_로드맵.md 의 해당 절",
+            "gate": ""
+          },
+          {
+            "title": "계획서",
+            "what": "새 기능이면 docs/ 에 짧은 한국어 계획서(또는 로드맵 절 보강) + 기획서 관련 절에 한 줄 링크",
+            "gate": ""
+          },
+          {
+            "title": "구현",
+            "what": "자식 프로세스는 import 를 함수 안에서, 프로세스 간 메시지는 broadcast_queue → settings_queue 분기",
+            "gate": ""
+          },
+          {
+            "title": "평가 러너",
+            "what": "프롬프트·후처리·모델·프로필 → tests/replay/run.py 전후 대화록 비교. UI → tests/ui/smoke_settings_tabs.py",
+            "gate": ""
+          },
+          {
+            "title": "실제 앱 확인",
+            "what": "run.bat(로그는 run_debug.bat)로 사용자가 직접 확인. API 비용 드는 호출은 실제 키로",
+            "gate": "사용자 확인"
+          },
+          {
+            "title": "기록",
+            "what": "실측·결정은 docs/wiki/, 문제 상태는 docs/KNOWN_ISSUES.md",
+            "gate": ""
+          },
+          {
+            "title": "커밋",
+            "what": "feat(영역): 한국어 요약 형식",
+            "gate": ""
+          },
+          {
+            "title": "현황판 상신",
+            "what": "상태가 바뀌면 scripts/dashboard/proposals/<날짜-이름>/proposal.json — 바뀌는 줄(from), 코드 변경, 시험 결과, 스크린샷",
+            "gate": ""
+          },
+          {
+            "title": "승인",
+            "what": "검토 요청 탭에서 승인하면 data/ 에 반영(코드는 이미 들어가 있다)",
+            "gate": "사용자 승인"
+          }
+        ]
+      },
+      "set": {
+        "steps": [
+          {
+            "title": "현황 확인",
+            "what": "현황판 기능 표(data/features.json), '내 확인'의 실패·보류 메모, docs/확장_로드맵.md 의 해당 절",
+            "gate": ""
+          },
+          {
+            "title": "계획서",
+            "what": "새 기능이면 docs/ 에 짧은 한국어 계획서(또는 로드맵 절 보강) + 기획서 관련 절에 한 줄 링크",
+            "gate": ""
+          },
+          {
+            "title": "구현",
+            "what": "자식 프로세스는 import 를 함수 안에서, 프로세스 간 메시지는 broadcast_queue → settings_queue 분기",
+            "gate": ""
+          },
+          {
+            "title": "평가 러너",
+            "what": "프롬프트·후처리·모델·프로필 → tests/replay/run.py 전후 대화록 비교. UI → tests/ui/smoke_settings_tabs.py",
+            "gate": ""
+          },
+          {
+            "title": "실제 앱 확인",
+            "what": "확인할 것을 상신의 checks(add)로 올리면 현황판 '내 확인' 탭에 뜬다. 사용자가 run.bat 으로 해 보고 통과·실패·보류 + 메모",
+            "gate": "사용자 확인"
+          },
+          {
+            "title": "기록",
+            "what": "실측·결정은 docs/wiki/, 문제 상태는 docs/KNOWN_ISSUES.md",
+            "gate": ""
+          },
+          {
+            "title": "커밋",
+            "what": "feat(영역): 한국어 요약 형식",
+            "gate": ""
+          },
+          {
+            "title": "현황판 상신",
+            "what": "상태가 바뀌면 scripts/dashboard/proposals/<날짜-이름>/proposal.json — 바뀌는 줄(from), 코드 변경, 시험 결과, 스크린샷",
+            "gate": ""
+          },
+          {
+            "title": "승인",
+            "what": "검토 요청 탭에서 승인하면 data/ 에 반영(코드는 이미 들어가 있다)",
+            "gate": "사용자 승인"
+          }
+        ]
+      },
+      "why": "확인 항목을 어디에 적고 결과를 어디서 읽는지 순서에 드러나게"
+    }
+  ],
+  "tests": [
+    {
+      "name": "현황판 시험",
+      "result": "통과",
+      "command": "venv/Scripts/python scripts/dashboard/test.py",
+      "detail": "확인 API 5건(다른 Origin·저장·모르는 상태·없는 항목·새로 고침 반영) + 8개 탭 × 2폭 화면"
+    },
+    {
+      "name": "브라우저 클릭",
+      "result": "통과",
+      "detail": "메모 없이 실패 누르면 막힘 → 메모 적고 실패 저장 → 배지 7→6→5, 새로 고침 뒤 유지, 페이지 오류 0(밝은·어두운)"
+    }
+  ],
+  "screenshots": [],
+  "notes": ""
+}

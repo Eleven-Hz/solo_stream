@@ -16,7 +16,9 @@ DATA_DIR = ROOT / "data"
 PROPOSAL_DIR = ROOT / "proposals"
 
 # 손으로 관리하는 데이터와 한 줄을 가리키는 열(키)
-KEYS = {"features": "id", "stages": "order", "workflows": "id"}
+KEYS = {"features": "id", "stages": "order", "workflows": "id", "checks": "id"}
+# 사용자 확인 항목(checks)의 상태 — 사용자가 현황판 '내 확인' 탭에서 바로 바꾼다(set_check, 상신 없음)
+CHECK_STATUS = ("대기", "통과", "실패", "보류")
 
 
 def read_data(name: str) -> list[dict]:
@@ -126,6 +128,19 @@ def approve(pid: str, comment: str = "") -> dict:
     p["decision"] = {"at": _now(), "comment": comment}
     _save(p)
     return p
+
+
+def set_check(cid: str, status: str, note: str = "") -> dict:
+    """사용자가 확인 항목의 상태·메모를 바꾼다. 확인은 사용자 몫이라 검토 요청을 거치지 않는다."""
+    if status not in CHECK_STATUS:
+        raise ValueError(f"모르는 상태: {status}")
+    rows = read_data("checks")
+    i = _find("checks", rows, cid)
+    if i < 0:
+        raise ValueError(f"없는 확인 항목: {cid}")
+    rows[i] = {**rows[i], "status": status, "note": note, "updated": _now()}
+    _write_data("checks", rows)
+    return rows[i]
 
 
 def reject(pid: str, comment: str = "") -> dict:

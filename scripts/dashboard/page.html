@@ -115,6 +115,14 @@ td.num, th.num { text-align: right; }
 .msg { font-size: 12px; color: var(--muted); }
 .msg.err { color: var(--bad); }
 .st-대기 { color: var(--accent); } .st-승인 { color: var(--ok); } .st-반려 { color: var(--muted); } .st-충돌, .st-실패, .st-읽기 { color: var(--bad); } .st-통과 { color: var(--ok); } .st-건너뜀 { color: var(--warn); }
+/* 내 확인 */
+.pr.chk-대기 { border-left: 4px solid var(--accent); } .pr.chk-실패 { border-left: 4px solid var(--bad); }
+.pr ol.how { margin: 0; padding-left: 1.3em; display: grid; gap: 2px; }
+.pr .seg button[aria-pressed="true"].s-통과 { background: var(--ok); color: #fff; }
+.pr .seg button[aria-pressed="true"].s-실패 { background: var(--bad); color: #fff; }
+.pr .seg button[aria-pressed="true"].s-보류 { background: var(--c4); color: #fff; }
+.pr .seg button[aria-pressed="true"].s-대기 { background: var(--accent); color: var(--on-accent); }
+.linkbtn { justify-self: start; font: inherit; font-size: 12px; background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
 .zoom { position: fixed; inset: 0; background: rgb(0 0 0 / .8); display: grid; place-items: center; padding: 16px; z-index: 20; cursor: zoom-out; }
 .zoom img { max-width: 100%; max-height: 100%; }
 </style>
@@ -129,6 +137,7 @@ td.num, th.num { text-align: right; }
 
   <nav class="tabs" role="tablist" aria-label="현황판 탭">
     <button class="tab" role="tab" data-tab="overview">한눈에</button>
+    <button class="tab" role="tab" data-tab="checks">내 확인<span class="badge" id="checks-badge" hidden></span></button>
     <button class="tab" role="tab" data-tab="review">검토 요청<span class="badge" id="review-badge" hidden></span></button>
     <button class="tab" role="tab" data-tab="features">기능</button>
     <button class="tab" role="tab" data-tab="howto">개발 순서</button>
@@ -157,6 +166,16 @@ td.num, th.num { text-align: right; }
         <div class="tablebox"><table id="models"><thead><tr><th>용도</th><th>provider</th><th>모델</th></tr></thead><tbody></tbody></table></div>
       </div>
     </div>
+  </section>
+
+  <section class="page" id="checks" role="tabpanel" hidden>
+    <div class="card">
+      <h2>내 확인</h2>
+      <p class="note">리플레이·시험으로는 못 보고 실제 앱(run.bat)에서 직접 봐야 하는 것. 해 보고 상태를 누르면 바로 저장됩니다(적어 둔 메모도 같이). 실패·보류면 메모에 본 것을 적어 주세요 — Claude 가 다음 작업 때 읽습니다. 원본은 scripts/dashboard/data/checks.json.</p>
+      <p class="msg" id="checks-mode"></p>
+      <div class="chips" id="checkfilter"></div>
+    </div>
+    <div class="page" id="checklist"></div>
   </section>
 
   <section class="page" id="review" role="tabpanel" hidden>
@@ -324,11 +343,17 @@ const D = /*SOLO_DATA*/null;
   const open = F.filter((r) => r.status !== '완료' && r.status !== '보류' && r.order > 0);
   const nextOrder = open.length ? Math.min(...open.map((r) => r.order)) : null;
   const count = (s) => F.filter((r) => r.status === s).length;
-  const state = {tab: 'overview', feat: null, issue: null};
+  const state = {tab: 'overview', feat: null, issue: null, check: null};
   const PR = D.proposals || [];
   const waiting = PR.filter((p) => p.status === 'pending');
   const pendingKeys = new Set(waiting.flatMap((p) => p.changes.map((c) => c.dataset + '/' + c.key)));
   if (waiting.length) { $('review-badge').hidden = false; $('review-badge').textContent = waiting.length; }
+  // 사용자 확인 항목: 상태는 사용자가 '내 확인' 탭에서 바로 바꾼다(검토 요청 없이)
+  const C = D.checks || [];
+  const CHECK_STATUS = ['대기', '통과', '실패', '보류'];
+  const checksFor = (fid) => C.filter((c) => c.feature === fid);
+  const checkBadge = () => { const n = C.filter((c) => c.status === '대기').length; $('checks-badge').hidden = !n; $('checks-badge').textContent = n; };
+  checkBadge();
   const stageTitle = (o) => (D.stages.find((s) => s.order === o) || {}).title || o + '단계';
   const issuesOpen = D.issues.filter((r) => r.state === '부분 대응' || r.state === '미해결');
 
@@ -338,11 +363,10 @@ const D = /*SOLO_DATA*/null;
     const b = (t) => h('b', '', String(t));
     p.append('v' + D.version + ' · 기능 ', b(F.length), '개 중 완료 ', b(count('완료')), '개, 일부 ', b(count('일부')), '개, 계획 ', b(count('계획')), '개. ');
     if (nextOrder != null) p.append('다음 작업은 ', b(nextOrder + '단계 ' + stageTitle(nextOrder)), ': ', open.filter((r) => r.order === nextOrder).map((r) => r.feature).join(', '), '.');
-    if (waiting.length) {
-      const a = h('a', '', '검토를 기다리는 요청 ' + waiting.length + '건');
-      a.href = '#review'; a.addEventListener('click', (e) => { e.preventDefault(); show('review'); });
-      p.append(' ', a, '이 있습니다.');
-    }
+    const link = (tab, text) => { const a = h('a', '', text); a.href = '#' + tab; a.addEventListener('click', (e) => { e.preventDefault(); show(tab); }); return a; };
+    const todo = C.filter((c) => c.status === '대기').length, failed = C.filter((c) => c.status === '실패').length;
+    if (todo || failed) p.append(' ', link('checks', '실제 앱에서 확인할 것 ' + todo + '건' + (failed ? ' · 실패 ' + failed + '건' : '')), '.');
+    if (waiting.length) p.append(' ', link('review', '검토를 기다리는 요청 ' + waiting.length + '건'), '이 있습니다.');
     $('built').textContent = '만든 때 ' + new Date(D.built).toLocaleString('ko-KR') + ' · 커밋 ' + D.head + ' · 다시 만들기: 새로 고침(open-dashboard.bat 으로 연 경우)';
   }
 
@@ -352,6 +376,7 @@ const D = /*SOLO_DATA*/null;
     $('tiles').replaceChildren(
       tile('완료한 기능', count('완료'), '전체 ' + F.length + '개 · 일부 ' + count('일부') + '개'),
       tile('확장 계획', count('계획'), (D.stages.length - 1) + '단계 + 보류 ' + count('보류') + '개'),
+      tile('내 확인 대기', C.filter((c) => c.status === '대기').length, '통과 ' + C.filter((c) => c.status === '통과').length + ' · 실패 ' + C.filter((c) => c.status === '실패').length),
       tile('남은 알려진 문제', issuesOpen.length, '전체 ' + D.issues.length + '건 중 부분 대응·미해결'),
       tile('기본 봇', D.bots.length, '게임 프로필 ' + D.profiles.length + '개'),
       tile('커밋', D.commits.length, '코드 ' + fmt(sum(D.code, (c) => c.lines)) + '줄 · 러너 ' + D.tests.length + '개'));
@@ -389,7 +414,10 @@ const D = /*SOLO_DATA*/null;
     const rows = F.filter((r) => !state.feat || r.status === state.feat).slice()
       .sort((a, b) => a.order - b.order || STATUS.indexOf(a.status) - STATUS.indexOf(b.status));
     fillTable('feattable', rows, [{f: 'order', num: true}, {f: 'group'}, {f: 'feature'},
-      {f: 'status', pill: true, after: (r) => (pendingKeys.has('features/' + r.id) ? '변경 요청 중' : '')}, {f: 'detail'}]);
+      {f: 'status', pill: true, after: (r) => {
+        const open = checksFor(r.id).filter((c) => c.status === '대기' || c.status === '실패');
+        return [pendingKeys.has('features/' + r.id) ? '변경 요청 중' : '', open.length ? '확인 ' + open.length + '건 남음' : ''].filter(Boolean).join(' · ');
+      }}, {f: 'detail'}]);
   }
 
   // ---- 알려진 문제
@@ -460,7 +488,7 @@ const D = /*SOLO_DATA*/null;
   const show1 = (v) => v == null ? '—' : typeof v === 'string' ? v : JSON.stringify(v);
   // 줄 이름: 지금 데이터에서 찾고(처리된 요청은 check 가 없다), 없으면 요청에 적힌 줄
   const rowName = (c, row) => {
-    const list = {features: D.features, workflows: D.workflows, stages: D.stages}[c.dataset] || [];
+    const list = {features: D.features, workflows: D.workflows, stages: D.stages, checks: C}[c.dataset] || [];
     const key = c.dataset === 'stages' ? 'order' : 'id';
     row = row || list.find((r) => String(r[key]) === String(c.key)) || c.row;
     if (!row) return String(c.key);
@@ -587,6 +615,68 @@ const D = /*SOLO_DATA*/null;
     return card;
   }
 
+  // ---- 내 확인: 상태 단추를 누르면 메모와 함께 바로 저장(POST /api/checks/<id>). 다른 카드의 쓰던 메모가
+  // 지워지지 않게 저장한 카드와 칩만 다시 그린다
+  const CHECK_ORDER = ['실패', '대기', '보류', '통과'];
+  const whenKo = (t) => t ? new Date(t).toLocaleString('ko-KR') : '';
+  const drawCheckChips = () => chips('checkfilter', CHECK_STATUS, (s) => C.filter((c) => c.status === s).length, C.length, state.check,
+    (v) => { state.check = v; drawChecks(); });
+  function drawChecks() {
+    $('checks-mode').textContent = LIVE ? '' : '파일로 열어서 보기만 됩니다. 상태 바꾸기는 open-dashboard.bat 으로 연 현황판에서 할 수 있습니다.';
+    drawCheckChips();
+    const list = C.filter((c) => !state.check || c.status === state.check).slice()
+      .sort((a, b) => CHECK_ORDER.indexOf(a.status) - CHECK_ORDER.indexOf(b.status));
+    if (!list.length) { $('checklist').replaceChildren(h('div', 'card empty', state.check ? '이 상태인 항목이 없습니다.' : '확인할 항목이 없습니다.')); return; }
+    $('checklist').replaceChildren(...list.map(checkCard));
+  }
+  function checkCard(c) {
+    const card = h('article', 'pr chk-' + c.status);
+    card.id = 'chk-' + c.id;
+    const head = h('header'), top = h('div', 'top');
+    top.append(h('span', 'pill ' + stCls(c.status), c.status), h('h2', '', c.title));
+    const feat = D.features.find((f) => f.id === c.feature);
+    head.append(top, h('span', 'meta', [feat ? '기능: ' + feat.feature : '', c.updated ? '바꾼 때 ' + whenKo(c.updated) : '아직 안 해 봄', c.id].filter(Boolean).join(' · ')));
+    card.appendChild(head);
+    const sec = (title, ...kids) => { const s = h('section', 'sec'); s.append(h('h3', '', title), ...kids); card.appendChild(s); return s; };
+    const ol = h('ol', 'how'); (c.how || []).forEach((x) => ol.append(h('li', '', x)));
+    sec('어떻게', ol);
+    sec('이러면 통과', h('p', 'text', c.expect || ''));
+    if (c.proposal) {
+      const b = h('button', 'linkbtn', c.proposal); b.type = 'button';
+      b.addEventListener('click', () => { show('review'); const t = $('pr-' + c.proposal); if (t) t.scrollIntoView({behavior: 'smooth'}); });
+      sec('관련 검토 요청', b);
+    }
+    const d = h('div', 'decide');
+    const ta = h('textarea'); ta.value = c.note || ''; ta.placeholder = '본 것·메모 (실패·보류면 꼭 적어 주세요)';
+    const seg = h('div', 'seg'), msg = h('span', 'msg');
+    seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', '상태');
+    CHECK_STATUS.forEach((s) => {
+      const b = h('button', 's-' + s, s); b.type = 'button';
+      b.setAttribute('aria-pressed', String(c.status === s));
+      b.disabled = !LIVE;
+      b.addEventListener('click', async () => {
+        if ((s === '실패' || s === '보류') && !ta.value.trim()) { msg.className = 'msg err'; msg.textContent = '무엇을 봤는지 메모에 적어 주세요.'; ta.focus(); return; }
+        seg.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+        msg.className = 'msg'; msg.textContent = '저장하는 중…';
+        try {
+          const r = await fetch('/api/checks/' + encodeURIComponent(c.id), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: s, note: ta.value})});
+          const j = await r.json();
+          if (!j.ok) throw new Error(j.error);
+          Object.assign(c, j.check);
+          const fresh = checkCard(c);
+          card.replaceWith(fresh);
+          fresh.querySelector('.msg').textContent = '저장했습니다.';
+          drawCheckChips(); checkBadge();
+        } catch (e) { msg.className = 'msg err'; msg.textContent = e.message; seg.querySelectorAll('button').forEach((x) => { x.disabled = false; }); }
+      });
+      seg.append(b);
+    });
+    const row = h('div', 'row'); row.append(seg, msg);
+    d.append(ta, row);
+    sec('결과', d);
+    return card;
+  }
+
   // ---- 개발 기록
   function drawDev() {
     const TYPES = ['feat', 'fix', 'docs', 'release', '기타'];
@@ -632,7 +722,7 @@ const D = /*SOLO_DATA*/null;
   }
 
   // ---- 탭
-  const PAGES = {overview: drawOverview, review: drawReview, features: drawFeatures, howto: drawHowto, issues: drawIssues, content: drawContent, dev: drawDev};
+  const PAGES = {overview: drawOverview, checks: drawChecks, review: drawReview, features: drawFeatures, howto: drawHowto, issues: drawIssues, content: drawContent, dev: drawDev};
   function show(tab) {
     state.tab = PAGES[tab] ? tab : 'overview';
     document.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === state.tab)));
@@ -644,11 +734,13 @@ const D = /*SOLO_DATA*/null;
   document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
   let resizeTimer;
   // 차트가 있는 탭만 다시 그린다 — 검토 요청 탭을 다시 그리면 쓰던 의견이 지워진다
-  const NO_REDRAW = new Set(['review', 'features', 'issues', 'howto']);
+  const NO_REDRAW = new Set(['checks', 'review', 'features', 'issues', 'howto']);
   window.addEventListener('resize', () => {
     if (NO_REDRAW.has(state.tab)) return;
     clearTimeout(resizeTimer); resizeTimer = setTimeout(() => PAGES[state.tab](), 150);
   });
+  // 주소의 #탭 을 직접 바꾸거나 뒤로 가기 했을 때도 그 탭으로
+  window.addEventListener('hashchange', () => { if (location.hash.slice(1) !== state.tab) show(location.hash.slice(1)); });
   show(location.hash.slice(1));
 })();
 </script>

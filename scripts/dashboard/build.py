@@ -7,7 +7,7 @@
 코드에서 읽는 것: 버전, 지금 기본 모델(config.yaml), 기본 봇(personas/default_bots.yaml), 게임 프로필,
                  알려진 문제 표(docs/KNOWN_ISSUES.md), 평가 러너, src 코드 줄 수, 커밋.
 손으로 적는 것(data/): features.json 기능 상태(docs/확장_로드맵.md 와 맞출 것), stages.json 확장 단계 이름,
-                      workflows.json 개발 순서.
+                      workflows.json 개발 순서, checks.json 사용자가 실제 앱에서 확인할 것(상태는 사용자가 현황판에서).
 """
 from __future__ import annotations
 
@@ -136,6 +136,7 @@ def build() -> str:
         "built": datetime.now(timezone.utc).isoformat(), "head": git("rev-parse", "--short", "HEAD").strip(),
         "version": version(),
         "features": read_data("features"), "stages": read_data("stages"), "workflows": read_data("workflows"),
+        "checks": read_data("checks"),
         "models": models(), "bots": bots(), "profiles": profiles(), "issues": issues(),
         "code": code(), "tests": tests(), "commits": commits(), "proposals": load_proposals(),
     }

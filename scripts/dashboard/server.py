@@ -63,8 +63,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # 승인·반려: POST /api/proposals/<id>/approve|reject  {comment}
-        m = re.fullmatch(r"/api/proposals/([^/]+)/(approve|reject)", urlparse(self.path).path)
-        if not m:
+        # 확인 항목 상태: POST /api/checks/<id>  {status, note}
+        path = urlparse(self.path).path
+        m = re.fullmatch(r"/api/proposals/([^/]+)/(approve|reject)", path)
+        mc = re.fullmatch(r"/api/checks/([^/]+)", path)
+        if not m and not mc:
             return self._send(404, "없음")
         origin = self.headers.get("Origin")
         if origin and origin not in ORIGINS:
@@ -74,13 +77,19 @@ class Handler(BaseHTTPRequestHandler):
             if length > 20000:
                 raise ValueError("너무 큼")
             body = json.loads(self.rfile.read(length) or b"{}")
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if mc:
+                cid = unquote(mc.group(1))
+                row = proposals.set_check(cid, str(body.get("status") or ""), str(body.get("note") or "")[:2000])
+                print(now, "확인", cid, row["status"], row["note"], flush=True)
+                return self._json(200, {"ok": True, "check": row})
             comment = str(body.get("comment") or "")[:2000]
             pid, action = unquote(m.group(1)), m.group(2)
             p = (proposals.approve if action == "approve" else proposals.reject)(pid, comment)
-            print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "승인" if action == "approve" else "반려", pid, comment, flush=True)
+            print(now, "승인" if action == "approve" else "반려", pid, comment, flush=True)
             self._json(200, {"ok": True, "status": p["status"]})
         except Exception as e:
-            # 실패는 대개 충돌·이미 처리함(409). 화면이 error 문구를 그대로 보여 준다
+            # 실패는 대개 충돌·이미 처리함·모르는 값(409). 화면이 error 문구를 그대로 보여 준다
             self._json(409, {"ok": False, "error": str(e)})
 
 

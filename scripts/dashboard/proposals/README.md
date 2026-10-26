@@ -37,7 +37,8 @@ proposals/<id>/*.png           스크린샷(proposal.json 의 screenshots 에 �
 
 - `status`: 올릴 때는 늘 `pending`. `approved`·`rejected` 와 `decision`(시각·의견)은 현황판이 적는다. 손으로 바꾸지 않는다.
 - `changes`: 현황판 데이터에서 바뀌는 줄. 없으면 빈 배열(코드만 바뀐 보고).
-  - `dataset`: `features`(키 `id`) · `stages`(키 `order`) · `workflows`(키 `id`, 단계는 `steps` 통째로 바꾼다)
+  - `dataset`: `features`(키 `id`) · `stages`(키 `order`) · `workflows`(키 `id`, 단계는 `steps` 통째로 바꾼다) · `checks`(키 `id`, 사용자 확인 항목)
+  - `checks` 는 새 항목 `add` 만 올린다. 줄 모양: `{"id", "feature", "title", "how": [단계…], "expect", "status": "대기", "note": "", "updated": null, "proposal"}`. `status`·`note` 는 사용자가 '내 확인' 탭에서 바꾸므로 상신으로 고치지 않는다.
   - `op: "update"` — `set` 의 칸을 바꾼다. **`from` 에 지금 값을 꼭 적는다.** 승인할 때 지금 값과 다르면 충돌로 막힌다(다른 요청이 먼저 바꾼 경우).
   - `op: "add"` — `row` 에 새 줄 전체. `op: "remove"` — 그 줄을 지운다.
 - `tests[].result`: `통과` · `실패` · `건너뜀`. 실패도 숨기지 않고 적는다. 테스트가 없으면 현황판이 경고를 띄운다.
