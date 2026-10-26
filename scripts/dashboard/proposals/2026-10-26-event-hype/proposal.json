@@ -19,7 +19,7 @@
   "tests": [
     {"name": "지난 리플레이 재계산(이벤트 끔/켬)", "result": "통과", "detail": "11개 309라운드, 흥분 발동 79 → 79(새로 0·사라짐 0) — 사소한 이벤트로 안 터짐"},
     {"name": "등급·잔불·방향 손 점검", "result": "통과", "detail": "획득·확인 창·'물리 공격' 0, 보스 처치 후 0.85→0.47→0.26, 사망+봇 ㅋㅋ 메아리·보스 등장은 '격하게 들썩', weight 0 이면 0"},
-    {"name": "리플레이 300~705초", "result": "통과", "command": "venv\Scripts\python tests/replay/run.py --start 300 --end 705 --tag event_hype_300_705", "detail": "45라운드 오류 0, 흥분 발동 7(전부 발화·채팅발). 화면 분석이 쓴 큰 장면 이벤트 0 — 효과는 이 샘플로 못 봄"},
+    {"name": "리플레이 300~705초", "result": "통과", "command": "venv/Scripts/python tests/replay/run.py --start 300 --end 705 --tag event_hype_300_705", "detail": "45라운드 오류 0, 흥분 발동 7(전부 발화·채팅발). 화면 분석이 쓴 큰 장면 이벤트 0 — 효과는 이 샘플로 못 봄"},
     {"name": "실제 보스전", "result": "건너뜀", "detail": "사용자가 run.bat 으로 보스전·사망 장면 확인 필요"}
   ],
   "screenshots": [],
