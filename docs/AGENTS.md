@@ -11,6 +11,7 @@
 |------|-------------|
 | `solo_stream_기획서.md` | v2.0 기획서. 핵심 기능(Vision/Chat/STT/Overlay), 페르소나 시스템, 멀티프로세스 아키텍처, AI 모델 추상화 원칙(`src/ai/model_client.py`가 유일 진입점), 비용 설계, Phase 1/2/3 로드맵, config.yaml 전체 스키마. **새 기능 설계 시 이 문서의 원칙(특히 §4.2 AI 클라이언트 추상화)을 위배하지 말 것.** |
 | `wiki/` | 실측·결정·검증 방법 위키(주제별, 오래 남길 것). 규칙은 `wiki/README.md` |
+| `확장_로드맵.md` | v0.4.1 이후 확장 단계(1 이벤트 반응 → 2 세션 기억 → 3 방송 경제 → 4 OBS 위젯 → 5 상호작용 → 6 TTS·클립 → 7 기반)와 기능별 설계. 진행 상태는 개발 현황판 `scripts/dashboard/data/features.json` 이 기준 |
 | `음성인식_기능_추가_계획.md` | Phase 2 STT 도입 계획서 — silero-vad + Gemini Audio 백엔드 선택 근거, VAD 파라미터, 봇 호출(@봇이름) 시나리오 |
 
 ## For AI Agents

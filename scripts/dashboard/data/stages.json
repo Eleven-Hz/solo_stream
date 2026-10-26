@@ -1,0 +1,10 @@
+[
+ {"order": 1, "title": "이벤트에 채팅이 몰림", "note": "hype.py 에 Vision 이벤트 연결"},
+ {"order": 2, "title": "세션 간 기억", "note": "방송 일지 → 다음 세션"},
+ {"order": 3, "title": "가짜 방송 경제", "note": "시청자 수·후원·입장"},
+ {"order": 4, "title": "OBS 위젯", "note": "websocket 재사용"},
+ {"order": 5, "title": "상호작용", "note": "투표·미션·직접 입력"},
+ {"order": 6, "title": "TTS·클립", "note": "새 외부 의존성"},
+ {"order": 7, "title": "기반·생태계", "note": "프리셋·공유·로컬 모델·공개"},
+ {"order": 8, "title": "보류", "note": "따로 논의할 것"}
+]

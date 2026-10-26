@@ -47,3 +47,6 @@ tests/*/output/
 
 # 설정 창 시청자 봇 페이지 저장 파일 (DEV 모드면 personas/ 에 생김)
 personas/settings_bots.yaml
+
+# 개발 현황판 빌드 결과 (build.py 가 매번 새로 만든다)
+scripts/dashboard/out/
