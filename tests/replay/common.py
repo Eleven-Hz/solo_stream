@@ -114,6 +114,10 @@ class ChatRound:
         self.habits = BotHabits()
         self.prev_names: list[str] = []
         self.last_chats: list[dict] = []
+        # 흥분도(main 의 compute_hype → build_hype_profile): 메아리 감쇠 + 화면 이벤트 잔불
+        self.event_weight = float(chat_cfg.get("event_hype_weight", 1.0))
+        self.prev_hyped = False
+        self.glow = (0.0, 0.0)
 
     def run(self, client, *, vision: str, speech: list[dict], profile_ctx: str,
             batch_names: list[str] | None = None, rng: random.Random | None = None,
@@ -121,18 +125,30 @@ class ChatRound:
         """batch_names 를 주면 그 봇들로 고정(compare_chat), 없으면 main 처럼 선정."""
         from src import main as app
         from src.chat import flow
+        from src.chat.hype import build_hype_profile, compute_hype, event_hype, next_event_glow
         from src.chat.topic_guard import limit_round_topics
         rng = rng or random.Random()
         mentioned = app._detect_mentioned_bots(speech, self.pool)
         mnames = [b["name"] for b in mentioned]
-        size = self.instant_batch if speech_round else self.batch_size
+        speech_texts = [u["text"] for u in speech]
+        # 흥분도 — 화면 이벤트 잔불은 화면 분석 라운드에서만 줄어든다
+        if not speech_round:
+            ev = next((ln[len("이벤트:"):].strip() for ln in vision.splitlines() if ln.startswith("이벤트:")), "")
+            self.glow = next_event_glow(self.glow, event_hype(ev))
+        sig = compute_hype(speech_texts, [c.get("message", "") for c in self.history[-8:]],
+                           chat_echo_damp=0.15 if self.prev_hyped else 1.0,
+                           event=self.glow, event_weight=self.event_weight)
+        thr = (app.HYPE_THRESHOLD_AFTER_HYPE if self.prev_hyped and sig.event < app.HYPE_THRESHOLD
+               else app.HYPE_THRESHOLD)
+        prof = build_hype_profile(sig, base_delay_min=1.0, base_delay_max=8.0, threshold=thr)
+        self.prev_hyped = prof.hype >= thr
+        size = self.instant_batch if speech_round else self.batch_size + prof.extra_batch
         if batch_names is not None:
             batch = mentioned + [b for b in self.pool if b["name"] in batch_names and b not in mentioned]
             batch = batch[:max(size, len(batch_names))]
         else:
             batch = flow.pick_batch(self.pool, size, must=mentioned, prev_names=self.prev_names,
                                     carry=self.carry, rng=rng)
-        speech_texts = [u["text"] for u in speech]
         batch = self.habits.annotate(batch, " ".join([vision] + speech_texts))
         hot = flow.exempt_current(self.tracker.hot_keys(), vision, speech_texts)
         reply = None if speech_round else flow.pick_reply(batch, self.last_chats, chance=self.reply_chance,
@@ -142,6 +158,7 @@ class ChatRound:
         raw = client.generate_chats(game_context=vision, bots=batch, chat_history=self.history,
                                     game_profile_context=profile_ctx, user_speech=speech or None,
                                     default_speech_weight=weight, mentioned_names=mnames,
+                                    mood_hint=prof.mood_hint or None,
                                     roster=self.pool, avoid_topics=hot, round_notes=notes)
         sec = time.perf_counter() - t0
         names = {b["name"] for b in batch}
@@ -159,6 +176,8 @@ class ChatRound:
         return {"chats": chats, "raw": raw, "dropped": [[c, k] for c, k in dropped + habit_dropped],
                 "mentioned": mnames, "hot": hot, "batch": [b["name"] for b in batch],
                 "reply": [reply[0], reply[1]] if reply else None, "notes": notes, "speech_round": speech_round,
+                "hype": {"hype": round(prof.hype, 2), "valence": round(sig.valence, 2), "event": sig.event,
+                         "extra_batch": prof.extra_batch, "mood": prof.mood_hint[:12]} if self.prev_hyped else None,
                 "sec": round(sec, 2), "in_tokens": dbg.in_tokens, "out_tokens": dbg.out_tokens,
                 "error": dbg.error}
 
@@ -202,6 +221,8 @@ def chat_metrics(rounds: list[dict], price: tuple[float, float] | None, interval
            "avg_sec": round(sum(r["sec"] for r in rounds) / max(1, len(rounds)), 2),
            "errors": sum(1 for r in rounds if r.get("error"))}
     out["speech_rounds"] = sum(1 for r in rounds if r.get("speech_round"))
+    out["hype_rounds"] = sum(1 for r in rounds if r.get("hype"))
+    out["event_hype_rounds"] = sum(1 for r in rounds if (r.get("hype") or {}).get("event"))
     if pool_names:
         out["bot_mentions"] = sum(1 for r in rounds for c in r["chats"]
                                   if any(n in c["message"] for n in pool_names if n != c["name"]))

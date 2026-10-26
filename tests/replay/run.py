@@ -38,6 +38,8 @@ def main():
     ap.add_argument("--seed", type=int, default=1, help="라운드별 발언 봇 구성 seed")
     ap.add_argument("--no-instant", action="store_true", help="발화 즉시 반응 라운드 끄기")
     ap.add_argument("--no-stt-hint", action="store_true", help="받아쓰기에 게임 고유명사 힌트 안 붙이기")
+    ap.add_argument("--event-weight", type=float, default=None,
+                    help="화면 이벤트 흥분도 비중(chat.event_hype_weight, 0 = 끔 — 전후 비교용)")
     ap.add_argument("--tag", default=None)
     args = ap.parse_args()
 
@@ -49,6 +51,8 @@ def main():
     from src.utils.config_loader import load_config
 
     config = load_config()
+    if args.event_weight is not None:
+        config.setdefault("chat", {})["event_hype_weight"] = args.event_weight
     vcfg, ccfg = config_with(config, "vision", args.vision), config_with(config, "chat", args.chat)
     keys = api_keys(config)
     vision_client = create_vision_client(vcfg, **keys)

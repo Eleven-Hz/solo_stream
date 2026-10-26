@@ -311,7 +311,7 @@ def ai_process(
     from src.chat.orchestrator import schedule_chats
     from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
     from src.chat.emotion import EmotionState, update_emotions
-    from src.chat.hype import compute_hype, build_hype_profile
+    from src.chat.hype import compute_hype, build_hype_profile, event_hype, next_event_glow
     from src.export.websocket import broadcast, start_broadcaster
     from src.utils.logger import get_chat_logger
 
@@ -365,6 +365,8 @@ def ai_process(
     # 대화 흐름(src/chat/flow.py): 직전 발언자 일부를 이어서 출석시키고, 1명은 앞 채팅을 받아친다.
     carry_over = int(chat_cfg.get("carry_over", 1))
     reply_chance = float(chat_cfg.get("reply_chance", 0.7))
+    # 화면 이벤트(보스·사망 등 큰 장면)가 흥분도에 주는 비중. 0 이면 이벤트로는 채팅이 몰리지 않는다.
+    event_weight = float(chat_cfg.get("event_hype_weight", 1.0))
     bot_habits = flow.BotHabits()
     from src.chat.lookup import LookupDesk
     web_search = bool(chat_cfg.get("web_search", True))
@@ -494,6 +496,8 @@ def ai_process(
     # 생성)이 이번 hype 입력으로 되먹임돼 분위기가 봇 메아리만으로 눈덩이처럼 커진다
     # (부정 자가발전 루프). 발동 직후 라운드는 채팅 신호를 감쇠해 메아리를 끊는다.
     prev_round_hyped = False
+    # 화면 이벤트 잔불 (hype, valence). 큰 장면 뒤 화면 분석 라운드마다 줄어든다(hype.next_event_glow).
+    event_glow = (0.0, 0.0)
     # 봇별 동적 감정 상태 (3신호로 매 라운드 갱신). base는 페르소나 YAML emotion.
     emotion_states: dict = {
         b["name"]: EmotionState(b["name"], b.get("emotion", "평온"), b.get("relationship", ""))
@@ -622,6 +626,7 @@ def ai_process(
                 last_round_chats = []
                 last_game_context = ""
                 last_location = ""
+                event_glow = (0.0, 0.0)
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
                 _log_profile_header(profile_context, game_profile.get("name", "?"))
                 # UI 라벨("재생성 중...")을 완료 상태로 갱신 + 생성 실패 시 안내 표시
@@ -751,18 +756,23 @@ def ai_process(
                     emotion_states, bot_pool, chat_history, event_text, speech_texts,
                 )
 
-            # 흥분도(hype) 계산: 스트리머 발화 + 직전 채팅 톤(ㅋㅋ/ㅠㅠ/강조어)에서
+            # 흥분도(hype) 계산: 스트리머 발화 + 직전 채팅 톤(ㅋㅋ/ㅠㅠ/강조어) + 화면 이벤트 잔불에서
             # hype(0~1)·valence(±)를 뽑아 이번 라운드 타이밍·물량·분위기 힌트를 정한다.
             # 직전 라운드가 발동이었으면 봇 채팅 신호를 감쇠(0.3)해 ㅋㅋ/ㅠㅠ 메아리가
-            # 분위기를 자가발전시키는 걸 끊는다. 발화 신호는 감쇠하지 않는다.
+            # 분위기를 자가발전시키는 걸 끊는다. 발화·화면 이벤트 신호는 감쇠하지 않는다.
+            if not speech_round:
+                event_glow = next_event_glow(event_glow, event_hype(event_text))
             recent_chat_texts = [c.get("message", "") for c in chat_history[-8:]]
             echo_damp = 0.15 if prev_round_hyped else 1.0
             hype_signal = compute_hype(
                 speech_texts, recent_chat_texts, chat_echo_damp=echo_damp,
+                event=event_glow, event_weight=event_weight,
             )
             # 감쇠 라운드는 임계값을 올려, 메아리만 남은 경계 케이스(감쇠 후 hype가
             # 임계값 바로 위)도 평소로 되돌린다 — 발동을 "한 박자 쉬게" 한다.
-            round_threshold = HYPE_THRESHOLD_AFTER_HYPE if prev_round_hyped else HYPE_THRESHOLD
+            # 단 화면 이벤트 잔불만으로 평소 임계값을 넘으면(보스전 직후) 메아리가 아니므로 평소 임계값.
+            echo_only = prev_round_hyped and hype_signal.event < HYPE_THRESHOLD
+            round_threshold = HYPE_THRESHOLD_AFTER_HYPE if echo_only else HYPE_THRESHOLD
             hype_profile = build_hype_profile(
                 hype_signal, base_delay_min=delay_min, base_delay_max=delay_max,
                 threshold=round_threshold,
@@ -773,6 +783,7 @@ def ai_process(
                     f"흥분 감지 hype={hype_profile.hype:.2f} val={hype_signal.valence:+.2f} "
                     f"→ delay={hype_profile.delay_min}~{hype_profile.delay_max} "
                     f"+batch={hype_profile.extra_batch} skip_relief={hype_profile.skip_relief}"
+                    f"{f' (화면 이벤트 {hype_signal.event:.2f})' if hype_signal.event else ''}"
                     f"{' (메아리 감쇠 적용)' if prev_round_hyped else ''}"
                 )
             prev_round_hyped = round_hyped
@@ -902,6 +913,7 @@ def ai_process(
                     f"[흥분] hype={hype_profile.hype:.2f} val={hype_signal.valence:+.2f}"
                     f" → delay={hype_profile.delay_min}~{hype_profile.delay_max}"
                     f" +batch={hype_profile.extra_batch} skip_relief={hype_profile.skip_relief}"
+                    f"{f' (화면 이벤트 {hype_signal.event:.2f})' if hype_signal.event else ''}"
                     f"{' (메아리 감쇠)' if echo_damp < 1.0 else ''}"
                     if round_hyped else ""
                 ),

@@ -44,6 +44,9 @@ chat:
   # reply_chance 확률로 1명이 앞 채팅을 받아친다(봇의 react_to_others/react_chance 적용).
   carry_over: 1
   reply_chance: 0.7
+  # 화면 이벤트(보스 등장·처치, 사망, HP 위기, 레벨업)가 흥분도에 주는 비중(src/chat/hype.py event_hype).
+  # 큰 장면이면 말없이 플레이해도 채팅이 빠르게·많이 뜨고 2라운드쯤 잦아든다. 아이템 획득·확인 창은 안 셈. 0 = 끔.
+  event_hype_weight: 1.0
   # 정확한 정보 봇(페르소나 accurate: true — 고인물킹)이 스트리머 질문을 맡으면 웹 검색해서 따로 답한다
   # (src/chat/lookup.py). 채팅 모델(openai·gemini)의 검색 도구 사용 — 검색 호출 단가는 일반 채팅보다 비싸다.
   # 설정 'AI 모델 · 키' 페이지에서 토글.
