@@ -3,14 +3,18 @@
 - 사용자 game_profiles/{게임명}.yaml 이 있으면 로드, 없으면 번들(앱과 함께 배포된) 프로필
 - 없으면: 기본은 '프로필 없음'(빈 프로필 + missing 표시) — 사용자가 build_manual_prompt() 를
   구독 채팅에 붙여넣고 받은 결과를 parse_profile_text()/save_profile() 로 넣는다(비용 0).
-  auto_generate=True 일 때만 Gemini (Google Search grounding) 멀티턴으로 자동 생성 후 저장.
+  auto_generate=True 일 때만 웹 검색(OpenAI web_search · Gemini grounding) 멀티턴으로 자동 생성 후 저장.
+  생성에 실패하면 기존 프로필을 그대로 둔다.
 
 생성 파이프라인:
-  1단계: 기본 정보 (장르, 개발사, 스토리, 분위기)
+  1단계: 기본 정보 (장르, 개발사, 스토리, 분위기) + 주요 인물
   2단계: 전투 시스템 + 주요 지역
   3단계: 보스/몬스터 + 스킬/기술
   4단계: 커뮤니티 밈 / 채팅 포인트 (chat_tips 전용 심화 검색)
-  5단계: 고유명사 한국어 번역 검수 (지역명, 보스명, 스킬명)
+  5단계: 고유명사 한국어 번역 검수 (인물명, 지역명, 보스명, 스킬명)
+
+프로필은 채팅 프롬프트에 매 라운드 통째로 들어가므로(build_profile_context) 항목 수·설명 길이가
+곧 런타임 비용이다. 생성 프롬프트는 '많이'가 아니라 '확인된 것만 짧게'를 요구한다.
 """
 import json
 import logging
@@ -36,41 +40,26 @@ _PROFILE_DIR = paths.user_data_dir() / "game_profiles"
 # 앱과 함께 배포되는 읽기전용 프로필. 사용자 폴더에 같은 이름이 없을 때만 읽는다
 # (사용자가 만들거나 고친 프로필이 항상 이긴다 — 업데이트로 덮어쓰지 않음).
 _BUNDLED_PROFILE_DIR = paths.resource_dir() / "game_profiles"
-_DEFAULT_PROFILE_MODEL = "gemini-2.5-flash"
+_DEFAULT_PROFILE_MODEL = "gpt-6-luna"
+# 이 중 하나는 있어야 쓸 만한 프로필로 본다(전부 비면 저장하지 않음).
+_CONTENT_FIELDS = ("description", "characters", "systems", "locations", "enemies", "skills")
 
-# ── few-shot 예시 (CrossCode) ──────────────────────────────────────────────────
+# ── few-shot 예시 (CrossCode, 1단계 출력 형태) ──────────────────────────────────
 _FEW_SHOT_EXAMPLE = """예시 출력 (CrossCode 기준):
 {
   "name": "CrossCode (크로스코드)",
-  "description": "Radical Fish Games 개발. 기억을 잃은 주인공 '레아'가 가상현실 MMO 'CrossWorlds'의 진실을 파헤치는 2D 액션 RPG. 고속 전투와 고난도 퍼즐이 특징.",
-  "systems": [
-    "실시간 8방향 전투: 근접(칼)과 원거리(구체 투척) 전환",
-    "4속성 시스템: 무색/화염/냉기/전격을 실시간 교체",
-    "Circuit 성장 트리: SP 투자로 스탯·스킬 해금",
-    "Combat Arts: SP 소모 필살기",
-    "Break 시스템: 약점 속성으로 적 무력화"
-  ],
-  "locations": [
-    "초보자 항구 (Rookie Harbor): 시작 허브 도시",
-    "베르겐 트레일 (Bergen Trail): 눈 덮인 산악, 냉기 퍼즐",
-    "파즈로 템플 (Faj'ro Temple): 화염 테마 던전"
-  ],
-  "enemies": [
-    "고슴됴치 (Hedgehag): 상징적인 기본 몬스터",
-    "아폴로 (Apollo): 라이벌 스피어맨 보스",
-    "고대 수호자 (Ancient Guardian): 튜토리얼 거대 석상 보스"
-  ],
-  "skills": [
-    "스피어 슬래시 (Sphere Slash): 기본 근접 콤보",
-    "가드 스피어 (Guard Sphere): 전방위 방어막",
-    "파이로 댄스 (Pyro Dance): 화염 회전 근접기"
-  ],
-  "chat_tips": [
-    "레아의 한정 대사: 'Hi!', 'Lea!' 등 몇 단어만 구사 → 새 단어 습득 시 시청자 축하 문화",
-    "아폴로 연설 밈: 장황한 정의 선언 시작되면 '또 시작됐네', 'Justice!' 채팅 폭발",
-    "퍼즐 고통 밈: 난이도 높은 퍼즐에서 '뇌절', '지능 테스트' 자주 등장"
+  "description": "Radical Fish Games 개발. 기억을 잃은 주인공 '레아'가 가상현실 MMO '크로스월드'의 진실을 파헤치는 2D 액션 RPG. 고속 전투와 고난도 퍼즐이 특징.",
+  "characters": [
+    "레아 (Lea): 주인공. 처음엔 '안녕'만 말할 수 있음",
+    "세르게이 (Sergey): 레아를 돕는 연구원, 단어를 하나씩 추가해 줌"
   ]
 }"""
+
+# 모든 검색 단계 공통 규칙. 개수를 채우려고 지어낸 항목이 봇의 '틀린 사실 단정'(KNOWN_ISSUES 4-6·4-7)
+# 으로 이어지므로 '못 채워도 된다'를 명시한다. 설명 길이 제한은 런타임 프롬프트 비용 절감용.
+_RULES = """규칙:
+- 검색으로 확인된 것만. 확인 안 되는 이름·설정은 지어내지 말고 빼세요 (개수를 못 채워도 됩니다).
+- 설명은 30자 안팎 한 줄. 미사여구·중복 설명 금지."""
 
 # ── 단계별 프롬프트 ──────────────────────────────────────────────────────────
 
@@ -79,41 +68,47 @@ _STEP1_PROMPT = """인터넷에서 "{game_name}" 게임의 기본 정보를 검�
 
 {few_shot}
 
+{rules}
+- 인물은 처음 만날 때 알 수 있는 정보만. 후반 반전(정체·배신·죽음)은 쓰지 마세요.
+
 위 예시와 같은 수준으로 아래 JSON만 출력하세요 (마크다운 금지):
 {{
   "name": "게임 정식 명칭 (한국어 공식명 있으면 병기, 예: CrossCode (크로스코드))",
-  "description": "장르, 개발사, 핵심 스토리, 분위기를 2~3문장으로. 공식 소개 수준의 구체성.",
-  "genre": "장르 키워드 (예: 2D 액션 RPG, 로그라이크, 소울라이크 등)"
+  "description": "장르, 개발사, 핵심 스토리, 분위기를 2~3문장으로.",
+  "characters": [
+    "주인공·동료·주요 NPC 5~8명. 각 항목: '한국어명 (영문 원어명): 역할·주인공과의 관계 한 줄'.",
+    "이름 있는 인물이 없는 게임(레이싱·전략 등)이면 빈 배열"
+  ]
 }}"""
 
 _STEP2_PROMPT = """인터넷에서 "{game_name}" 게임의 전투 시스템과 주요 지역을 검색하세요.
 게임 위키, 공략 사이트, 나무위키를 참고하세요.
 
+{rules}
+
 아래 JSON만 출력 (마크다운 금지):
 {{
   "systems": [
-    "실제 존재하는 시스템 10개 이상. 각 항목: '시스템명: 한 줄 설명' 형식.",
-    "HP/MP/스태미나 구조, 전투 메카닉, 성장 시스템, 특수 게이지 등 포함",
-    "한국어 공식/팬덤 번역명 있으면 반드시 병기. 예: Circuit (회로 성장 트리)"
+    "핵심 시스템 6~10개. 각 항목: '시스템명 (원어명): 한 줄 설명' 형식.",
+    "전투 메카닉, 성장, 자원/특수 게이지 위주. 한국어 공식/팬덤 번역명 병기"
   ],
   "locations": [
-    "실제 존재하는 주요 지역/던전 10개 이상. 각 항목: '한국어명 (영문 원어명): 한 줄 설명' 형식.",
-    "각 지역의 테마, 특징, 해금 시점 포함"
+    "주요 지역/던전 8~12개, 해금 순서대로. 각 항목: '한국어명 (영문 원어명): 테마·특징 한 줄' 형식."
   ]
 }}"""
 
 _STEP3_PROMPT = """인터넷에서 "{game_name}" 게임의 몬스터/보스와 플레이어 스킬을 검색하세요.
 게임 위키, 보스 공략 영상, 나무위키를 참고하세요.
 
+{rules}
+
 아래 JSON만 출력 (마크다운 금지):
 {{
   "enemies": [
-    "실제 등장하는 몬스터/보스 10개 이상. 각 항목: '한국어명 (영문 원어명): 특징 한 줄' 형식.",
-    "일반 몬스터, 미니보스, 메인 보스, 숨겨진 보스 등 구분해서 포함"
+    "자주 마주치는 몬스터·주요 보스 8~12개. 각 항목: '한국어명 (영문 원어명): 특징 한 줄' 형식."
   ],
   "skills": [
-    "플레이어가 실제 사용 가능한 스킬/기술/무기 10개 이상. 각 항목: '한국어명 (영문 원어명): 효과 한 줄' 형식.",
-    "기본기, 특수기, 궁극기, 패시브 등 포함"
+    "플레이어가 쓰는 스킬/기술/무기 6~10개. 각 항목: '한국어명 (영문 원어명): 효과 한 줄' 형식."
   ]
 }}"""
 
@@ -137,16 +132,14 @@ _STEP4_CHAT_TIPS_PROMPT = """인터넷에서 "{game_name}" 게임의 커뮤니�
 
 이 게임의 스트리밍 채팅창에서 시청자들이 자주 치는 반응, 밈, 용어를 찾아야 합니다.
 
+{rules}
+- 'gg'·'ㅋㅋ' 같은 어느 게임에나 있는 반응은 빼고, 이 게임에만 있는 것만.
+
 아래 JSON만 출력 (마크다운 금지):
 {{
   "chat_tips": [
-    "15개 이상의 항목. 각 항목: 구체적인 상황과 채팅 반응을 한 문장으로.",
-    "죽음 연출 반응 (예: 'gg', 'F', '또 죽었다')",
-    "보스 등장 반응 (예: 특정 보스 등장 시 채팅 밈)",
-    "하이라이트 순간 반응",
-    "커뮤니티만 아는 게임 내 밈 용어",
-    "팬덤에서 사용하는 별칭/줄임말",
-    "이 게임만의 독특한 채팅 문화"
+    "8~12개. 각 항목: '상황 → 채팅 반응' 한 문장.",
+    "다룰 것: 특정 보스·장면 밈, 팬덤 별칭/줄임말, 커뮤니티만 아는 용어"
   ]
 }}"""
 
@@ -198,29 +191,15 @@ def _is_retryable(err: Exception) -> bool:
 
 
 def _search(ai_client, prompt: str, model: str) -> str:
-    """Google Search grounding으로 단일 검색 실행.
+    """웹 검색 1회 실행(client.web_search_text — OpenAI web_search 또는 Gemini grounding).
 
     503/UNAVAILABLE 같은 일시적 오류는 지수 백오프로 최대 _MAX_RETRIES 회 재시도한다.
     모든 재시도가 실패하면 마지막 예외를 그대로 raise 한다(호출부가 메시지 수집).
     """
-    from google.genai import types
     last_err: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            response = ai_client._client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                ),
-            )
-            um = getattr(response, "usage_metadata", None)
-            if um is not None:
-                from src.utils import usage
-                usage.record("profile", model, getattr(um, "prompt_token_count", 0) or 0,
-                             (getattr(um, "candidates_token_count", 0) or 0)
-                             + (getattr(um, "thoughts_token_count", 0) or 0))
-            text = (response.text or "").strip()
+            text = ai_client.web_search_text(prompt, model)
             if not text:
                 # 503 등으로 본문이 비어 돌아오는 케이스도 일시적 오류로 취급해 재시도
                 raise RuntimeError("빈 응답(text 없음)")
@@ -247,11 +226,129 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
+def validate_profile(data) -> list[str]:
+    """프로필 형태 검사. 문제를 사람이 읽을 문장 목록으로 돌려준다(없으면 빈 목록).
+
+    프롬프트를 만드는 코드는 목록 항목이 전부 글자라고 믿으므로, 여기를 통과한 것만 쓴다.
+    칸이 없거나 비어 있는 것은 괜찮다. 모르는 키는 건드리지 않는다."""
+    if not isinstance(data, dict):
+        return ["프로필은 '항목: 값' 형식이어야 해요"]
+    errors: list[str] = []
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        errors.append("제목(name)이 없거나 글자가 아니에요")
+    if data.get("description") is not None and not isinstance(data["description"], str):
+        errors.append("설명(description)은 글자여야 해요")
+    for field in PROFILE_LIST_FIELDS:
+        value = data.get(field)
+        if value is None:
+            continue
+        label = f"{PROFILE_LABELS[field]}({field})"
+        if not isinstance(value, list):
+            errors.append(f"{label}은(는) 목록이어야 해요")
+        else:
+            bad = [i for i, item in enumerate(value, 1) if not isinstance(item, str) or not item.strip()]
+            if bad:
+                where = ", ".join(str(i) for i in bad[:5]) + (" 등" if len(bad) > 5 else "")
+                errors.append(f"{label}의 {where}번째 항목이 글자가 아니에요")
+    return errors
+
+
+class _StrictProfileLoader(yaml.SafeLoader):
+    """같은 키가 두 번 나오면 오류로 본다. 기본 로더는 앞의 것을 조용히 버려 대량 편집 중 내용을 잃는다."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if isinstance(key, str) and key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"'{key}' 항목이 두 번 나와요", key_node.start_mark)
+            seen.add(key if isinstance(key, str) else id(key_node))
+        return super().construct_mapping(node, deep=deep)
+
+
+def _yaml_error_text(e: Exception) -> str:
+    mark = getattr(e, "problem_mark", None)
+    where = f"{mark.line + 1}번째 줄: " if mark is not None else ""
+    problem = str(getattr(e, "problem", "") or e).splitlines()[0]
+    if "mapping values" in problem:
+        problem = "콜론(:)이 또 나와요. 그 줄을 따옴표로 감싸세요"
+    elif "두 번" not in problem:
+        problem = "형식이 맞지 않아요. 들여쓰기·따옴표·괄호를 확인하세요"
+    return where + problem
+
+
+def check_profile_text(text: str) -> tuple[dict | None, list[str], list[str]]:
+    """텍스트 편집 칸의 내용을 검사한다. (프로필 | None, 오류 목록, 경고 목록).
+    오류가 하나라도 있으면 프로필은 None — 저장하면 안 된다. 경고는 저장을 막지 않는다."""
+    if not (text or "").strip():
+        return None, ["내용이 비어 있어요"], []
+    try:
+        data = yaml.load(text, Loader=_StrictProfileLoader)
+    except yaml.YAMLError as e:
+        return None, [_yaml_error_text(e)], []
+    if isinstance(data, dict):
+        # '- 이름: 설명' 은 YAML 에서 한 칸짜리 사전이 된다. 사람이 흔히 쓰는 형태라 글자로 되돌린다.
+        for field in PROFILE_LIST_FIELDS:
+            if isinstance(data.get(field), list):
+                data[field] = [_profile_item(x) if isinstance(x, dict) and len(x) == 1 else x for x in data[field]]
+    errors = validate_profile(data)
+    if errors:
+        return None, errors, []
+    known = set(_KNOWN_KEYS) | set(PROFILE_LIST_FIELDS)
+    unknown = [str(k) for k in data if k not in known and not str(k).startswith("_")]
+    warnings = [f"앱이 쓰지 않는 항목이에요(오타일 수 있어요): {', '.join(unknown)}"] if unknown else []
+    return {k: v for k, v in data.items() if not str(k).startswith("_")}, [], warnings
+
+
+def _read_profile_file(path: Path) -> dict:
+    """프로필 파일을 읽고 검사한다. 못 쓰는 파일이면 ValueError(이유)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        raise ValueError(f"파일을 읽지 못했어요: {str(e).splitlines()[0][:100]}") from e
+    errors = validate_profile(data)
+    if errors:
+        raise ValueError(" / ".join(errors))
+    return data
+
+
+def _load_found_profile(game_name: str, found: Path) -> dict:
+    """찾은 파일을 읽는다. 깨졌으면 앱을 멈추지 않고 번들 → 빈 프로필로 진행하고 `_invalid` 로 표시한다.
+    깨진 파일은 사용자가 고칠 수 있게 그대로 둔다."""
+    try:
+        return _read_profile_file(found)
+    except ValueError as e:
+        logger.error(f"게임 프로필이 깨져 있음: {found} — {e}")
+        reason = str(e)
+    bundled = bundled_profile_path_for(game_name)
+    result = None
+    if bundled is not None and bundled != found:
+        try:
+            result = _read_profile_file(bundled)
+        except ValueError as e:
+            logger.error(f"번들 프로필도 읽지 못함: {bundled} — {e}")
+    if result is None:
+        result = _empty_profile(game_name)
+    result["_invalid"] = reason
+    return result
+
+
+def _existing_or_empty(game_name: str, profile_path: Path) -> dict:
+    """자동 생성이 실패했을 때 쓸 프로필: 있던 것(사용자 → 번들), 없으면 빈 프로필."""
+    found = profile_path if profile_path.exists() else bundled_profile_path_for(game_name)
+    if found is not None:
+        return _load_found_profile(game_name, found)
+    return _empty_profile(game_name)
+
+
 def load_profile(game_name: str, ai_client=None, config: dict | None = None,
-                 auto_generate: bool = False) -> dict:
+                 auto_generate: bool = False, model: str | None = None) -> dict:
     """
-    게임 프로필 로드. 파일이 없으면:
-      - auto_generate=True 이고 ai_client 가 있으면 Gemini 검색으로 자동 생성(API 비용)
+    게임 프로필 로드. auto_generate=True 면 ai_client 로 새로 만들어 성공할 때만 교체한다.
+    그 외에 파일이 없으면:
       - 아니면 빈 프로필에 _missing 표시 → UI 가 '프로필 만들기' 안내를 띄운다
     """
     _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -259,23 +356,23 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None,
     filename = _safe_filename(game_name)
     profile_path = _PROFILE_DIR / f"{filename}.yaml"
 
-    # 자동 생성 요청이면 번들 프로필로 대체하지 않는다(사용자가 새로 만들기를 고른 것).
-    found = profile_path if profile_path.exists() else (
-        None if auto_generate else bundled_profile_path_for(game_name))
+    # 자동 생성 요청이면 있는 프로필을 읽지 않고 새로 만든다(사용자가 새로 만들기를 고른 것).
+    generating = auto_generate and ai_client is not None
+    found = None if generating else (
+        profile_path if profile_path.exists() else bundled_profile_path_for(game_name))
     if found is not None:
-        with open(found, "r", encoding="utf-8") as f:
-            profile = yaml.safe_load(f)
+        profile = _load_found_profile(game_name, found)
         src = "" if found == profile_path else " (번들)"
         logger.info(f"게임 프로필 로드{src}: {found.name}")
         return profile
 
-    if ai_client is None or not auto_generate:
+    if not generating:
         logger.warning(f"프로필 없음 — 빈 프로필로 진행(설정에서 만들기 안내): {game_name}")
         result = _empty_profile(game_name)
         result["_missing"] = True
         return result
 
-    model = (config or {}).get("ai", {}).get("profile_model", _DEFAULT_PROFILE_MODEL)
+    model = model or (config or {}).get("ai", {}).get("profile_model", _DEFAULT_PROFILE_MODEL)
     logger.info(f"게임 프로필 없음. 멀티턴 검색으로 자동 생성 중: {game_name} (모델: {model})")
     try:
         profile = _generate_profile(game_name, ai_client, model)
@@ -286,16 +383,39 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None,
             f"게임 프로필 생성 중단 ({e.step}) — 모델({model}) 혼잡(503). "
             f"저장하지 않음, 잠시 후 다시 시도 필요."
         )
-        result = _empty_profile(game_name)
+        result = _existing_or_empty(game_name, profile_path)
         result["_generation_aborted"] = str(e)
+        return result
+
+    # 키·모델 오류면 단계마다 실패해 빈 껍데기만 남는다. 저장하면 기존 프로필을 덮어쓰고,
+    # 다음 실행에 그 빈 파일이 로드되므로 저장하지 않는다.
+    if not any(profile.get(k) for k in _CONTENT_FIELDS):
+        errors = profile.get("_generation_errors") or []
+        logger.error(f"게임 프로필 생성 실패 — 내용 없음, 저장 안 함: {errors[:1]}")
+        result = _existing_or_empty(game_name, profile_path)
+        result["_generation_aborted"] = errors[0] if errors else "검색 결과 없음"
         return result
 
     # 생성 중 발생한 단계 오류는 UI 표시용이라 디스크에는 저장하지 않는다.
     # (오류가 박제되면 다음 실행 때 파일이 그대로 로드돼 재생성 기회를 놓친다)
     errors = profile.get("_generation_errors")
+    invalid = validate_profile({k: v for k, v in profile.items() if not k.startswith("_")})
+    if invalid:
+        logger.error(f"게임 프로필 생성 결과가 형식에 안 맞음, 저장 안 함: {invalid}")
+        result = _existing_or_empty(game_name, profile_path)
+        result["_generation_aborted"] = invalid[0]
+        return result
+    # 일부 단계가 실패한 결과로 멀쩡한 프로필을 덮어쓰지 않는다. 있던 프로필이 없을 때만 부분 결과를 저장한다.
+    if errors and (profile_path.exists() or bundled_profile_path_for(game_name) is not None):
+        logger.error(f"게임 프로필 생성 일부 실패 — 기존 프로필 유지: {errors[:1]}")
+        result = _existing_or_empty(game_name, profile_path)
+        result["_generation_aborted"] = errors[0]
+        return result
     to_save = {k: v for k, v in profile.items() if k != "_generation_errors"}
-    with open(profile_path, "w", encoding="utf-8") as f:
+    tmp_path = profile_path.with_suffix(".yaml.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    tmp_path.replace(profile_path)
     logger.info(f"게임 프로필 저장 완료: {profile_path}")
     if errors:
         logger.warning(f"프로필 생성 중 {len(errors)}개 단계 실패 — 일부 정보 누락 가능")
@@ -308,6 +428,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         "name": game_name,
         "description": "",
         "vision_focus": [],
+        "characters": [],
         "systems": [],
         "locations": [],
         "enemies": [],
@@ -328,21 +449,22 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
         errors.append(f"{step}: {e}")
 
     # ── 1단계: 기본 정보 ────────────────────────────────────────────────────
-    logger.info(f"[1/5] 기본 정보 검색 중...")
+    logger.info(f"[1/5] 기본 정보 + 인물 검색 중...")
     try:
-        prompt = _STEP1_PROMPT.format(game_name=game_name, few_shot=_FEW_SHOT_EXAMPLE)
+        prompt = _STEP1_PROMPT.format(game_name=game_name, few_shot=_FEW_SHOT_EXAMPLE, rules=_RULES)
         text = _search(ai_client, prompt, model)
         data = _parse_json(text)
         profile["name"] = data.get("name", game_name)
         profile["description"] = data.get("description", "")
-        logger.info(f"  → 이름: {profile['name']}")
+        profile["characters"] = _clean_list(data.get("characters", []))
+        logger.info(f"  → 이름: {profile['name']}, 인물 {len(profile['characters'])}명")
     except Exception as e:
         _record_error("1단계(기본 정보)", e)
 
     # ── 2단계: 전투 시스템 + 지역 ───────────────────────────────────────────
     logger.info(f"[2/5] 전투 시스템 + 지역 검색 중...")
     try:
-        prompt = _STEP2_PROMPT.format(game_name=game_name)
+        prompt = _STEP2_PROMPT.format(game_name=game_name, rules=_RULES)
         text = _search(ai_client, prompt, model)
         data = _parse_json(text)
         profile["systems"] = _clean_list(data.get("systems", []))
@@ -354,7 +476,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
     # ── 3단계: 몬스터/보스 + 스킬 ──────────────────────────────────────────
     logger.info(f"[3/5] 몬스터/보스 + 스킬 검색 중...")
     try:
-        prompt = _STEP3_PROMPT.format(game_name=game_name)
+        prompt = _STEP3_PROMPT.format(game_name=game_name, rules=_RULES)
         text = _search(ai_client, prompt, model)
         data = _parse_json(text)
         profile["enemies"] = _clean_list(data.get("enemies", []))
@@ -377,7 +499,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
     # ── 4단계: chat_tips 심화 검색 ──────────────────────────────────────────
     logger.info(f"[4/5] 커뮤니티 밈/채팅 포인트 심화 검색 중...")
     try:
-        prompt = _STEP4_CHAT_TIPS_PROMPT.format(game_name=game_name)
+        prompt = _STEP4_CHAT_TIPS_PROMPT.format(game_name=game_name, rules=_RULES)
         text = _search(ai_client, prompt, model)
         data = _parse_json(text)
         profile["chat_tips"] = _clean_list(data.get("chat_tips", []))
@@ -401,7 +523,7 @@ def _generate_profile(game_name: str, ai_client, model: str) -> dict:
 def _verify_translations(game_name: str, profile: dict, ai_client, model: str) -> dict:
     """수집된 고유명사를 한국어로 검수하고 잘못된 번역을 교정."""
     all_terms: list[str] = []
-    for section in ("locations", "enemies", "skills"):
+    for section in ("characters", "locations", "enemies", "skills"):
         all_terms.extend(profile.get(section, []))
 
     if not all_terms:
@@ -440,7 +562,7 @@ def _verify_translations(game_name: str, profile: dict, ai_client, model: str) -
         return item
 
     # 각 섹션에 교정 적용
-    for section in ("locations", "enemies", "skills"):
+    for section in ("characters", "locations", "enemies", "skills"):
         profile[section] = [_apply_correction(item) for item in profile.get(section, [])]
 
     return profile
@@ -472,6 +594,7 @@ def _empty_profile(game_name: str = "Unknown") -> dict:
         "name": game_name or "Unknown",
         "description": "알 수 없는 게임입니다. 화면을 보고 상황에 맞게 반응하세요.",
         "vision_focus": [],
+        "characters": [],
         "systems": [],
         "locations": [],
         "enemies": [],
@@ -489,6 +612,9 @@ def build_profile_context(profile: dict) -> str:
     lines = [f"[게임: {profile.get('name', '?')}]"]
     if profile.get("description"):
         lines.append(profile["description"])
+    if profile.get("characters"):
+        lines.append("\n주요 인물:")
+        lines.extend(f"  - {s}" for s in profile["characters"])
     if profile.get("systems"):
         lines.append("\n주요 시스템:")
         lines.extend(f"  - {s}" for s in profile["systems"])
@@ -514,6 +640,15 @@ def build_vision_context(profile: dict) -> str:
         lines.append("화면 묘사 시 주목할 항목:")
         for f in profile["vision_focus"]:
             lines.append(f"  - {f}")
+    if profile.get("characters"):
+        lines.append("등장인물 (대화창 이름과 대조):")
+        for c in profile["characters"]:
+            lines.append(f"  - {c.split(':')[0].strip()}")
+        # 주인공을 '파란 아바타' 같은 외형으로 부르면 채팅 봇이 다른 인물과 헷갈린다
+        hero = next((c for c in profile["characters"] if "주인공" in c), None)
+        if hero:
+            name = hero.split(":")[0].split("(")[0].strip()
+            lines.append(f"플레이어 캐릭터: {name} — 묘사·상황에서 조작 중인 주인공은 외형('파란 옷 캐릭터' 등) 대신 '{name}'(이)라고 쓴다")
     if profile.get("locations"):
         lines.append("지역 목록 (화면의 지명과 대조):")
         for loc in profile["locations"]:
@@ -537,15 +672,22 @@ def build_vision_context(profile: dict) -> str:
 # 붙여넣고 받은 YAML 을 앱에 다시 붙여넣는다. 구독 채팅의 웹 검색·리서치가 단계별 API
 # 검색보다 깊고, API 비용이 들지 않는다. 결과 형식은 자동 생성과 같은 프로필 스키마.
 
-PROFILE_SECTIONS = ("vision_focus", "systems", "locations", "enemies", "skills", "chat_tips")
+PROFILE_SECTIONS = ("vision_focus", "characters", "systems", "locations", "enemies", "skills", "chat_tips")
+# 편집·검사 대상 목록 칸. stt_terms 는 사람이 넣는 받아쓰기 힌트라 생성 단계에는 없다.
+PROFILE_LIST_FIELDS = PROFILE_SECTIONS + ("stt_terms",)
+PROFILE_LABELS = {
+    "vision_focus": "화면에서 볼 것", "characters": "인물", "systems": "시스템", "locations": "장소",
+    "enemies": "몬스터·보스", "skills": "스킬", "chat_tips": "채팅 포인트", "stt_terms": "받아쓰기 고유명사",
+}
 
 _MANUAL_PROMPT = """게임 "{game_name}"의 정보를 웹에서 검색해, 이 게임을 실제로 아는 한국 시청자들이 방송 채팅에서 쓸 수 있는 '게임 프로필'을 만들어 주세요.
 (웹 검색 기능을 켜고 공식 사이트·스팀·나무위키·위키피디아·게임 위키·공략 사이트·커뮤니티(레딧, 디시 등)를 참고)
 
 반드시 지킬 것
-- 실제로 게임에 있는 것만. 확인이 안 되는 이름·밈은 지어내지 말고 빼세요.
+- 실제로 게임에 있는 것만. 확인이 안 되는 이름·밈은 지어내지 말고 빼세요 (개수를 못 채워도 됩니다).
 - 고유명사는 '한국어명 (영문 원어명)' 형식. 한국어 공식 번역이 있으면 그것을, 없으면 한국 팬덤에서 통용되는 표기를 쓰세요.
-- 각 항목은 한 줄: '이름: 한 줄 설명'.
+- 각 항목은 한 줄: '이름: 30자 안팎 설명'. 이 프로필은 매 채팅마다 AI에게 통째로 전달되니 짧을수록 좋습니다.
+- 인물은 처음 만날 때 알 수 있는 정보만. 후반 반전(정체·배신·죽음)은 쓰지 마세요.
 - 출처 링크·각주·인용 표시는 넣지 마세요.
 - 결과는 아래 YAML 하나만, ```yaml 코드 블록 하나에 담아 주세요. 앞뒤 설명은 쓰지 마세요.
 
@@ -554,15 +696,17 @@ name: 게임 정식 명칭 (한국어 공식명 있으면 병기. 예: CrossCode
 description: 장르, 개발사, 핵심 스토리, 분위기를 2~3문장으로.
 vision_focus:   # 5~8개. AI가 게임 스크린샷을 볼 때 주목할 시각 요소와 읽는 법. HP 같은 HUD 숫자 읽기는 넣지 말 것
   - 지역 분위기 (배경 색상·지형 — 설원/사막/던전 등)
-systems:        # 10개 이상. 전투 메카닉, 성장, 자원/게이지, 특수 시스템
+characters:     # 5~8명. 주인공·동료·주요 NPC. 이름 있는 인물이 없는 게임이면 빈 목록
+  - 한국어명 (영문명): 역할·주인공과의 관계 한 줄
+systems:        # 6~10개. 전투 메카닉, 성장, 자원/게이지, 특수 시스템
   - 시스템명 (원어명): 한 줄 설명
-locations:      # 10개 이상. 주요 지역/던전, 해금 순서대로
+locations:      # 8~12개. 주요 지역/던전, 해금 순서대로
   - 한국어명 (영문명): 테마·특징 한 줄
-enemies:        # 10개 이상. 일반 몬스터, 미니보스, 메인 보스 구분해서
+enemies:        # 8~12개. 자주 마주치는 몬스터와 주요 보스
   - 한국어명 (영문명): 특징 한 줄
-skills:         # 10개 이상. 플레이어가 쓰는 스킬/기술/무기/아이템
+skills:         # 6~10개. 플레이어가 쓰는 스킬/기술/무기/아이템
   - 한국어명 (영문명): 효과 한 줄
-chat_tips:      # 15개 이상. 이 게임 방송 채팅에서 실제로 쓰이는 반응·밈·별칭을 '상황 → 채팅 반응' 한 문장으로
+chat_tips:      # 8~12개. 이 게임에만 있는 방송 채팅 반응·밈·별칭을 '상황 → 채팅 반응' 한 문장으로 ('gg' 같은 흔한 반응 제외)
   - 보스 첫 등장 → '또 시작됐네' 같은 밈 채팅이 쏟아짐
 ```
 
@@ -570,6 +714,8 @@ chat_tips:      # 15개 이상. 이 게임 방송 채팅에서 실제로 쓰이�
 ```yaml
 name: CrossCode (크로스코드)
 description: Radical Fish Games 개발. 기억을 잃은 주인공 '레아'가 가상현실 MMO 'CrossWorlds'의 진실을 파헤치는 2D 액션 RPG. 고속 전투와 고난도 퍼즐이 특징.
+characters:
+  - 레아 (Lea): 주인공. 처음엔 '안녕'만 말할 수 있음
 locations:
   - 초보자 항구 (Rookie Harbor): 시작 허브 도시
 enemies:
@@ -681,7 +827,7 @@ def parse_profile_text(text: str, fallback_name: str = "") -> tuple[dict, list[s
         warnings.append("이름(name)이 없어 게임 이름으로 채웠어요")
     if not profile["description"]:
         warnings.append("설명(description)이 비어 있어요")
-    empty = [s for s in PROFILE_SECTIONS if not profile[s]]
+    empty = [s for s in PROFILE_SECTIONS if not profile[s] and s != "characters"]
     if empty:
         warnings.append(f"비어 있는 항목: {', '.join(empty)}")
     return profile, warnings
@@ -714,7 +860,12 @@ def save_profile(game_name: str, profile: dict) -> Path:
     _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     path = profile_path_for(game_name)
     to_save = {k: v for k, v in profile.items() if not k.startswith("_")}
-    with open(path, "w", encoding="utf-8") as f:
+    errors = validate_profile(to_save)
+    if errors:
+        raise ValueError(" / ".join(errors))
+    tmp_path = path.with_suffix(".yaml.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    tmp_path.replace(path)
     logger.info(f"게임 프로필 저장(수동): {path}")
     return path

@@ -68,12 +68,23 @@ class STTPipeline:
         self._transcribe_thread: threading.Thread | None = None
         self._utt_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=8)
         self._on_event: Callable[[UtteranceEvent], None] | None = None
+        self._on_status: Callable[[str, str], None] | None = None
 
-    def start(self, on_event: Callable[[UtteranceEvent], None]) -> None:
+    def _report(self, kind: str, message: str = "") -> None:
+        """상태를 호출부(채팅창 안내)에 알린다. message 가 비면 그 문제가 풀렸다는 뜻."""
+        if self._on_status:
+            try:
+                self._on_status(kind, message)
+            except Exception as e:
+                logger.error(f"상태 콜백 실패: {e}")
+
+    def start(self, on_event: Callable[[UtteranceEvent], None],
+              on_status: Callable[[str, str], None] | None = None) -> None:
         if self._capture_thread is not None:
             logger.warning("이미 실행 중인 STTPipeline.start() 무시")
             return
         self._on_event = on_event
+        self._on_status = on_status
         self._stop_event.clear()
         self._capture_thread = threading.Thread(
             target=self._capture_loop, name="STT-Capture", daemon=True,
@@ -124,7 +135,19 @@ class STTPipeline:
             )
         except Exception as e:
             logger.error(f"마이크 InputStream 생성 실패: {e}")
-            return
+            if self._device is None:
+                self._report("mic", f"마이크를 열지 못했어요: {e}")
+                return
+            # 저장된 장치가 사라졌을 수 있다(업데이트·장치 변경). 기본 장치로 다시 시도한다.
+            try:
+                stream = sd.InputStream(samplerate=sr, channels=1, dtype="float32", device=None, blocksize=chunk)
+            except Exception as e2:
+                logger.error(f"기본 마이크도 열기 실패: {e2}")
+                self._report("mic", f"마이크를 열지 못했어요: {e2}")
+                return
+            self._report("mic", f"저장된 마이크('{self._device}')를 못 찾아 기본 마이크를 씁니다. "
+                                "설정 '음성 인식'에서 다시 고를 수 있어요.")
+            self._device = None
 
         try:
             info = sd.query_devices(self._device if self._device is not None else None, "input")
@@ -213,6 +236,8 @@ class STTPipeline:
             try:
                 duration_s = len(item) / self._sample_rate
                 text, elapsed = self._transcriber.transcribe(item, self._sample_rate)
+                # transcriber 는 API 오류면 "" 를 돌려준다 — 그냥 버리면 무음과 구분이 안 된다.
+                self._report("transcribe", getattr(self._transcriber, "last_error", ""))
                 if len(text) < self._min_transcript_chars:
                     logger.debug(f"빈/짧은 transcript 무시: '{text}'")
                     continue

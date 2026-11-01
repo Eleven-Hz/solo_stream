@@ -1,7 +1,9 @@
 """채팅 타이밍 고도화 — hype(흥분도) + valence(분위기 방향) 2축 (Phase 2).
 
 감정 시스템(`emotion.py`)이 신호를 "봇 감정 라벨"로 흡수한다면, 이 모듈은 같은
-입력(스트리머 발화 + 직전 봇 채팅)에서 **두 축**을 뽑아 채팅 타이밍과 물량을 바꾼다.
+입력(스트리머 발화 + 직전 봇 채팅 + Vision `이벤트:` 줄)에서 **두 축**을 뽑아 채팅 타이밍과 물량을 바꾼다.
+말없이 플레이해도 보스 등장·사망 같은 큰 장면에서 채팅이 몰리고(`event_hype`), 몇 라운드에
+걸쳐 잦아든다(`next_event_glow` — 잔불).
 
   - hype   (0.0~1.0): 감정의 격렬함. "개웃기네/너무 슬프다" 같은 강조어, 반복
                        ㅋㅋㅋㅋ/ㅠㅠㅠㅠ, 느낌표가 많을수록 ↑.
@@ -55,6 +57,60 @@ class HypeSignal:
     valence: float    # -1.0 ~ +1.0
     laugh: int        # 감지된 웃음 토큰 수 (mood_hint 판정 보조)
     cry: int          # 감지된 울음 토큰 수
+    event: float = 0.0  # hype 중 화면 이벤트(잔불 포함) 몫 — 로그·임계값 판정용
+
+
+# ── Vision 이벤트 → hype ──────────────────────────────────────────────────────
+# 실제 리플레이의 `이벤트:` 줄은 대부분 사소하다("금속 바늘 1개 획득 알림", "크레딧 731 획득",
+# "돌아올 수 없다는 경고" — 2026-10 CrossCode 샘플 기준 라운드의 약 10%에 이벤트 줄, 거의 전부 이런 것).
+# 그래서 아무 이벤트나 올리지 않고 **큰 장면만 등급**으로 올린다. 획득·확인 창은 0.
+# (hype, valence) — valence 는 emotion.event_valence 와 달리 '보스 등장'·'사망'을 부정으로 보지 않는다:
+# 긴장은 들썩임이지 슬픔이 아니라서, 부정으로 두면 mood_hint 가 ㅠㅠ 쪽으로만 나간다.
+_BOSS_WORDS = ["보스"]
+_BOSS_DOWN = ["처치", "격파", "클리어", "쓰러", "잡았", "승리"]
+_DEATH_WORDS = ["사망", "죽었", "죽음", "전멸", "패배", "게임 오버", "게임오버", "GAME OVER", "Game Over"]
+_MID_EVENTS: list[tuple[list[str], float, float]] = [
+    (["HP 위기", "체력 위기", "체력이 낮", "체력이 거의", "빈사"], 0.5, -0.4),
+    (["레벨업", "레벨 업", "레벨이 올"], 0.5, 0.5),
+    (["클리어", "승리", "달성"], 0.45, 0.5),
+    (["큰 피해", "치명타"], 0.25, 0.0),   # 전투 중 흔함 — 혼자선 임계값 아래, 다른 신호와 합쳐야 발동
+]
+_NO_EVENT = ("없음", "없다", "없습니다", "-", "해당 없음")
+
+
+def event_hype(event_text: str) -> tuple[float, float]:
+    """Vision `이벤트:` 줄 → (hype, valence). 큰 장면이 아니면 (0, 0)."""
+    t = (event_text or "").strip()
+    if not t or t.startswith(_NO_EVENT):
+        return 0.0, 0.0
+    if any(w in t for w in _DEATH_WORDS):
+        # 방향 없음: 실제 방송 채팅은 사망에 놀림(ㅋㅋ 또 죽었어)과 안타까움(ㅠㅠ)이 섞인다.
+        # 어느 쪽일지는 봇 성향·감정(emotion.py — 안티는 부정에 민감)에 맡긴다.
+        return 0.8, 0.0
+    if any(w in t for w in _BOSS_WORDS):
+        if any(w in t for w in _BOSS_DOWN):
+            return 0.85, 0.9
+        return 0.7, 0.0          # 보스 등장·보스전 진행 — 방향 없는 들썩임
+    for words, h, v in _MID_EVENTS:
+        if any(w in t for w in words):
+            return h, v
+    return 0.0, 0.0
+
+
+# 잔불: 이벤트 다음 화면 분석 라운드마다 이만큼 곱해 줄어든다. 0.8 → 0.44 → 0.24 → 0.13
+# (15초 주기면 터진 뒤 15~30초 동안 이어지다 평소로).
+EVENT_GLOW_DECAY = 0.55
+
+
+def next_event_glow(prev: tuple[float, float], event: tuple[float, float], *,
+                    decay: float = EVENT_GLOW_DECAY) -> tuple[float, float]:
+    """화면 분석 라운드마다 부른다 — (hype, valence) 중 새 이벤트와 줄어든 이전 잔불 중 hype 가 큰 쪽.
+
+    발화 즉시 반응 라운드는 화면 분석 사이에 끼는 추가 라운드라 부르지 않는다(잔불을 두 번 줄이지 않게).
+    hype 0.05 아래는 (0, 0)."""
+    faded = (prev[0] * decay, prev[1] * decay)
+    glow = event if event[0] >= faded[0] else faded
+    return glow if glow[0] >= 0.05 else (0.0, 0.0)
 
 
 def _scan_text(text: str) -> tuple[float, float, int, int]:
@@ -98,12 +154,16 @@ def compute_hype(
     speech_weight: float = 1.0,
     chat_weight: float = 0.5,
     chat_echo_damp: float = 1.0,
+    event: tuple[float, float] = (0.0, 0.0),
+    event_weight: float = 1.0,
 ) -> HypeSignal:
-    """스트리머 발화 + 직전 봇 채팅에서 hype/valence 산출.
+    """스트리머 발화 + 직전 봇 채팅 + 화면 이벤트에서 hype/valence 산출.
 
     - 발화(speech_weight)를 채팅 톤(chat_weight)보다 무겁게 본다: 스트리머의
       실제 리액션이 분위기의 1차 소스이고, 봇 채팅은 보조 신호.
-    - 어느 한쪽이 비어도 나머지로 동작.
+    - `event`: (hype, valence) — `event_hype()` 결과에 잔불을 적용한 값. 발화처럼 감쇠하지
+      않는다(화면에 실제로 일어난 일). `event_weight` 0 이면 끔.
+    - 어느 하나가 비어도 나머지로 동작.
 
     `chat_echo_damp` (0~1): 봇 채팅 신호에 추가로 곱하는 감쇠 계수. 직전 라운드가
     흥분 발동이었으면 봇들이 mood_hint 때문에 ㅋㅋ/ㅠㅠ를 대량 생성하는데, 그게
@@ -117,7 +177,10 @@ def compute_hype(
     damp = max(0.0, min(1.0, chat_echo_damp))
     eff_chat_weight = chat_weight * damp
 
-    hype_raw = s_hype * speech_weight + c_hype * eff_chat_weight
+    e_hype = max(0.0, event[0]) * max(0.0, event_weight)
+    e_val = event[1] * max(0.0, event_weight)
+
+    hype_raw = s_hype * speech_weight + c_hype * eff_chat_weight + e_hype
     hype = max(0.0, min(1.0, hype_raw))
 
     # 메아리 감쇠 시 채팅발 반복토큰(laugh/cry)도 같은 비율로 줄여 mood_hint 판정 왜곡 방지.
@@ -138,13 +201,24 @@ def compute_hype(
             val_raw = s_val_eff + c_val_eff
         else:
             val_raw = s_val_eff
+        # 화면 이벤트도 발화와 같은 방향일 때만 더한다
+        if (e_val >= 0) == (s_val_eff >= 0):
+            val_raw += e_val
         # 반복토큰도 발화 방향과 어긋나는 채팅발 성분은 버린다 (mood_hint 일관성).
         if s_val > 0:
             cry = s_cry
         else:
             laugh = s_laugh
+    elif abs(e_val) >= SPEECH_VAL_DECISIVE:
+        # 발화가 모호하면 큰 화면 이벤트(보스 처치·사망)가 방향을 정한다 — 봇 ㅋㅋ/ㅠㅠ 메아리가
+        # 사망 장면을 폭소로 뒤집지 않게, 채팅은 같은 방향만.
+        val_raw = e_val + s_val_eff + (c_val_eff if (c_val_eff >= 0) == (e_val >= 0) else 0.0)
+        if e_val > 0:
+            cry = s_cry
+        else:
+            laugh = s_laugh
     else:
-        val_raw = s_val_eff + c_val_eff
+        val_raw = s_val_eff + c_val_eff + e_val
     valence = max(-1.0, min(1.0, val_raw))
 
     return HypeSignal(
@@ -152,6 +226,7 @@ def compute_hype(
         valence=valence,
         laugh=laugh,
         cry=cry,
+        event=round(min(e_hype, 1.0), 2),
     )
 
 
