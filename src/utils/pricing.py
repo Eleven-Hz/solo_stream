@@ -26,6 +26,7 @@ PRICING_AS_OF = "2026-10"
 #                  Claude 는 한국어를 약 1.7배로 센다(2026-10 채팅 프롬프트 실측 9,800 vs 5,800).
 MODEL_PRICING: dict[str, dict[str, float]] = {
     # ── Gemini ──────────────────────────────────────────────
+    "gemini-3.8-flash": {"input": 0.75, "output": 3.75},  # 2026년 말까지 할인가, 2027-01부터 1.50/7.50
     "gemini-2.5-pro": {"input": 1.25, "output": 10.0, "audio_input": 1.25},
     "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "audio_input": 1.00},
     "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "audio_input": 0.30},
@@ -63,7 +64,7 @@ TOKENS = {
 USAGE_DEFAULTS = {
     "hours": 2.0,               # 세션 길이(시간)
     "speech_min_per_hour": 30.0,  # 시간당 실제 발화 분량(분)
-    "screen_change_pct": 80.0,    # 캡처 주기 중 화면이 바뀌어 vision 호출되는 비율(%)
+    "screen_change_pct": 100.0,    # 캡처 주기 중 화면이 바뀌어 vision 호출되는 비율(%)
     "chat_calls_per_hour": 240.0,  # 시간당 채팅 생성 횟수 (기본 15초 주기에 1번 — UI 는 3600/주기로 덮어씀)
 }
 

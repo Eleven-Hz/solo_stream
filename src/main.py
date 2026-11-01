@@ -45,6 +45,9 @@ def capture_process(
 
     interval = _clamp_interval(config["capture"].get("interval_seconds", BASE_INTERVAL_S))
     threshold = config["capture"]["ssim_threshold"]
+    block_threshold = float(config["capture"].get("block_ssim_threshold", 0.95))
+    max_skip_s = float(config["capture"].get("max_skip_seconds", 60))
+    last_sent_t = 0.0
     target = config["capture"].get("target_window")
     resize_w = config["capture"].get("resize_width", 1024)
 
@@ -80,9 +83,13 @@ def capture_process(
             frame, captured_from = capture_screen(target_window=target, resize_width=resize_w)
             total_count += 1
 
-            if prev_frame is None or has_significant_change(prev_frame, frame, threshold):
+            now = time.time()
+            if (prev_frame is None
+                    or has_significant_change(prev_frame, frame, threshold, block_threshold)
+                    or (max_skip_s > 0 and now - last_sent_t >= max_skip_s)):
                 image_queue.put(frame)
                 prev_frame = frame
+                last_sent_t = now
                 log.info(f"[캡처 #{total_count}] [{captured_from}] 변화 감지 → AI 큐 (스킵율={skip_count/max(total_count,1)*100:.0f}%)")
             else:
                 skip_count += 1
@@ -304,15 +311,18 @@ def ai_process(
     log = logging.getLogger("solo_stream.ai")
 
     from src.ai.model_client import (
-        create_vision_client, create_chat_client, create_lookup_client, GeminiClient, is_transient_error,
+        create_vision_client, create_chat_client, create_lookup_client, create_profile_client, is_transient_error,
         model_config_key, resolve_provider,
     )
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
-    from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
+    from src.chat.game_profile_loader import (
+        _empty_profile, load_profile, build_profile_context, build_vision_context,
+    )
     from src.chat.emotion import EmotionState, update_emotions
-    from src.chat.hype import compute_hype, build_hype_profile
+    from src.chat.hype import compute_hype, build_hype_profile, event_hype, next_event_glow
     from src.export.websocket import broadcast, start_broadcaster
+    from src.utils.api_errors import describe_api_error, is_fatal_api_error
     from src.utils.logger import get_chat_logger
 
     # 채팅 외부 출력(WS). 기본 비활성 — config 의 export.websocket.enabled 로 켠다.
@@ -343,9 +353,6 @@ def ai_process(
 
     client = _make_client("vision")
     chat_client = _make_client("chat")
-    # 게임 프로필 '자동 생성'만 Gemini 전용(Google Search 그라운딩). Gemini 키가 없으면 None —
-    # 자동 생성 요청이 와도 빈 프로필로 진행하고 안내한다.
-    gemini_client = GeminiClient(api_key=api_key, config=config) if api_key else None
     # 정확한 정보 봇(페르소나 accurate — 고인물킹)의 웹 검색(src/chat/lookup.py). openai·gemini 키가 없으면 None.
     lookup_client = create_lookup_client(config, gemini_api_key=api_key, claude_api_key=claude_api_key,
                                          openai_api_key=openai_api_key)
@@ -365,6 +372,8 @@ def ai_process(
     # 대화 흐름(src/chat/flow.py): 직전 발언자 일부를 이어서 출석시키고, 1명은 앞 채팅을 받아친다.
     carry_over = int(chat_cfg.get("carry_over", 1))
     reply_chance = float(chat_cfg.get("reply_chance", 0.7))
+    # 화면 이벤트(보스·사망 등 큰 장면)가 흥분도에 주는 비중. 0 이면 이벤트로는 채팅이 몰리지 않는다.
+    event_weight = float(chat_cfg.get("event_hype_weight", 1.0))
     bot_habits = flow.BotHabits()
     from src.chat.lookup import LookupDesk
     web_search = bool(chat_cfg.get("web_search", True))
@@ -389,6 +398,16 @@ def ai_process(
     # settings_queue 의 target_window 변경 시 갱신된다(아래 루프). 닫힘 변수로 공유.
     _current_window = {"title": config["capture"].get("target_window") or ""}
 
+    def _safe_load_profile(game: str, **kw) -> dict:
+        """프로필 문제로 AI 프로세스가 죽으면 채팅 전체가 조용히 멈춘다. 어떤 오류든 빈 프로필로 이어 간다."""
+        try:
+            return load_profile(game, **kw)
+        except Exception as e:
+            log.error(f"게임 프로필 로드 실패: {e}", exc_info=True)
+            result = _empty_profile(game)
+            result["_invalid"] = str(e)[:150]
+            return result
+
     def _notify_profile_loaded(profile: dict):
         """프로필 로드 완료를 UI에 통지. 생성 중 단계 실패가 있으면 채팅창에도 표시."""
         # 캡처 창 ↔ 적용 프로필 이름이 많이 다르면 경고 텍스트를 함께 실어 보낸다.
@@ -410,6 +429,8 @@ def ai_process(
         gen_errors = profile.get("_generation_errors") or []
         if profile.get("_missing"):
             status, detail = "missing", ""
+        elif profile.get("_invalid"):
+            status, detail = "invalid", str(profile["_invalid"])
         elif aborted:
             status, detail = "aborted", str(aborted)
         elif gen_errors:
@@ -425,7 +446,7 @@ def ai_process(
                       "status": status, "detail": detail})
 
         # 채팅창에도 1회성 안내(흘러가지만 즉시 인지용). 설정 탭에는 위 status로 상시 표시됨.
-        if status == "missing":
+        if status == "missing" and prof_name != "Unknown Game":
             ui_queue.put({
                 "name": "시스템",
                 "message": (
@@ -434,13 +455,18 @@ def ai_process(
                     f"붙여넣으면 무료로 만들 수 있어요."
                 ),
             })
+        elif status == "invalid":
+            ui_queue.put({
+                "name": "시스템",
+                "message": (f"⚠ 게임 프로필 파일이 깨져 있어 대신 '{prof_name}'(으)로 진행해요. "
+                            f"설정 '게임 · 프로필'의 '보기 · 수정'으로 고칠 수 있어요. — {detail}"),
+            })
         elif status == "aborted":
             ui_queue.put({
                 "name": "시스템",
                 "message": (
-                    f"⚠ 게임 프로필 생성이 서버 혼잡(503)으로 중단됐습니다. "
-                    f"모델이 일시적으로 과부하 상태입니다. 빈 프로필로 임시 진행하며, "
-                    f"잠시 후 '게임 프로필 재생성'으로 다시 시도하세요. — {detail}"
+                    f"⚠ 게임 프로필 자동 생성에 실패해 저장하지 않았어요(있던 프로필은 그대로). "
+                    f"{describe_api_error(detail)}"
                 ),
             })
         elif status == "partial":
@@ -453,7 +479,7 @@ def ai_process(
                 ),
             })
 
-    game_profile = load_profile(game_name, ai_client=gemini_client, config=config)  # 없으면 missing(자동 생성 안 함)
+    game_profile = _safe_load_profile(game_name, config=config)  # 없으면 missing(자동 생성 안 함)
     profile_context = build_profile_context(game_profile)
     vision_context = build_vision_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
@@ -490,10 +516,15 @@ def ai_process(
     # 직전 채팅 생성이 503 등 서버 혼잡이었는지. 상태가 바뀔 때만 채팅창에 안내해
     # (혼잡 시작 1회 / 회복 1회) 매 라운드 같은 메시지가 쌓이지 않게 한다.
     api_busy = False
+    # 설정을 고치기 전엔 안 풀리는 오류를 알렸는지. 역시 상태가 바뀔 때만 안내한다.
+    vision_failed = False
+    chat_failed = False
     # 직전 라운드 흥분 발동 여부. 발동이면 그 라운드 봇 채팅(mood_hint로 ㅋㅋ/ㅠㅠ 대량
     # 생성)이 이번 hype 입력으로 되먹임돼 분위기가 봇 메아리만으로 눈덩이처럼 커진다
     # (부정 자가발전 루프). 발동 직후 라운드는 채팅 신호를 감쇠해 메아리를 끊는다.
     prev_round_hyped = False
+    # 화면 이벤트 잔불 (hype, valence). 큰 장면 뒤 화면 분석 라운드마다 줄어든다(hype.next_event_glow).
+    event_glow = (0.0, 0.0)
     # 봇별 동적 감정 상태 (3신호로 매 라운드 갱신). base는 페르소나 YAML emotion.
     emotion_states: dict = {
         b["name"]: EmotionState(b["name"], b.get("emotion", "평온"), b.get("relationship", ""))
@@ -603,16 +634,18 @@ def ai_process(
                 _current_window["title"] = setting["target_window"] or ""
             elif "game_name" in setting:
                 new_game = setting["game_name"]
-                # generate=True 는 설정의 '자동 생성(API)' 버튼 — 그때만 Gemini 검색으로 만든다.
+                # generate=True 는 설정의 '자동 생성(API)' 버튼 — 그때만 웹 검색으로 만든다.
                 auto_gen = bool(setting.get("generate"))
-                if auto_gen and gemini_client is None:
+                profile_gen = create_profile_client(config, api_key, openai_api_key) if auto_gen else None
+                if auto_gen and profile_gen is None:
                     auto_gen = False
                     ui_queue.put({"name": "시스템", "message": (
-                        "ℹ 프로필 자동 생성은 Gemini 키가 있어야 해요(구글 검색 사용). "
+                        "ℹ 프로필 자동 생성은 OpenAI나 Gemini 키가 있어야 해요(웹 검색 사용). "
                         "'프롬프트 복사'로 무료로 만들 수 있어요.")})
                 log.info(f"게임 프로필 변경 요청: {new_game}{' (자동 생성)' if auto_gen else ''}")
-                game_profile = load_profile(new_game, ai_client=gemini_client, config=config,
-                                            auto_generate=auto_gen)
+                game_profile = _safe_load_profile(new_game, ai_client=profile_gen[0] if auto_gen else None,
+                                                  config=config, auto_generate=auto_gen,
+                                                  model=profile_gen[1] if auto_gen else None)
                 profile_context = build_profile_context(game_profile)
                 vision_context = build_vision_context(game_profile)
                 lookup_desk = LookupDesk()  # 찾아 둔 답은 게임마다
@@ -622,6 +655,7 @@ def ai_process(
                 last_round_chats = []
                 last_game_context = ""
                 last_location = ""
+                event_glow = (0.0, 0.0)
                 log.info(f"게임 프로필 변경 완료: {game_profile.get('name', '?')}")
                 _log_profile_header(profile_context, game_profile.get("name", "?"))
                 # UI 라벨("재생성 중...")을 완료 상태로 갱신 + 생성 실패 시 안내 표시
@@ -704,6 +738,13 @@ def ai_process(
                 vision_elapsed = time.perf_counter() - vision_t0
                 log.info(f"[게임 상황] {game_context}")
                 last_game_context = game_context
+                vision_err = getattr(client, "last_vision_error", "")
+                if vision_err and not vision_failed:
+                    ui_queue.put({"name": "시스템",
+                                  "message": f"⚠ 화면 분석 실패: {describe_api_error(vision_err)}"})
+                elif vision_failed and not vision_err:
+                    ui_queue.put({"name": "시스템", "message": "✓ 화면 분석이 다시 동작합니다."})
+                vision_failed = bool(vision_err)
 
                 # 위치 / 이벤트 추출 (이벤트는 감정 신호원 — 없으면 빈 문자열)
                 for line in game_context.splitlines():
@@ -751,18 +792,23 @@ def ai_process(
                     emotion_states, bot_pool, chat_history, event_text, speech_texts,
                 )
 
-            # 흥분도(hype) 계산: 스트리머 발화 + 직전 채팅 톤(ㅋㅋ/ㅠㅠ/강조어)에서
+            # 흥분도(hype) 계산: 스트리머 발화 + 직전 채팅 톤(ㅋㅋ/ㅠㅠ/강조어) + 화면 이벤트 잔불에서
             # hype(0~1)·valence(±)를 뽑아 이번 라운드 타이밍·물량·분위기 힌트를 정한다.
             # 직전 라운드가 발동이었으면 봇 채팅 신호를 감쇠(0.3)해 ㅋㅋ/ㅠㅠ 메아리가
-            # 분위기를 자가발전시키는 걸 끊는다. 발화 신호는 감쇠하지 않는다.
+            # 분위기를 자가발전시키는 걸 끊는다. 발화·화면 이벤트 신호는 감쇠하지 않는다.
+            if not speech_round:
+                event_glow = next_event_glow(event_glow, event_hype(event_text))
             recent_chat_texts = [c.get("message", "") for c in chat_history[-8:]]
             echo_damp = 0.15 if prev_round_hyped else 1.0
             hype_signal = compute_hype(
                 speech_texts, recent_chat_texts, chat_echo_damp=echo_damp,
+                event=event_glow, event_weight=event_weight,
             )
             # 감쇠 라운드는 임계값을 올려, 메아리만 남은 경계 케이스(감쇠 후 hype가
             # 임계값 바로 위)도 평소로 되돌린다 — 발동을 "한 박자 쉬게" 한다.
-            round_threshold = HYPE_THRESHOLD_AFTER_HYPE if prev_round_hyped else HYPE_THRESHOLD
+            # 단 화면 이벤트 잔불만으로 평소 임계값을 넘으면(보스전 직후) 메아리가 아니므로 평소 임계값.
+            echo_only = prev_round_hyped and hype_signal.event < HYPE_THRESHOLD
+            round_threshold = HYPE_THRESHOLD_AFTER_HYPE if echo_only else HYPE_THRESHOLD
             hype_profile = build_hype_profile(
                 hype_signal, base_delay_min=delay_min, base_delay_max=delay_max,
                 threshold=round_threshold,
@@ -773,6 +819,7 @@ def ai_process(
                     f"흥분 감지 hype={hype_profile.hype:.2f} val={hype_signal.valence:+.2f} "
                     f"→ delay={hype_profile.delay_min}~{hype_profile.delay_max} "
                     f"+batch={hype_profile.extra_batch} skip_relief={hype_profile.skip_relief}"
+                    f"{f' (화면 이벤트 {hype_signal.event:.2f})' if hype_signal.event else ''}"
                     f"{' (메아리 감쇠 적용)' if prev_round_hyped else ''}"
                 )
             prev_round_hyped = round_hyped
@@ -846,6 +893,13 @@ def ai_process(
                     "message": "✓ AI 서버 연결이 회복됐습니다. 채팅을 다시 생성합니다.",
                 })
             api_busy = now_busy
+            now_chat_failed = is_fatal_api_error(chat_err)
+            if now_chat_failed and not chat_failed:
+                ui_queue.put({"name": "시스템",
+                              "message": f"⚠ 채팅 생성 실패: {describe_api_error(chat_err)}"})
+            elif chat_failed and not chat_err:
+                ui_queue.put({"name": "시스템", "message": "✓ 채팅 생성이 다시 동작합니다."})
+            chat_failed = now_chat_failed or (chat_failed and bool(chat_err))
             # 채팅이 만들어진 라운드만 발화 사용 횟수를 센다(실패 라운드의 발화는 다음에 다시 쓴다).
             if not chat_err:
                 for e in speech_used:
@@ -902,6 +956,7 @@ def ai_process(
                     f"[흥분] hype={hype_profile.hype:.2f} val={hype_signal.valence:+.2f}"
                     f" → delay={hype_profile.delay_min}~{hype_profile.delay_max}"
                     f" +batch={hype_profile.extra_batch} skip_relief={hype_profile.skip_relief}"
+                    f"{f' (화면 이벤트 {hype_signal.event:.2f})' if hype_signal.event else ''}"
                     f"{' (메아리 감쇠)' if echo_damp < 1.0 else ''}"
                     if round_hyped else ""
                 ),
@@ -1025,7 +1080,7 @@ def stt_process(
     sample_rate = int(stt_cfg.get("sample_rate", 16000))
 
     provider = str(stt_cfg.get("provider", "gemini")).lower()
-    model = stt_cfg.get("model", "gemini-2.5-flash")
+    model = stt_cfg.get("model", "gpt-transcribe")
     # 기본값은 OpenAI(gpt-transcribe). 고른 쪽 키가 없으면 STT 를 죽이지 않고
     # 있는 쪽(OpenAI ↔ Gemini)으로 대체하고 채팅창에 한 번 알린다. (main 은 둘 중 하나라도
     # 있어야 STT 프로세스를 띄운다.)
@@ -1034,7 +1089,7 @@ def stt_process(
         log.warning("Gemini 키가 없어 STT 를 OpenAI(gpt-transcribe)로 대체합니다")
         provider = "openai"
     if provider == "openai" and not openai_api_key and api_key:
-        model = stt_cfg.get("fallback_model", "gemini-2.5-flash")
+        model = stt_cfg.get("fallback_model", "gemini-3.8-flash")
         log.warning(f"OpenAI 키가 없어 STT 를 Gemini({model})로 대체합니다")
         provider = "gemini"
         if ui_queue is not None:
@@ -1064,31 +1119,56 @@ def stt_process(
 
     cap_cfg = config.get("capture", {}) or {}
     stt_game = cap_cfg.get("game_name") or _extract_game_name(cap_cfg.get("target_window") or "")
-    transcriber = create_transcriber(
-        provider,
-        gemini_api_key=api_key,
-        openai_api_key=openai_api_key,
-        model=model,
-        language=stt_cfg.get("language", "ko"),
-        prompt=_stt_prompt_for(stt_game),
-        normalize_target_level=float(stt_cfg.get("normalize_target_level", 0.1)),
-        normalize_percentile=float(stt_cfg.get("normalize_percentile", 95.0)),
-        normalize_max_gain=float(stt_cfg.get("normalize_max_gain", 20.0)),
-    )
-    log.info(f"STT transcriber provider={provider} model={model}")
+    def _notify(message: str) -> None:
+        if ui_queue is not None:
+            try:
+                ui_queue.put_nowait({"name": "시스템", "message": message})
+            except Exception:
+                pass
 
-    pipeline = STTPipeline(
-        transcriber=transcriber,
-        sample_rate=sample_rate,
-        device=stt_cfg.get("device", "default"),
-        threshold=float(stt_cfg.get("vad_threshold", 0.5)),
-        min_speech_ms=int(stt_cfg.get("min_speech_ms", 250)),
-        min_silence_ms=int(stt_cfg.get("min_silence_ms", 500)),
-        speech_pad_ms=int(stt_cfg.get("speech_pad_ms", 100)),
-        max_utterance_s=float(stt_cfg.get("max_utterance_seconds", 30.0)),
-        min_transcript_chars=int(stt_cfg.get("min_transcript_chars", 1)),
-        input_gain=float(stt_cfg.get("input_gain", 1.0)),
-    )
+    try:
+        transcriber = create_transcriber(
+            provider,
+            gemini_api_key=api_key,
+            openai_api_key=openai_api_key,
+            model=model,
+            language=stt_cfg.get("language", "ko"),
+            prompt=_stt_prompt_for(stt_game),
+            normalize_target_level=float(stt_cfg.get("normalize_target_level", 0.1)),
+            normalize_percentile=float(stt_cfg.get("normalize_percentile", 95.0)),
+            normalize_max_gain=float(stt_cfg.get("normalize_max_gain", 20.0)),
+        )
+        log.info(f"STT transcriber provider={provider} model={model}")
+
+        pipeline = STTPipeline(
+            transcriber=transcriber,
+            sample_rate=sample_rate,
+            device=stt_cfg.get("device", "default"),
+            threshold=float(stt_cfg.get("vad_threshold", 0.5)),
+            min_speech_ms=int(stt_cfg.get("min_speech_ms", 250)),
+            min_silence_ms=int(stt_cfg.get("min_silence_ms", 500)),
+            speech_pad_ms=int(stt_cfg.get("speech_pad_ms", 100)),
+            max_utterance_s=float(stt_cfg.get("max_utterance_seconds", 30.0)),
+            min_transcript_chars=int(stt_cfg.get("min_transcript_chars", 1)),
+            input_gain=float(stt_cfg.get("input_gain", 1.0)),
+        )
+    except Exception as e:
+        log.error(f"음성 인식 시작 실패: {e}", exc_info=True)
+        _notify(f"⚠ 음성 인식을 시작하지 못했어요: {str(e)[:100]}")
+        return
+
+    # 같은 문제는 한 번만 알리고, 풀리면 한 번 알린다.
+    from src.utils.api_errors import describe_api_error
+    stt_problems: dict[str, bool] = {}
+
+    def _on_status(kind: str, message: str) -> None:
+        if message and not stt_problems.get(kind):
+            stt_problems[kind] = True
+            text = f"받아쓰기 실패: {describe_api_error(message)}" if kind == "transcribe" else message
+            _notify(f"⚠ {text}")
+        elif not message and stt_problems.get(kind):
+            stt_problems[kind] = False
+            _notify("✓ 음성 인식이 다시 동작합니다.")
 
     def _push(ev: "UtteranceEvent") -> None:
         try:
@@ -1122,7 +1202,7 @@ def stt_process(
                 transcriber.set_prompt(_stt_prompt_for(setting["game_name"]))
 
         if chat_active and not started:
-            pipeline.start(_push)
+            pipeline.start(_push, _on_status)
             started = True
         elif not chat_active and started:
             pipeline.stop()
@@ -1144,6 +1224,23 @@ def ui_process(
 
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
+
+def _log_environment(config: dict, gemini_key, openai_key, claude_key) -> None:
+    """문제 보고용 실행 환경 요약(키 값은 남기지 않고 있는지만)."""
+    from src import __version__
+    from src.ai.model_client import selected_model
+    from src.utils import paths
+
+    keys = [n for n, k in (("gemini", gemini_key), ("openai", openai_key), ("claude", claude_key)) if k]
+    stt = config.get("stt") or {}
+    logger.info(f"버전 v{__version__} / 배포본={paths.is_frozen()} / 데이터 폴더={paths.user_data_dir()}")
+    logger.info(f"키: {keys or '없음'} / 사용자 설정 섹션: {sorted(paths.load_user_config())}")
+    logger.info(f"모델: 화면={selected_model(config, 'vision')} 채팅={selected_model(config, 'chat')} "
+                f"음성={stt.get('provider')}/{stt.get('model')} 켜짐={stt.get('enabled')} 마이크={stt.get('device')}")
+    legacy = paths.legacy_user_files()
+    if legacy:
+        logger.info(f"쓰지 않는 예전 파일: {[p.name for p in legacy]}")
+
 
 def main():
     # 최초 실행 시딩: 사용자 데이터 폴더(%APPDATA%\SoloStream) 생성 +
@@ -1172,6 +1269,7 @@ def main():
     claude_api_key = get_claude_api_key(config)
     openai_api_key = get_openai_api_key(config)
     logger.info("Solo Stream 시작")
+    _log_environment(config, api_key, openai_api_key, claude_api_key)
 
     # 키 미설정 시 graceful degrade: AI/STT 프로세스를 띄우지 않고 UI(오버레이)만 시작해
     # 첫 실행 온보딩(API 키 입력)을 노출한다. frozen 배포에서 콘솔 없이 조용히 죽던

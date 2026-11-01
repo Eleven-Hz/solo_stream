@@ -15,6 +15,7 @@
 | `.env.example` | `GEMINI_API_KEY`, `CLAUDE_API_KEY` 템플릿 |
 | `.env.local` | 실제 API 키 (gitignore 대상) |
 | `.gitignore` | venv, logs, dev_history, .env.local, 테스트 산출물 제외 |
+| `open-dashboard.bat` | 개발 현황판 서버(`scripts/dashboard/server.py`, 127.0.0.1:8767)를 띄우고 브라우저로 연다 |
 
 ## Subdirectories
 | Directory | Purpose |
@@ -25,6 +26,7 @@
 | `game_profiles/` | 게임별 캐시된 프로필 YAML (자동 생성 + 수동 편집) — see `game_profiles/AGENTS.md` |
 | `docs/` | 기획서, 기능 추가 계획 등 한국어 설계 문서 — see `docs/AGENTS.md` |
 | `docs/wiki/` | 실측 결과·외부 API 특성·결정 이유·검증 방법 (코드에 안 남는 지식) — see `docs/wiki/README.md` |
+| `scripts/dashboard/` | 개발 현황판 — 손으로 적는 `data/*.json`(기능 상태·확장 단계·개발 순서) + 코드에서 읽는 숫자, 검토 요청(`proposals/`) 승인·반려. 시험: `test.py` |
 | `dev_history/` | 일자별 개발 일지 (gitignore 대상, dev-history skill로 자동 생성) — see `dev_history/AGENTS.md` |
 | `logs/` | 세션 로그 + 채팅 라운드 블록 로그 (gitignore 대상) |
 | `venv/` | Python 가상환경 (gitignore 대상, 분석 제외) |
@@ -37,11 +39,14 @@
 - Windows 전용 의존성 (`pywin32`, `win32gui`) 사용 — 다른 OS 호환성을 가정하지 말 것.
 - 한국어 사용자 인터페이스/프롬프트가 기본 — 로그·UI·페르소나·프롬프트 모두 한국어 톤을 유지한다.
 
+- **개발 현황판**: 기능 작업은 현황판(`open-dashboard.bat`, `scripts/dashboard/`)을 기준으로 한다. 시작할 때 `data/features.json`·`stages.json` 으로 현황과 다음 단계를 확인한다. `data/*.json` 은 직접 고치지 않고, 상태가 바뀌면 `scripts/dashboard/proposals/<날짜-이름>/proposal.json` 으로 상신한다(바뀌는 줄과 `from`, 코드 변경, 테스트 결과, 스크린샷 — 형식은 `proposals/README.md`). 반영은 사용자가 현황판에서 승인할 때만 된다. 설계 근거는 `docs/확장_로드맵.md`.
+- **내 확인(`data/checks.json`)**: 리플레이·시험으로 못 보고 사용자가 실제 앱에서 봐야 하는 것. **상태(`대기·통과·실패·보류`)와 메모는 사용자 몫** — 사용자가 '내 확인' 탭에서 바로 바꾼다. 작업을 시작할 때 `실패`·`보류` 항목과 메모를 먼저 읽고 반영한다. 새 확인 항목은 상신의 `changes` 에 `{"dataset": "checks", "op": "add", "key": <id>, "row": {...}}` 로 올리고(어떻게 `how`, 이러면 통과 `expect`, 관련 기능 `feature`·상신 `proposal`), 사용자가 실제 앱에서 확인해야 하는 '사용자 확인' 단계가 있는 작업이면 꼭 올린다.
 - **지식 둘 곳**: 구조·코드 규칙은 `AGENTS.md`, 실측 수치·모델/API 특성·결정의 이유·검증 방법은 `docs/wiki/`. 같은 내용을 두 곳에 쓰지 않는다. 모델을 바꾸거나 새로 재면 `docs/wiki/models-and-providers.md` 를 날짜와 함께 갱신.
 
 ### Testing Requirements
 - 자동화된 pytest 스위트는 없다. `tests/<module>/run.py` 형식의 평가 러너를 직접 실행해 HTML/TXT 리포트를 생성하는 방식이다.
 - 프롬프트·후처리·모델·게임 프로필을 바꾸면 `tests/replay/run.py`(샘플 영상 리플레이)로 전후 대화록을 비교한다 — 방법은 `docs/wiki/evaluation.md`.
+- `tests/regression/run.py`(API 호출 없음)로 설치 파일 인코딩·기본 모델·프로필 보호·화면 변화 감지·STT 실패 알림을 확인한다.
 - UI 변경은 `tests/ui/smoke_settings_tabs.py`(화면 캡처 PNG)로 스모크 후 실제 `run.bat` 실행으로 확인.
 - API 비용이 드는 호출(Vision/Chat/STT)은 실제 키 + Free-tier 한도 안에서 수동 검증.
 

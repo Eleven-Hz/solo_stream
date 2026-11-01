@@ -433,6 +433,7 @@ class GeminiClient:
         self._vision_model = config["ai"]["vision_model"]
         self._chat_model = config["ai"]["chat_model"]
         self._vision_prompt = (config["ai"].get("vision_prompt") or "").strip() or None
+        self.last_vision_error = ""
         # 마지막 chat 호출의 prompt/원본응답/소요시간 — ai_process 가 라운드 블록에 합쳐 찍는 용도
         self.last_chat_call = ChatCallDebug()
 
@@ -467,6 +468,7 @@ class GeminiClient:
     def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
         from google.genai import types
         prompt = _build_vision_prompt(game_profile_context, previous_location, self._vision_prompt)
+        self.last_vision_error = ""
         try:
             def _call():
                 return self._client.models.generate_content(
@@ -484,7 +486,21 @@ class GeminiClient:
             return response.text.strip()
         except Exception as e:
             logger.error(f"Vision 분석 실패: {e}")
+            self.last_vision_error = str(e)
             return VISION_ERROR_MARKER
+
+    def web_search_text(self, prompt: str, model: str) -> str:
+        """Google Search 그라운딩으로 답한 본문. 게임 프로필 자동 생성용."""
+        from google.genai import types
+        response = self._client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
+        )
+        usage.record("profile", model, *_gemini_tokens(response))
+        return (response.text or "").strip()
 
     def generate_chats(
         self,
@@ -510,10 +526,16 @@ class GeminiClient:
         tokens = (0, 0)
         t0 = time.perf_counter()
         try:
+            from google.genai import types
+
             def _call():
                 return self._client.models.generate_content(
                     model=self._chat_model,
                     contents=prompt,
+                    # 추론을 끄지 않으면 3.8-flash 는 라운드당 8초·출력 850토큰(실측 2026-11).
+                    config=types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    ),
                 )
             response = self._call_with_retry(_call)
             tokens = _gemini_tokens(response)
@@ -573,6 +595,7 @@ class ClaudeClient:
 
     def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
         prompt = _build_vision_prompt(game_profile_context, previous_location, self._vision_prompt)
+        self.last_vision_error = ""
         try:
             image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
             response = self._client.messages.create(
@@ -601,6 +624,7 @@ class ClaudeClient:
             return "".join(b.text for b in response.content if b.type == "text").strip()
         except Exception as e:
             logger.error(f"Claude Vision 분석 실패: {e}")
+            self.last_vision_error = str(e)
             return VISION_ERROR_MARKER
 
     def generate_chats(
@@ -675,15 +699,17 @@ class OpenAIClient:
         self._vision_model = ai.get(model_config_key("openai", "vision")) or DEFAULT_MODELS["openai"]["vision"]
         self._chat_model = ai.get(model_config_key("openai", "chat")) or DEFAULT_MODELS["openai"]["chat"]
         self._vision_prompt = (ai.get("vision_prompt") or "").strip() or None
+        self.last_vision_error = ""
         self.last_chat_call = ChatCallDebug()
 
-    def _create(self, model: str, **kw):
+    def _create(self, model: str, *, timeout: float | None = None, **kw):
+        client = self._client if timeout is None else self._client.with_options(timeout=timeout, max_retries=1)
         step = self._effort_step.get(model, 0)
         while True:
             effort = self._EFFORT_STEPS[step]
             extra = {"reasoning": {"effort": effort}} if effort else {}
             try:
-                return self._client.responses.create(model=model, **extra, **kw)
+                return client.responses.create(model=model, **extra, **kw)
             except self._openai.BadRequestError as e:
                 if "reasoning" not in str(e).lower() or step + 1 >= len(self._EFFORT_STEPS):
                     raise
@@ -693,6 +719,7 @@ class OpenAIClient:
 
     def analyze_screenshot(self, image_bytes: bytes, game_profile_context: str = "", previous_location: str = "") -> str:
         prompt = _build_vision_prompt(game_profile_context, previous_location, self._vision_prompt)
+        self.last_vision_error = ""
         try:
             image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
             response = self._create(
@@ -711,7 +738,17 @@ class OpenAIClient:
             return (response.output_text or "").strip() or VISION_ERROR_MARKER
         except Exception as e:
             logger.error(f"OpenAI Vision 분석 실패: {e}")
+            self.last_vision_error = str(e)
             return VISION_ERROR_MARKER
+
+    def web_search_text(self, prompt: str, model: str) -> str:
+        """web_search 도구로 답한 본문. 게임 프로필 자동 생성용."""
+        # 검색 횟수를 안 묶으면 한 단계가 180초를 넘겨 타임아웃된다. 3회면 20초 안쪽에 항목 수도 같다(실측 2026-11).
+        # 기본 타임아웃 30초는 라운드용이라 따로 준다.
+        response = self._create(model, timeout=120.0, input=prompt, tools=[{"type": "web_search"}],
+                                max_tool_calls=3, max_output_tokens=4096)
+        usage.record("profile", model, *_usage_tokens(response))
+        return (response.output_text or "").strip()
 
     def generate_chats(
         self,
@@ -775,7 +812,7 @@ PROVIDERS = ("gemini", "claude", "openai")
 
 # provider 별 기본 모델 (config 에 값이 없을 때).
 DEFAULT_MODELS = {
-    "gemini": {"vision": "gemini-2.5-flash", "chat": "gemini-2.5-flash-lite"},
+    "gemini": {"vision": "gemini-3.8-flash", "chat": "gemini-3.8-flash"},
     "claude": {"vision": "claude-haiku-5-5", "chat": "claude-haiku-5-5"},
     "openai": {"vision": "gpt-6-luna", "chat": "gpt-6-luna"},
 }
@@ -853,6 +890,25 @@ def create_lookup_client(config: dict, gemini_api_key: str | None, claude_api_ke
             cfg = {**config, "ai": {**(config.get("ai") or {}), "chat_provider": p}}
             return _create_client("chat", cfg, gemini_api_key, claude_api_key, openai_api_key)
     return None
+
+
+DEFAULT_PROFILE_MODEL = "gpt-6-luna"
+
+
+def create_profile_client(config: dict, gemini_api_key: str | None, openai_api_key: str | None):
+    """게임 프로필 자동 생성용 (client, model). 고른 모델의 키가 없으면 있는 쪽 기본 모델로, 둘 다 없으면 None.
+
+    웹 검색이 필요해 OpenAI·Gemini 만 된다. provider 는 모델 이름으로 가른다."""
+    ai = config.get("ai") or {}
+    model = ai.get("profile_model") or DEFAULT_PROFILE_MODEL
+    wants_gemini = str(model).startswith("gemini")
+    if wants_gemini and not gemini_api_key:
+        wants_gemini, model = False, DEFAULT_PROFILE_MODEL
+    elif not wants_gemini and not openai_api_key:
+        wants_gemini, model = True, DEFAULT_MODELS["gemini"]["vision"]
+    if wants_gemini:
+        return (GeminiClient(api_key=gemini_api_key, config=config), model) if gemini_api_key else None
+    return (OpenAIClient(api_key=openai_api_key, config=config), model) if openai_api_key else None
 
 
 def check_api_key(provider: str, api_key: str) -> tuple[bool, str]:

@@ -1,0 +1,202 @@
+{
+  "title": "테스터 피드백 — 기본 모델 luna, 설치·음성 실패·단순 화면·프로필 편집",
+  "created": "2026-11-01T23:30:00+09:00",
+  "author": "Claude",
+  "status": "pending",
+  "summary": "구글이 Gemini 2.5 접근을 최근 사용자로 제한해 새 키에서 404 가 날 수 있다. 기본을 gpt-6-luna(화면·채팅·프로필)로 바꾸고, Gemini 키만 있으면 gemini-3.8-flash 로 대체한다.\n그 밖에: requirements.txt 한글 주석으로 pip 가 멈추던 문제 수정, 음성·화면·채팅 실패를 채팅창에 안내, 저장된 마이크가 없으면 기본 마이크로 전환, 대화창·퍼즐 같은 작은 화면 변화 감지, 프로필 보기·수정·제목 변경, 실패한 자동 생성이 기존 프로필을 지우지 않음, 번들 프로필은 CrossCode 만, 내 말 표시 기본 켬, 예전 파일 안내·정리.\n추가: 프로필 형태 검사(validate_profile), 항목별 편집 창('+ 추가'·×·Enter 로 새 줄), 깨진 프로필 파일이 있어도 AI 프로세스가 멈추지 않고 안내.\n추가: 편집 창에 '텍스트 (고급)' 모드 — YAML 전체를 고치고 입력마다 검사(문법·줄 번호, 중복 항목, 형태). 오류면 경고하고 저장·항목별 전환을 막는다.",
+  "commits": [
+    "45a7aea fix: 테스터 피드백 — 기본 모델 luna, 설치·음성 실패·단순 화면·프로필 편집",
+    "4f4f4c6 feat(profile): 형태 검사와 항목별 편집 창 — 깨진 프로필로 채팅이 멈추지 않게",
+    "164f6f5 feat(profile): 편집 창에 텍스트(고급) 모드와 검사기 — 오류면 경고하고 저장 막음"
+  ],
+  "files": [
+    "config.yaml",
+    "requirements.txt",
+    "setup.bat",
+    "run.bat",
+    "solo_stream.spec",
+    "src/ai/model_client.py",
+    "src/capture/change_detect.py",
+    "src/chat/game_profile_loader.py",
+    "src/main.py",
+    "src/stt/pipeline.py",
+    "src/stt/transcriber.py",
+    "src/ui/overlay.py",
+    "src/ui/settings.py",
+    "src/utils/api_errors.py",
+    "src/utils/paths.py",
+    "src/utils/pricing.py",
+    "tests/regression/run.py"
+  ],
+  "changes": [
+    {
+      "dataset": "features",
+      "op": "update",
+      "key": "capture",
+      "from": {
+        "detail": "mss 창·모니터 캡처, SSIM 0.92 미만으로 바뀐 화면만 AI 로. 분석 주기 5~60초"
+      },
+      "set": {
+        "detail": "mss 창·모니터 캡처, 전체 SSIM 0.92 또는 6×4 칸 최저 0.95 미만이면 AI 로, 변화 없어도 60초마다 1회. 분석 주기 5~60초"
+      },
+      "why": "대화창·퍼즐처럼 작은 변화를 전체 SSIM 이 못 잡았다"
+    },
+    {
+      "dataset": "features",
+      "op": "update",
+      "key": "profile",
+      "from": {
+        "detail": "웹 검색으로 만들어 캐시, 붙여넣기, 등장인물, 503 이면 생성 전체 중단"
+      },
+      "set": {
+        "detail": "웹 검색(gpt-6-luna·Gemini)으로 생성, 붙여넣기, 항목별·텍스트(고급) 수정, 제목 변경, 저장 전 검사. 생성 실패하면 기존 프로필 유지, 깨진 파일이어도 멈추지 않음"
+      },
+      "why": "2.5 접근 제한으로 자동 생성 실패, 편집 기능 요청"
+    },
+    {
+      "dataset": "checks",
+      "op": "add",
+      "key": "feedback-stt-new-key",
+      "row": {
+        "id": "feedback-stt-new-key",
+        "feature": "stt",
+        "title": "Gemini 키만 있는 배포본에서 음성에 반응하는가",
+        "how": [
+          "새 빌드를 받아 OpenAI 키 없이 Gemini 키만 넣고 실행",
+          "게임 창을 고르고 시작한 뒤 몇 문장 말한다",
+          "'사용량' 탭과 채팅창을 본다"
+        ],
+        "expect": "내 말이 회색으로 뜨고 봇이 반응하며 사용량이 늘어난다. 실패하면 채팅창에 '⚠ 받아쓰기 실패' 와 이유가 뜬다",
+        "status": "대기",
+        "note": "",
+        "updated": null,
+        "proposal": "2026-11-01-tester-feedback"
+      }
+    },
+    {
+      "dataset": "checks",
+      "op": "add",
+      "key": "feedback-simple-screen",
+      "row": {
+        "id": "feedback-simple-screen",
+        "feature": "capture",
+        "title": "대화창·퍼즐 화면에서 봇이 반응하는가",
+        "how": [
+          "대사가 이어지는 장면이나 퍼즐을 2~3분 플레이한다",
+          "말없이 채팅창과 '사용량' 탭의 비용을 본다"
+        ],
+        "expect": "대사가 바뀌면 다음 분석 때 그 내용에 반응한다. 시간당 비용이 부담스러우면 메모에 금액을 적어 주세요",
+        "status": "대기",
+        "note": "",
+        "updated": null,
+        "proposal": "2026-11-01-tester-feedback"
+      }
+    },
+    {
+      "dataset": "checks",
+      "op": "add",
+      "key": "feedback-luna-vision",
+      "row": {
+        "id": "feedback-luna-vision",
+        "feature": "vision",
+        "title": "화면 분석을 luna 로 바꾼 뒤 실제 게임에서 괜찮은가",
+        "how": [
+          "기본 설정으로 10분쯤 플레이한다",
+          "화면 내용과 봇 말이 맞는지, 반응이 늦지 않은지 본다"
+        ],
+        "expect": "화면과 어긋난 말이 이전보다 늘지 않고, 채팅이 15초 주기를 크게 넘겨 밀리지 않는다",
+        "status": "대기",
+        "note": "",
+        "updated": null,
+        "proposal": "2026-11-01-tester-feedback"
+      }
+    },
+    {
+      "dataset": "checks",
+      "op": "add",
+      "key": "feedback-setup",
+      "row": {
+        "id": "feedback-setup",
+        "feature": "installer",
+        "title": "한국어 Windows 다른 PC 에서 setup.bat 이 끝까지 되는가",
+        "how": [
+          "venv 없는 폴더에서 setup.bat 실행",
+          "끝나면 run.bat 실행"
+        ],
+        "expect": "'Setup complete' 가 나오고 앱이 켜진다. 실패하면 화면의 오류를 메모에",
+        "status": "대기",
+        "note": "",
+        "updated": null,
+        "proposal": "2026-11-01-tester-feedback"
+      }
+    },
+    {
+      "dataset": "checks",
+      "op": "add",
+      "key": "feedback-profile-edit",
+      "row": {
+        "id": "feedback-profile-edit",
+        "feature": "profile",
+        "title": "프로필 항목별 수정과 제목 변경",
+        "how": [
+          "설정 '게임 · 프로필'에서 프로필을 고르고 '보기 · 수정…'",
+          "제목을 바꾸고 항목을 펼쳐 '+ 추가'·×·Enter 로 고친 뒤 저장",
+          "'텍스트 (고급)'으로 바꿔 한 줄을 일부러 깨뜨려 경고와 저장 버튼 꺼짐을 보고, 고쳐서 저장",
+          "앱을 다시 켠다"
+        ],
+        "expect": "목록에 새 제목이 보이고, 다시 켜도 유지되며, 같은 게임 창에 자동으로 연결된다. 텍스트에 오류가 있으면 경고가 뜨고 저장되지 않는다",
+        "status": "대기",
+        "note": "",
+        "updated": null,
+        "proposal": "2026-11-01-tester-feedback"
+      }
+    }
+  ],
+  "tests": [
+    {
+      "name": "회귀 시험",
+      "result": "통과",
+      "command": "venv\\Scripts\\python tests/regression/run.py",
+      "detail": "73개 (텍스트 검사기 문법·중복·형태·모르는 항목 포함)"
+    },
+    {
+      "name": "리플레이 전후 비교",
+      "result": "통과",
+      "command": "venv\\Scripts\\python tests/replay/run.py --end 150 --no-instant",
+      "detail": "화면 분석 gemini-2.5-flash vs gpt-6-luna, Gemini 전용 구성까지 대화록 비교. 오류 0"
+    },
+    {
+      "name": "프로필 실제 생성",
+      "result": "통과",
+      "detail": "gpt-6-luna 88초, 전 항목 채움(Hollow Knight)"
+    },
+    {
+      "name": "프로필 편집기 구동",
+      "result": "통과",
+      "detail": "임시 데이터 폴더에서 + 추가·× 삭제·Enter 새 줄·제목 변경 저장, 빈 제목 저장 차단, 깨진 파일 복구(.bak 남김). 텍스트 모드: 항목→텍스트 전달, 문법 오류 시 저장 불가·경고·항목별 전환 차단·내용 보존, 고친 내용 항목별 반영·저장"
+    },
+    {
+      "name": "UI 스모크",
+      "result": "통과",
+      "command": "venv\\Scripts\\python tests\\ui\\smoke_settings_tabs.py"
+    },
+    {
+      "name": "배포 빌드",
+      "result": "통과",
+      "command": "pyinstaller solo_stream.spec",
+      "detail": "번들 프로필 crosscode.yaml 하나. 이후 model_client 소소한 수정 있음, exe 실행은 안 함"
+    },
+    {
+      "name": "테스터 환경 재현",
+      "result": "건너뜀",
+      "detail": "2.5 가 막힌 새 키가 없어 404 실제 경로는 가짜 오류로만 시험"
+    },
+    {
+      "name": "실제 앱·실제 마이크",
+      "result": "건너뜀",
+      "detail": "'내 확인' 항목으로 올림"
+    }
+  ],
+  "screenshots": [],
+  "notes": "Gemini 키만 쓰면 gemini-3.8-flash 단가가 luna 입력의 7.5배다(2027-01 부터 15배). 테스터 로그를 받으면 음성 무반응 원인을 최종 확인할 수 있다."
+}

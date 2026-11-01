@@ -77,7 +77,7 @@ class GeminiTranscriber:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.8-flash",
         language: str = "ko",
         prompt: str | None = None,
         normalize_target_level: float = 0.1,
@@ -93,6 +93,7 @@ class GeminiTranscriber:
         self._normalize_target_level = normalize_target_level
         self._normalize_percentile = normalize_percentile
         self._normalize_max_gain = normalize_max_gain
+        self.last_error = ""
         logger.info(
             f"GeminiTranscriber 준비: model={model} language={language} "
             f"normalize_level={normalize_target_level} p{normalize_percentile:.0f} "
@@ -157,8 +158,10 @@ class GeminiTranscriber:
                 usage.record("stt", self._model, getattr(um, "prompt_token_count", 0) or 0,
                              getattr(um, "candidates_token_count", 0) or 0)
             text = (response.text or "").strip()
+            self.last_error = ""
         except Exception as e:
             logger.error(f"transcribe 실패: {e}")
+            self.last_error = str(e)
             text = ""
         elapsed = time.perf_counter() - t0
         return text, elapsed
@@ -195,6 +198,7 @@ class OpenAITranscriber:
         self._normalize_target_level = normalize_target_level
         self._normalize_percentile = normalize_percentile
         self._normalize_max_gain = normalize_max_gain
+        self.last_error = ""
         logger.info(
             f"OpenAITranscriber 준비: model={model} language={language} "
             f"normalize_level={normalize_target_level} p{normalize_percentile:.0f} "
@@ -229,8 +233,10 @@ class OpenAITranscriber:
             # transcribe 모델은 오디오 분 단위 과금 — 보낸 길이로 기록한다.
             from src.utils import usage
             usage.record("stt", self._model, audio_sec=len(pcm) / float(sample_rate))
+            self.last_error = ""
         except Exception as e:
             logger.error(f"transcribe 실패: {e}")
+            self.last_error = str(e)
             text = ""
         elapsed = time.perf_counter() - t0
         return text, elapsed
@@ -241,7 +247,7 @@ def create_transcriber(
     *,
     gemini_api_key: str | None = None,
     openai_api_key: str | None = None,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.8-flash",
     language: str = "ko",
     prompt: str | None = None,
     normalize_target_level: float = 0.1,

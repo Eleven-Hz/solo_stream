@@ -3,7 +3,8 @@
 - 사용자 game_profiles/{게임명}.yaml 이 있으면 로드, 없으면 번들(앱과 함께 배포된) 프로필
 - 없으면: 기본은 '프로필 없음'(빈 프로필 + missing 표시) — 사용자가 build_manual_prompt() 를
   구독 채팅에 붙여넣고 받은 결과를 parse_profile_text()/save_profile() 로 넣는다(비용 0).
-  auto_generate=True 일 때만 Gemini (Google Search grounding) 멀티턴으로 자동 생성 후 저장.
+  auto_generate=True 일 때만 웹 검색(OpenAI web_search · Gemini grounding) 멀티턴으로 자동 생성 후 저장.
+  생성에 실패하면 기존 프로필을 그대로 둔다.
 
 생성 파이프라인:
   1단계: 기본 정보 (장르, 개발사, 스토리, 분위기) + 주요 인물
@@ -39,7 +40,9 @@ _PROFILE_DIR = paths.user_data_dir() / "game_profiles"
 # 앱과 함께 배포되는 읽기전용 프로필. 사용자 폴더에 같은 이름이 없을 때만 읽는다
 # (사용자가 만들거나 고친 프로필이 항상 이긴다 — 업데이트로 덮어쓰지 않음).
 _BUNDLED_PROFILE_DIR = paths.resource_dir() / "game_profiles"
-_DEFAULT_PROFILE_MODEL = "gemini-2.5-flash"
+_DEFAULT_PROFILE_MODEL = "gpt-6-luna"
+# 이 중 하나는 있어야 쓸 만한 프로필로 본다(전부 비면 저장하지 않음).
+_CONTENT_FIELDS = ("description", "characters", "systems", "locations", "enemies", "skills")
 
 # ── few-shot 예시 (CrossCode, 1단계 출력 형태) ──────────────────────────────────
 _FEW_SHOT_EXAMPLE = """예시 출력 (CrossCode 기준):
@@ -188,29 +191,15 @@ def _is_retryable(err: Exception) -> bool:
 
 
 def _search(ai_client, prompt: str, model: str) -> str:
-    """Google Search grounding으로 단일 검색 실행.
+    """웹 검색 1회 실행(client.web_search_text — OpenAI web_search 또는 Gemini grounding).
 
     503/UNAVAILABLE 같은 일시적 오류는 지수 백오프로 최대 _MAX_RETRIES 회 재시도한다.
     모든 재시도가 실패하면 마지막 예외를 그대로 raise 한다(호출부가 메시지 수집).
     """
-    from google.genai import types
     last_err: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            response = ai_client._client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                ),
-            )
-            um = getattr(response, "usage_metadata", None)
-            if um is not None:
-                from src.utils import usage
-                usage.record("profile", model, getattr(um, "prompt_token_count", 0) or 0,
-                             (getattr(um, "candidates_token_count", 0) or 0)
-                             + (getattr(um, "thoughts_token_count", 0) or 0))
-            text = (response.text or "").strip()
+            text = ai_client.web_search_text(prompt, model)
             if not text:
                 # 503 등으로 본문이 비어 돌아오는 케이스도 일시적 오류로 취급해 재시도
                 raise RuntimeError("빈 응답(text 없음)")
@@ -237,11 +226,129 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
+def validate_profile(data) -> list[str]:
+    """프로필 형태 검사. 문제를 사람이 읽을 문장 목록으로 돌려준다(없으면 빈 목록).
+
+    프롬프트를 만드는 코드는 목록 항목이 전부 글자라고 믿으므로, 여기를 통과한 것만 쓴다.
+    칸이 없거나 비어 있는 것은 괜찮다. 모르는 키는 건드리지 않는다."""
+    if not isinstance(data, dict):
+        return ["프로필은 '항목: 값' 형식이어야 해요"]
+    errors: list[str] = []
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        errors.append("제목(name)이 없거나 글자가 아니에요")
+    if data.get("description") is not None and not isinstance(data["description"], str):
+        errors.append("설명(description)은 글자여야 해요")
+    for field in PROFILE_LIST_FIELDS:
+        value = data.get(field)
+        if value is None:
+            continue
+        label = f"{PROFILE_LABELS[field]}({field})"
+        if not isinstance(value, list):
+            errors.append(f"{label}은(는) 목록이어야 해요")
+        else:
+            bad = [i for i, item in enumerate(value, 1) if not isinstance(item, str) or not item.strip()]
+            if bad:
+                where = ", ".join(str(i) for i in bad[:5]) + (" 등" if len(bad) > 5 else "")
+                errors.append(f"{label}의 {where}번째 항목이 글자가 아니에요")
+    return errors
+
+
+class _StrictProfileLoader(yaml.SafeLoader):
+    """같은 키가 두 번 나오면 오류로 본다. 기본 로더는 앞의 것을 조용히 버려 대량 편집 중 내용을 잃는다."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if isinstance(key, str) and key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"'{key}' 항목이 두 번 나와요", key_node.start_mark)
+            seen.add(key if isinstance(key, str) else id(key_node))
+        return super().construct_mapping(node, deep=deep)
+
+
+def _yaml_error_text(e: Exception) -> str:
+    mark = getattr(e, "problem_mark", None)
+    where = f"{mark.line + 1}번째 줄: " if mark is not None else ""
+    problem = str(getattr(e, "problem", "") or e).splitlines()[0]
+    if "mapping values" in problem:
+        problem = "콜론(:)이 또 나와요. 그 줄을 따옴표로 감싸세요"
+    elif "두 번" not in problem:
+        problem = "형식이 맞지 않아요. 들여쓰기·따옴표·괄호를 확인하세요"
+    return where + problem
+
+
+def check_profile_text(text: str) -> tuple[dict | None, list[str], list[str]]:
+    """텍스트 편집 칸의 내용을 검사한다. (프로필 | None, 오류 목록, 경고 목록).
+    오류가 하나라도 있으면 프로필은 None — 저장하면 안 된다. 경고는 저장을 막지 않는다."""
+    if not (text or "").strip():
+        return None, ["내용이 비어 있어요"], []
+    try:
+        data = yaml.load(text, Loader=_StrictProfileLoader)
+    except yaml.YAMLError as e:
+        return None, [_yaml_error_text(e)], []
+    if isinstance(data, dict):
+        # '- 이름: 설명' 은 YAML 에서 한 칸짜리 사전이 된다. 사람이 흔히 쓰는 형태라 글자로 되돌린다.
+        for field in PROFILE_LIST_FIELDS:
+            if isinstance(data.get(field), list):
+                data[field] = [_profile_item(x) if isinstance(x, dict) and len(x) == 1 else x for x in data[field]]
+    errors = validate_profile(data)
+    if errors:
+        return None, errors, []
+    known = set(_KNOWN_KEYS) | set(PROFILE_LIST_FIELDS)
+    unknown = [str(k) for k in data if k not in known and not str(k).startswith("_")]
+    warnings = [f"앱이 쓰지 않는 항목이에요(오타일 수 있어요): {', '.join(unknown)}"] if unknown else []
+    return {k: v for k, v in data.items() if not str(k).startswith("_")}, [], warnings
+
+
+def _read_profile_file(path: Path) -> dict:
+    """프로필 파일을 읽고 검사한다. 못 쓰는 파일이면 ValueError(이유)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        raise ValueError(f"파일을 읽지 못했어요: {str(e).splitlines()[0][:100]}") from e
+    errors = validate_profile(data)
+    if errors:
+        raise ValueError(" / ".join(errors))
+    return data
+
+
+def _load_found_profile(game_name: str, found: Path) -> dict:
+    """찾은 파일을 읽는다. 깨졌으면 앱을 멈추지 않고 번들 → 빈 프로필로 진행하고 `_invalid` 로 표시한다.
+    깨진 파일은 사용자가 고칠 수 있게 그대로 둔다."""
+    try:
+        return _read_profile_file(found)
+    except ValueError as e:
+        logger.error(f"게임 프로필이 깨져 있음: {found} — {e}")
+        reason = str(e)
+    bundled = bundled_profile_path_for(game_name)
+    result = None
+    if bundled is not None and bundled != found:
+        try:
+            result = _read_profile_file(bundled)
+        except ValueError as e:
+            logger.error(f"번들 프로필도 읽지 못함: {bundled} — {e}")
+    if result is None:
+        result = _empty_profile(game_name)
+    result["_invalid"] = reason
+    return result
+
+
+def _existing_or_empty(game_name: str, profile_path: Path) -> dict:
+    """자동 생성이 실패했을 때 쓸 프로필: 있던 것(사용자 → 번들), 없으면 빈 프로필."""
+    found = profile_path if profile_path.exists() else bundled_profile_path_for(game_name)
+    if found is not None:
+        return _load_found_profile(game_name, found)
+    return _empty_profile(game_name)
+
+
 def load_profile(game_name: str, ai_client=None, config: dict | None = None,
-                 auto_generate: bool = False) -> dict:
+                 auto_generate: bool = False, model: str | None = None) -> dict:
     """
-    게임 프로필 로드. 파일이 없으면:
-      - auto_generate=True 이고 ai_client 가 있으면 Gemini 검색으로 자동 생성(API 비용)
+    게임 프로필 로드. auto_generate=True 면 ai_client 로 새로 만들어 성공할 때만 교체한다.
+    그 외에 파일이 없으면:
       - 아니면 빈 프로필에 _missing 표시 → UI 가 '프로필 만들기' 안내를 띄운다
     """
     _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -249,23 +356,23 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None,
     filename = _safe_filename(game_name)
     profile_path = _PROFILE_DIR / f"{filename}.yaml"
 
-    # 자동 생성 요청이면 번들 프로필로 대체하지 않는다(사용자가 새로 만들기를 고른 것).
-    found = profile_path if profile_path.exists() else (
-        None if auto_generate else bundled_profile_path_for(game_name))
+    # 자동 생성 요청이면 있는 프로필을 읽지 않고 새로 만든다(사용자가 새로 만들기를 고른 것).
+    generating = auto_generate and ai_client is not None
+    found = None if generating else (
+        profile_path if profile_path.exists() else bundled_profile_path_for(game_name))
     if found is not None:
-        with open(found, "r", encoding="utf-8") as f:
-            profile = yaml.safe_load(f)
+        profile = _load_found_profile(game_name, found)
         src = "" if found == profile_path else " (번들)"
         logger.info(f"게임 프로필 로드{src}: {found.name}")
         return profile
 
-    if ai_client is None or not auto_generate:
+    if not generating:
         logger.warning(f"프로필 없음 — 빈 프로필로 진행(설정에서 만들기 안내): {game_name}")
         result = _empty_profile(game_name)
         result["_missing"] = True
         return result
 
-    model = (config or {}).get("ai", {}).get("profile_model", _DEFAULT_PROFILE_MODEL)
+    model = model or (config or {}).get("ai", {}).get("profile_model", _DEFAULT_PROFILE_MODEL)
     logger.info(f"게임 프로필 없음. 멀티턴 검색으로 자동 생성 중: {game_name} (모델: {model})")
     try:
         profile = _generate_profile(game_name, ai_client, model)
@@ -276,16 +383,39 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None,
             f"게임 프로필 생성 중단 ({e.step}) — 모델({model}) 혼잡(503). "
             f"저장하지 않음, 잠시 후 다시 시도 필요."
         )
-        result = _empty_profile(game_name)
+        result = _existing_or_empty(game_name, profile_path)
         result["_generation_aborted"] = str(e)
+        return result
+
+    # 키·모델 오류면 단계마다 실패해 빈 껍데기만 남는다. 저장하면 기존 프로필을 덮어쓰고,
+    # 다음 실행에 그 빈 파일이 로드되므로 저장하지 않는다.
+    if not any(profile.get(k) for k in _CONTENT_FIELDS):
+        errors = profile.get("_generation_errors") or []
+        logger.error(f"게임 프로필 생성 실패 — 내용 없음, 저장 안 함: {errors[:1]}")
+        result = _existing_or_empty(game_name, profile_path)
+        result["_generation_aborted"] = errors[0] if errors else "검색 결과 없음"
         return result
 
     # 생성 중 발생한 단계 오류는 UI 표시용이라 디스크에는 저장하지 않는다.
     # (오류가 박제되면 다음 실행 때 파일이 그대로 로드돼 재생성 기회를 놓친다)
     errors = profile.get("_generation_errors")
+    invalid = validate_profile({k: v for k, v in profile.items() if not k.startswith("_")})
+    if invalid:
+        logger.error(f"게임 프로필 생성 결과가 형식에 안 맞음, 저장 안 함: {invalid}")
+        result = _existing_or_empty(game_name, profile_path)
+        result["_generation_aborted"] = invalid[0]
+        return result
+    # 일부 단계가 실패한 결과로 멀쩡한 프로필을 덮어쓰지 않는다. 있던 프로필이 없을 때만 부분 결과를 저장한다.
+    if errors and (profile_path.exists() or bundled_profile_path_for(game_name) is not None):
+        logger.error(f"게임 프로필 생성 일부 실패 — 기존 프로필 유지: {errors[:1]}")
+        result = _existing_or_empty(game_name, profile_path)
+        result["_generation_aborted"] = errors[0]
+        return result
     to_save = {k: v for k, v in profile.items() if k != "_generation_errors"}
-    with open(profile_path, "w", encoding="utf-8") as f:
+    tmp_path = profile_path.with_suffix(".yaml.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    tmp_path.replace(profile_path)
     logger.info(f"게임 프로필 저장 완료: {profile_path}")
     if errors:
         logger.warning(f"프로필 생성 중 {len(errors)}개 단계 실패 — 일부 정보 누락 가능")
@@ -543,6 +673,12 @@ def build_vision_context(profile: dict) -> str:
 # 검색보다 깊고, API 비용이 들지 않는다. 결과 형식은 자동 생성과 같은 프로필 스키마.
 
 PROFILE_SECTIONS = ("vision_focus", "characters", "systems", "locations", "enemies", "skills", "chat_tips")
+# 편집·검사 대상 목록 칸. stt_terms 는 사람이 넣는 받아쓰기 힌트라 생성 단계에는 없다.
+PROFILE_LIST_FIELDS = PROFILE_SECTIONS + ("stt_terms",)
+PROFILE_LABELS = {
+    "vision_focus": "화면에서 볼 것", "characters": "인물", "systems": "시스템", "locations": "장소",
+    "enemies": "몬스터·보스", "skills": "스킬", "chat_tips": "채팅 포인트", "stt_terms": "받아쓰기 고유명사",
+}
 
 _MANUAL_PROMPT = """게임 "{game_name}"의 정보를 웹에서 검색해, 이 게임을 실제로 아는 한국 시청자들이 방송 채팅에서 쓸 수 있는 '게임 프로필'을 만들어 주세요.
 (웹 검색 기능을 켜고 공식 사이트·스팀·나무위키·위키피디아·게임 위키·공략 사이트·커뮤니티(레딧, 디시 등)를 참고)
@@ -724,7 +860,12 @@ def save_profile(game_name: str, profile: dict) -> Path:
     _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     path = profile_path_for(game_name)
     to_save = {k: v for k, v in profile.items() if not k.startswith("_")}
-    with open(path, "w", encoding="utf-8") as f:
+    errors = validate_profile(to_save)
+    if errors:
+        raise ValueError(" / ".join(errors))
+    tmp_path = path.with_suffix(".yaml.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    tmp_path.replace(path)
     logger.info(f"게임 프로필 저장(수동): {path}")
     return path

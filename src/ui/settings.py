@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from multiprocessing import Queue
 from pathlib import Path
 
@@ -38,7 +39,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QStackedWidget,
+    QStackedWidget, QSizePolicy,
     QVBoxLayout,
     QWidget,
     QWidgetItem,
@@ -62,28 +63,25 @@ logger = logging.getLogger("solo_stream.ui")
 
 # ── 모델 후보 ────────────────────────────────────────────────────────────────
 _VISION_MODELS = [
-    ("gemini", "gemini-2.5-flash"), ("gemini", "gemini-2.5-flash-lite"),
-    ("gemini", "gemini-2.5-pro"), ("gemini", "gemini-2.0-flash"),
     ("openai", "gpt-6-luna"), ("openai", "gpt-5-mini"),
+    ("gemini", "gemini-3.8-flash"),
     ("claude", "claude-haiku-5-5"), ("claude", "claude-sonnet-4-6"), ("claude", "claude-opus-4-7"),
 ]
-_VISION_RECOMMENDED = "gemini-2.5-flash"
+_VISION_RECOMMENDED = "gpt-6-luna"
 _CHAT_MODELS = [
     ("openai", "gpt-6-luna"), ("openai", "gpt-5-nano"), ("openai", "gpt-5-mini"), ("openai", "gpt-4.1-nano"),
-    ("gemini", "gemini-2.5-flash-lite"), ("gemini", "gemini-2.5-flash"),
-    ("gemini", "gemini-2.5-pro"), ("gemini", "gemini-2.0-flash"),
+    ("gemini", "gemini-3.8-flash"),
     ("claude", "claude-haiku-5-5"), ("claude", "claude-haiku-4-5-20251001"), ("claude", "claude-sonnet-4-6"),
 ]
-# 2026-10 샘플 영상 20라운드 비교에서 발화 반응·자연스러움 1위(비용은 flash-lite 와 비슷).
+# 2026-10 샘플 영상 20라운드 비교에서 발화 반응·자연스러움 1위.
 _CHAT_RECOMMENDED = "gpt-6-luna"
-# 게임 프로필 생성은 Google Search 그라운딩이 필요해 Gemini 전용.
-_PROFILE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"]
+# 게임 프로필 생성은 웹 검색이 필요해 OpenAI·Gemini 만.
+_PROFILE_MODELS = [("openai", "gpt-6-luna"), ("gemini", "gemini-3.8-flash")]
 # STT: gemini 는 generate_content(오디오 이해)로 받아쓰기가 되는 모델만.
 _STT_MODELS = [
     ("openai", "gpt-transcribe"), ("openai", "gpt-4o-transcribe"),
     ("openai", "gpt-4o-mini-transcribe"), ("openai", "whisper-1"),
-    ("gemini", "gemini-2.5-flash"), ("gemini", "gemini-2.5-flash-lite"), ("gemini", "gemini-2.5-pro"),
-    ("gemini", "gemini-3-flash-preview"), ("gemini", "gemini-3.1-flash-lite"), ("gemini", "gemini-3.5-flash"),
+    ("gemini", "gemini-3.8-flash"),
 ]
 _STT_RECOMMENDED = "gpt-transcribe"
 # 게임 혼잣말 40문장 실측(2026-10, tests/stt groundtruth): (정확도 %, 응답 초)
@@ -91,7 +89,6 @@ _STT_MEASURED = {
     "gpt-transcribe": (91, 0.7),
     "gpt-4o-transcribe": (87, 0.9),
     "gpt-4o-mini-transcribe": (83, 0.9),
-    "gemini-2.5-flash": (65, 2.5),
 }
 _PROVIDER_LABEL = {"gemini": "Gemini", "claude": "Claude", "openai": "OpenAI"}
 _KEY_ENV = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY", "claude": "CLAUDE_API_KEY"}
@@ -346,6 +343,255 @@ class _PromptDialog(QDialog):
         ok.clicked.connect(self.accept)
         row.addWidget(ok)
         lay.addLayout(row)
+
+
+class _ProfileListSection(QWidget):
+    """프로필의 목록 칸 하나. 제목을 누르면 펼쳐지고, 줄마다 입력칸과 ×, 아래에 '+ 추가'."""
+
+    def __init__(self, title: str, items: list[str], placeholder: str, scroll: QScrollArea, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self._placeholder = placeholder
+        self._scroll = scroll
+        self._rows: list[QWidget] = []
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self._header = T.button("")
+        self._header.setAutoDefault(False)
+        self._header.setAccessibleName(f"{title} 펼치기")
+        self._header.clicked.connect(lambda: self.set_open(self._body.isHidden()))
+        lay.addWidget(self._header)
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 4)
+        body.setSpacing(6)
+        self._rows_box = QVBoxLayout()
+        self._rows_box.setSpacing(6)
+        body.addLayout(self._rows_box)
+        add = T.button("+ 추가")
+        add.setAutoDefault(False)
+        add.setAccessibleName(f"{title} 항목 추가")
+        add.clicked.connect(lambda: self.add_row(focus=True))
+        body.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self._body)
+        self._body.setVisible(False)
+        for item in items:
+            self.add_row(item)
+        self._update_header()
+
+    def set_open(self, on: bool):
+        self._body.setVisible(on)
+        self._update_header()
+
+    def _update_header(self):
+        arrow = "▾" if not self._body.isHidden() else "▸"
+        self._header.setText(f"{arrow}  {self._title}  ({len(self.values())})")
+
+    def add_row(self, text: str = "", focus: bool = False, after: QWidget | None = None) -> QLineEdit:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        edit = QLineEdit(" ".join(str(text).split()))
+        edit.setPlaceholderText(self._placeholder)
+        edit.setCursorPosition(0)
+        edit.setToolTip(edit.text())
+        edit.textChanged.connect(lambda _: self._update_header())
+        edit.returnPressed.connect(lambda: self.add_row(focus=True, after=row))
+        h.addWidget(edit, 1)
+        rm = T.button("×")
+        rm.setAutoDefault(False)
+        rm.setFixedWidth(34)
+        rm.setToolTip("이 항목 지우기")
+        rm.setAccessibleName(f"{self._title} 항목 지우기")
+        rm.clicked.connect(lambda: self._remove_row(row))
+        h.addWidget(rm)
+        index = self._rows.index(after) + 1 if after in self._rows else len(self._rows)
+        self._rows.insert(index, row)
+        self._rows_box.insertWidget(index, row)
+        row.edit = edit
+        if focus:
+            self.set_open(True)
+            edit.setFocus()
+            QTimer.singleShot(0, lambda: self._scroll.ensureWidgetVisible(row))
+        self._update_header()
+        return edit
+
+    def set_items(self, items: list[str]):
+        for row in list(self._rows):
+            self._remove_row(row)
+        for item in items:
+            self.add_row(item)
+
+    def _remove_row(self, row: QWidget):
+        self._rows.remove(row)
+        self._rows_box.removeWidget(row)
+        row.deleteLater()
+        self._update_header()
+
+    def values(self) -> list[str]:
+        """빈 칸은 뺀다."""
+        return [t for t in (r.edit.text().strip() for r in self._rows) if t]
+
+
+class _ProfileEditDialog(QDialog):
+    """게임 프로필 보기·수정. 기본은 항목별 입력('+ 추가'), 대량 수정용으로 YAML 텍스트 모드가 있다.
+    텍스트 모드는 입력할 때마다 check_profile_text 로 검사하고, 오류가 있으면 저장·모드 전환을 막는다.
+
+    파일 이름은 바꾸지 않는다 — 창 이름으로 프로필을 찾는 기준이라 바꾸면 자동 연결이 끊긴다.
+    편집 칸이 없는 키도 그대로 저장한다."""
+
+    def __init__(self, stem: str, profile: dict, is_bundled: bool, invalid: str = "", parent=None):
+        super().__init__(parent)
+        from src.chat.game_profile_loader import PROFILE_LABELS, PROFILE_LIST_FIELDS
+        self.profile: dict | None = None
+        self._source = {k: v for k, v in profile.items() if not k.startswith("_")}
+        self.setWindowTitle("게임 프로필 보기 · 수정")
+        self.setModal(True)
+        self.resize(720, 680)
+        self.setStyleSheet(f"QDialog {{ background: {T.BG}; }}" + T.settings_qss())
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        note = f"파일: {stem}.yaml"
+        if is_bundled:
+            note += " · 앱 기본 제공 프로필이에요. 저장하면 내 폴더에 복사본이 생기고 그걸 쓰게 됩니다."
+        lay.addWidget(T.label(note, "sub", wrap=True))
+        if invalid:
+            warn = T.label(f"⚠ 이 프로필 파일이 깨져 있어 대신 불러온 내용을 보여 드려요. "
+                           f"저장하면 깨진 파일은 {stem}.yaml.bak 으로 남겨 둡니다. — {invalid}", "sub", wrap=True)
+            warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+            lay.addWidget(warn)
+        self._mode = T.Segmented([("form", "항목별"), ("text", "텍스트 (고급)")], "form")
+        self._mode.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._mode.changed.connect(self._on_mode)
+        lay.addWidget(self._mode, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        form = QVBoxLayout(inner)
+        form.setContentsMargins(0, 0, 8, 0)
+        form.setSpacing(8)
+        form.addWidget(T.label("프로필 제목", "lbl"))
+        self.name_edit = QLineEdit(str(profile.get("name") or stem))
+        self.name_edit.textChanged.connect(self._validate)
+        form.addWidget(self.name_edit)
+        form.addWidget(T.label("게임 설명", "lbl"))
+        self.desc_edit = QPlainTextEdit(str(profile.get("description") or ""))
+        self.desc_edit.setFixedHeight(92)
+        form.addWidget(self.desc_edit)
+        form.addSpacing(4)
+        form.addWidget(T.label("항목을 누르면 펼쳐져요. 입력 중 Enter 를 누르면 아래에 새 줄이 생겨요.", "sub", wrap=True))
+        hints = {"stt_terms": "자주 잘못 들리는 게임 고유명사", "chat_tips": "상황 → 채팅 반응",
+                 "vision_focus": "화면에서 주목할 것과 읽는 법"}
+        self.sections: dict[str, _ProfileListSection] = {}
+        for field in PROFILE_LIST_FIELDS:
+            items = profile.get(field) or []
+            section = _ProfileListSection(PROFILE_LABELS[field], items if isinstance(items, list) else [],
+                                          hints.get(field, "이름 (원어): 한 줄 설명"), self._scroll)
+            self.sections[field] = section
+            form.addWidget(section)
+        form.addStretch(1)
+        self._scroll.setWidget(inner)
+
+        text_page = QWidget()
+        tv = QVBoxLayout(text_page)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(6)
+        tv.addWidget(T.label("YAML 형식으로 한 번에 고칩니다. 오류가 있으면 저장할 수 없어요. "
+                             "콜론이 두 번 이상 든 줄은 따옴표로 감싸세요.", "sub", wrap=True))
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setFont(T.font(13, mono=True))
+        self.text_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.text_edit.textChanged.connect(self._validate)
+        tv.addWidget(self.text_edit, 1)
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._scroll)
+        self._stack.addWidget(text_page)
+        lay.addWidget(self._stack, 1)
+
+        self._error = T.label("", "sub", wrap=True)
+        self._error.setStyleSheet(f"color: {T.ERROR}; font-size: 12px; font-weight: 600;")
+        lay.addWidget(self._error)
+        self._warning = T.label("", "sub", wrap=True)
+        self._warning.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+        self._warning.setVisible(False)
+        lay.addWidget(self._warning)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = T.button("취소")
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        self._ok = T.button("저장하고 적용")
+        self._ok.setAutoDefault(False)  # 입력칸의 Enter 로 창이 닫히지 않게
+        self._ok.clicked.connect(self._save)
+        row.addWidget(self._ok)
+        lay.addLayout(row)
+        self._validate()
+
+    def _build(self) -> dict:
+        data = dict(self._source)
+        data["name"] = self.name_edit.text().strip()
+        data["description"] = self.desc_edit.toPlainText().strip()
+        for field, section in self.sections.items():
+            values = section.values()
+            if values or field in data:
+                data[field] = values
+        return data
+
+    def _is_text_mode(self) -> bool:
+        return self._mode.value() == "text"
+
+    def _on_mode(self, mode: str):
+        import yaml
+        from src.chat.game_profile_loader import PROFILE_LIST_FIELDS, check_profile_text
+        if mode == "text":
+            self.text_edit.setPlainText(yaml.dump(self._build(), allow_unicode=True, default_flow_style=False,
+                                                  sort_keys=False, width=1000))
+            self._stack.setCurrentIndex(1)
+            self._validate()
+            return
+        data, errors, _ = check_profile_text(self.text_edit.toPlainText())
+        if errors:
+            # 항목별로 돌아가면 고치던 내용을 잃는다. 텍스트 모드에 머물게 하고 경고한다.
+            self._mode.set_value("text")
+            self._show_errors(errors, prefix="오류를 고쳐야 항목별로 돌아갈 수 있어요")
+            return
+        self._source = data
+        self.name_edit.setText(data["name"])
+        self.desc_edit.setPlainText(str(data.get("description") or ""))
+        for field in PROFILE_LIST_FIELDS:
+            self.sections[field].set_items(data.get(field) or [])
+        self._stack.setCurrentIndex(0)
+        self._validate()
+
+    def _show_errors(self, errors: list[str], prefix: str = "저장할 수 없어요"):
+        self._error.setText(f"⚠ {prefix}: " + " / ".join(errors) if errors else "")
+
+    def _validate(self) -> bool:
+        from src.chat.game_profile_loader import check_profile_text, validate_profile
+        warnings: list[str] = []
+        if self._is_text_mode():
+            _, errors, warnings = check_profile_text(self.text_edit.toPlainText())
+        else:
+            errors = validate_profile(self._build())
+        self._show_errors(errors)
+        self._warning.setText("⚠ " + " / ".join(warnings) if warnings else "")
+        self._warning.setVisible(bool(warnings))
+        self._ok.setEnabled(not errors)
+        return not errors
+
+    def _save(self):
+        from src.chat.game_profile_loader import check_profile_text
+        if not self._validate():
+            return
+        self.profile = check_profile_text(self.text_edit.toPlainText())[0] if self._is_text_mode() else self._build()
+        self.accept()
 
 
 class _ProfilePasteDialog(QDialog):
@@ -681,13 +927,16 @@ class SettingsWindow(QWidget):
         self._start_btn.style().polish(self._start_btn)
 
     def set_profile_name(self, name: str, status: str = "ok", detail: str = ""):
-        """프로필 로드/생성 결과. status: ok | missing(파일 없음) | aborted(503 등으로 중단) | partial(일부 실패)."""
+        """프로필 로드/생성 결과. status: ok | missing(파일 없음) | invalid(파일 깨짐) | aborted(생성 실패) | partial(일부 실패)."""
         self._profile_state = (name, status, detail)
         if status == "missing":
             text = f"{name} · 프로필 없음 — '게임 · 프로필'에서 만들 수 있어요(화면만 보고 채팅 중)"
             badge, color = "warn", T.WARN
+        elif status == "invalid":
+            text = f"{name} · 프로필 파일이 깨져 있어요 — '보기 · 수정'으로 고칠 수 있어요"
+            badge, color = "error", T.ERROR
         elif status == "aborted":
-            text = f"{name} · 서버 혼잡으로 생성 중단됨 — 잠시 후 다시 만들기"
+            text = f"{name} · 자동 생성 실패 — 있던 프로필은 그대로예요"
             badge, color = "error", T.ERROR
         elif status == "partial":
             text = f"{name} · 일부 정보 누락 — 필요하면 다시 만들기"
@@ -1150,28 +1399,26 @@ class SettingsWindow(QWidget):
         self._refresh_ready()
 
     def _regenerate_profile(self):
-        """Gemini 검색으로 자동 생성(API 비용, 수십 초). 기존 프로필을 지우고 다시 만든다."""
+        """웹 검색으로 자동 생성(API 비용, 수십 초). 성공해야 기존 프로필을 바꾼다(load_profile)."""
         game_name = self._profile_target_game()
         if not game_name:
             self._game_profile_status.setText("먼저 게임 창을 고르세요")
             return
-        if not _read_env_keys()["gemini"]:
-            self._game_profile_status.setText("자동 생성은 Gemini 키가 있어야 해요(구글 검색 사용) — "
+        keys = _read_env_keys()
+        if not (keys["openai"] or keys["gemini"]):
+            self._game_profile_status.setText("자동 생성은 OpenAI나 Gemini 키가 있어야 해요(웹 검색 사용) — "
                                               "'프롬프트 복사'로 무료로 만들 수 있어요.")
             self._game_profile_status.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
             return
         from src.chat.game_profile_loader import bundled_profile_path_for
         profile_path = paths.user_data_dir() / "game_profiles" / f"{profile_filename(game_name)}.yaml"
-        msg = f"'{game_name}' 프로필을 Gemini 검색으로 자동 생성할까요?\n검색 6번 — API 비용이 들고 수십 초 걸려요."
+        msg = f"'{game_name}' 프로필을 웹 검색으로 자동 생성할까요?\n검색 6번 — API 비용이 들고 수십 초 걸려요."
         if profile_path.exists():
-            msg += "\n\n지금 있는 프로필은 지워지고 새로 만든 것으로 바뀝니다."
+            msg += "\n\n성공하면 지금 있는 프로필을 새로 만든 것으로 바꿉니다. 실패하면 그대로 둡니다."
         elif bundled_profile_path_for(game_name):
             msg += "\n\n앱 기본 제공 프로필 대신 새로 만든 것을 쓰게 됩니다(기본 제공 파일은 그대로)."
         if QMessageBox.question(self, "자동 생성", msg) != QMessageBox.StandardButton.Yes:
             return
-        if profile_path.exists():
-            profile_path.unlink()
-            logger.info(f"기존 프로필 삭제: {profile_path.name}")
         self._queue.put({"game_name": game_name, "generate": True})
         paths.save_last_session(game_name=game_name)
         self._set_profile_pending(game_name, "자동 생성 중… (수십 초)")
@@ -1199,6 +1446,41 @@ class SettingsWindow(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.profile:
             return
         try:
+            save_profile(game_name, dlg.profile)
+        except Exception as e:
+            self._game_profile_status.setText(f"저장 실패: {e}")
+            self._game_profile_status.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            return
+        self._refresh_profiles()
+        self._queue.put({"game_name": game_name})
+        paths.save_last_session(game_name=game_name)
+        self._set_profile_pending(game_name, "저장됨 · 불러오는 중…")
+
+    def _edit_profile(self):
+        from src.chat.game_profile_loader import (
+            _safe_filename, bundled_profile_path_for, load_profile, profile_path_for, save_profile,
+        )
+        game_name = self._profile_target_game()
+        if not game_name:
+            self._game_profile_status.setText("먼저 게임 창을 고르세요")
+            return
+        try:
+            profile = load_profile(game_name)
+        except Exception as e:
+            self._game_profile_status.setText(f"프로필을 읽지 못했어요: {e}")
+            self._game_profile_status.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            return
+        is_bundled = not profile_path_for(game_name).exists() and bundled_profile_path_for(game_name) is not None
+        invalid = str(profile.get("_invalid") or "")
+        if profile.get("_missing"):
+            profile = {"name": game_name}  # 빈 프로필의 안내 문구를 내용으로 저장하지 않는다
+        dlg = _ProfileEditDialog(_safe_filename(game_name), profile, is_bundled, invalid, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.profile:
+            return
+        try:
+            path = profile_path_for(game_name)
+            if invalid and path.exists():
+                shutil.copy2(path, path.with_name(path.name + ".bak"))
             save_profile(game_name, dlg.profile)
         except Exception as e:
             self._game_profile_status.setText(f"저장 실패: {e}")
@@ -1287,10 +1569,10 @@ class SettingsWindow(QWidget):
         fade.toggled.connect(self._on_fade)
         card.add_row(title="오래된 메시지 흐리게", sub="새 채팅이 눈에 먼저 들어오게 합니다.", right=fade)
 
-        self._show_stt_switch = T.Switch(bool(ui.get("show_stt_history", False)))
+        self._show_stt_switch = T.Switch(bool(ui.get("show_stt_history", True)))
         self._show_stt_switch.setAccessibleName("내 말 표시")
         self._show_stt_switch.toggled.connect(self._on_show_stt)
-        card.add_row(title="내 말(받아쓰기) 표시", sub="음성 인식 결과를 채팅 사이에 회색으로 보여줘요. 잘못 들렸는지 확인할 때 켜세요.",
+        card.add_row(title="내 말(받아쓰기) 표시", sub="음성 인식 결과를 채팅 사이에 회색으로 보여줘요. 잘못 들렸는지 바로 확인할 수 있어요.",
                      right=self._show_stt_switch)
 
         typing = T.Switch(bool(ui.get("typing_indicator", True)))
@@ -1453,7 +1735,7 @@ class SettingsWindow(QWidget):
 
         # 인식 모델
         card = T.Card("인식 모델")
-        cur_pm = _pm(str(stt.get("provider", "gemini")), str(stt.get("model", "gemini-2.5-flash")))
+        cur_pm = _pm(str(stt.get("provider", "gemini")), str(stt.get("model", "gemini-3.8-flash")))
         self._stt_model_combo = T.combo(
             [(_model_text(p, m, _STT_RECOMMENDED), _pm(p, m)) for p, m in _STT_MODELS], width=320)
         T.select_data(self._stt_model_combo, cur_pm, fallback_text=_model_text(*cur_pm.split("|", 1)))
@@ -1693,7 +1975,7 @@ class SettingsWindow(QWidget):
     def _start_stt_test(self):
         if self._stt_test_running:
             return
-        data = self._stt_model_combo.currentData() or "gemini|gemini-2.5-flash"
+        data = self._stt_model_combo.currentData() or "gemini|gemini-3.8-flash"
         provider, _, model = data.partition("|")
         keys = _read_env_keys()
         if provider == "openai" and not keys["openai"]:
@@ -1826,12 +2108,13 @@ class SettingsWindow(QWidget):
                          "검색 호출은 일반 채팅보다 비싸요.",
                      right=ws)
 
-        pmodel = str(ai.get("profile_model", _PROFILE_MODELS[0]))
-        self._profile_model_combo = T.combo([(_model_text("gemini", m), m) for m in _PROFILE_MODELS], width=300)
-        T.select_data(self._profile_model_combo, pmodel, fallback_text=_model_text("gemini", pmodel))
+        pmodel = str(ai.get("profile_model", _PROFILE_MODELS[0][1]))
+        self._profile_model_combo = T.combo([(_model_text(p, m), m) for p, m in _PROFILE_MODELS], width=300)
+        T.select_data(self._profile_model_combo, pmodel,
+                      fallback_text=_model_text("gemini" if pmodel.startswith("gemini") else "openai", pmodel))
         self._profile_model_combo.currentIndexChanged.connect(self._on_profile_model)
         row_p = card.add_row(title="게임 프로필 자동 생성",
-                             sub="구글 검색으로 게임 정보를 모아요(Gemini 전용) · 다음 생성부터 적용",
+                             sub="웹 검색으로 게임 정보를 모아요(OpenAI·Gemini) · 다음 생성부터 적용",
                              right=self._profile_model_combo)
         # 행마다 '키 없음' 경고(제목/설명 아래). 고른 모델의 키가 없으면 무엇으로 대체되는지 알려준다.
         self._model_warns: dict[str, QLabel] = {}
@@ -1904,8 +2187,8 @@ class SettingsWindow(QWidget):
             warn.setText(f"⚠ {label} 키가 없어요 — {tail}")
             warn.setVisible(True)
         pw = self._model_warns["profile"]
-        pw.setText("⚠ Gemini 키가 없어 자동 생성은 못 써요 — '게임 · 프로필'의 '프롬프트 복사'로 무료로 만들 수 있어요.")
-        pw.setVisible(not keys["gemini"])
+        pw.setText("⚠ OpenAI·Gemini 키가 없어 자동 생성은 못 써요 — '게임 · 프로필'의 '프롬프트 복사'로 무료로 만들 수 있어요.")
+        pw.setVisible(not (keys["openai"] or keys["gemini"]))
 
     def _check_key(self, provider: str):
         key = _read_env_keys()[provider]
@@ -2032,6 +2315,9 @@ class SettingsWindow(QWidget):
         apply_p = T.button("이 프로필 쓰기")
         apply_p.clicked.connect(self._apply_profile)
         h.addWidget(apply_p)
+        edit_p = T.button("보기 · 수정…")
+        edit_p.clicked.connect(self._edit_profile)
+        h.addWidget(edit_p)
         card.add_row(w)
         w, h = T.row_box()
         self._game_profile_status = T.label("불러오는 중…", "sub", wrap=True)
@@ -2062,7 +2348,7 @@ class SettingsWindow(QWidget):
         card.add_row(w)
         regen = T.button("자동 생성…")
         regen.clicked.connect(self._regenerate_profile)
-        card.add_row(title="자동 생성 (API 비용)", sub="Gemini 구글 검색 6번으로 만들어요 · Gemini 키 필요 · 수십 초",
+        card.add_row(title="자동 생성 (API 비용)", sub="웹 검색 6번으로 만들어요 · OpenAI나 Gemini 키 필요 · 수십 초",
                      right=regen)
         lay.addWidget(card)
 
@@ -2093,6 +2379,14 @@ class SettingsWindow(QWidget):
         open_btn = T.button("폴더 열기")
         open_btn.clicked.connect(self._open_user_data_dir)
         card.add_row(title="데이터 폴더", sub=str(paths.user_data_dir()), right=open_btn)
+        legacy = paths.legacy_user_files()
+        if legacy:
+            self._legacy_btn = T.button("정리")
+            self._legacy_btn.clicked.connect(self._archive_legacy)
+            self._legacy_row = card.add_row(
+                title=f"예전 버전 파일 {len(legacy)}개",
+                sub=f"지금은 읽지 않는 파일이에요: {', '.join(p.name for p in legacy)} · 정리하면 .bak 으로 이름만 바꿔요",
+                right=self._legacy_btn)
         lay.addWidget(card)
 
         info = T.label(f"Solo Stream v{APP_VERSION}  ·  문의 contact.team8889@gmail.com", "sub")
@@ -2104,7 +2398,7 @@ class SettingsWindow(QWidget):
     def _refresh_profiles(self):
         import yaml
         c = self._profile_combo
-        current = c.currentText()
+        current = c.currentData()  # 제목은 바뀔 수 있어 파일 이름으로 선택을 유지한다
         c.blockSignals(True)
         c.clear()
         c.addItem("자동 (창 이름에서 찾기)", userData=None)
@@ -2117,8 +2411,8 @@ class SettingsWindow(QWidget):
                     display = (yaml.safe_load(f) or {}).get("name") or stem
             except Exception:
                 display = stem
-            c.addItem(display, userData=stem)
-        idx = c.findText(current)
+            c.addItem(str(display), userData=stem)
+        idx = c.findData(current) if current else 0
         c.setCurrentIndex(max(idx, 0))
         c.blockSignals(False)
 
@@ -2170,6 +2464,14 @@ class SettingsWindow(QWidget):
             self._save("ui", {"window_excludes": self._excludes})
             self._render_excludes()
             self._refresh_windows()
+
+    def _archive_legacy(self):
+        try:
+            paths.archive_legacy_files()
+        except Exception as e:
+            self._game_profile_status.setText(f"정리 실패: {e}")
+            return
+        self._legacy_row.setVisible(False)
 
     def _open_user_data_dir(self):
         import os
