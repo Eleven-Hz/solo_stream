@@ -2,26 +2,77 @@
   "title": "확장 1단계 — 게임 이벤트에 채팅이 몰림 (화면 이벤트 → 흥분도, 잔불)",
   "created": "2026-10-26T10:30:00+09:00",
   "author": "Claude",
-  "status": "pending",
+  "status": "approved",
   "summary": "말없이 플레이해도 보스 등장·처치, 사망, HP 위기, 레벨업 같은 큰 장면에서 채팅이 빠르게·많이 뜨고 2라운드쯤 잦아들게 했다.\n1) hype.event_hype: Vision '이벤트:' 줄을 등급으로 — 보스 처치 0.85, 사망 0.8, 보스 등장 0.7, HP 위기·레벨업 0.5, 큰 피해 0.25(혼자선 발동 안 함). 아이템 획득·확인 창은 0. 실제 이벤트 줄은 거의 전부 이런 사소한 것이라(지난 리플레이 309라운드 확인) 아무 이벤트나 올리면 줍기마다 채팅이 폭주한다.\n2) 보스 등장·사망은 방향 없음('격하게 들썩') — ㅋㅋ(놀림)냐 ㅠㅠ냐는 봇 성향·감정에 맡김. 보스 처치·레벨업은 긍정.\n3) 잔불: 화면 분석 라운드마다 0.55배(0.85 → 0.47 → 0.26). 잔불만으로 임계값을 넘으면 메아리 감쇠용 상향 임계값을 적용하지 않음.\n4) 리플레이 ChatRound 에 흥분도가 아예 빠져 있었다 — main 과 맞춤(이제 리플레이도 extra_batch·mood_hint 적용).\n처음 계획과 다른 곳: emotion.event_valence 재사용 안 함(보스 등장을 부정으로 봐서 ㅠㅠ로 나감), 이벤트 뒤 캡처 주기 단축은 보류.",
-  "commits": ["8a9f1d7 feat(chat): 화면 이벤트로 흥분도 올림 — 큰 장면만 등급, 잔불 2라운드 (확장 1단계)"],
-  "files": ["src/chat/hype.py", "src/main.py", "config.yaml", "tests/replay/common.py", "tests/replay/run.py", "docs/확장_로드맵.md", "docs/wiki/evaluation.md", "docs/wiki/decisions.md"],
+  "commits": [
+    "8a9f1d7 feat(chat): 화면 이벤트로 흥분도 올림 — 큰 장면만 등급, 잔불 2라운드 (확장 1단계)"
+  ],
+  "files": [
+    "src/chat/hype.py",
+    "src/main.py",
+    "config.yaml",
+    "tests/replay/common.py",
+    "tests/replay/run.py",
+    "docs/확장_로드맵.md",
+    "docs/wiki/evaluation.md",
+    "docs/wiki/decisions.md"
+  ],
   "changes": [
-    {"dataset": "features", "op": "update", "key": "eventhype",
-     "from": {"status": "계획", "detail": "Vision 이벤트 → compute_hype, 잔불 1~2라운드, (선택) 이벤트 뒤 캡처 주기 단축"},
-     "set": {"status": "일부", "detail": "큰 장면만 등급(보스·사망·HP 위기·레벨업) → hype, 잔불 0.55배. 실제 보스전 효과 미실측, 캡처 주기 단축은 보류"},
-     "why": "코드·리플레이는 됐지만 샘플 영상에 큰 장면이 없어 효과를 아직 못 봄"},
-    {"dataset": "features", "op": "update", "key": "hype",
-     "from": {"detail": "발화·채팅 톤으로 빠르게·많이·mood_hint, 메아리 감쇠. Vision 이벤트는 아직 안 씀(→ eventhype)"},
-     "set": {"detail": "발화·채팅 톤·화면 이벤트 잔불로 빠르게·많이·mood_hint, 메아리 감쇠. 리플레이에도 반영"},
-     "why": "화면 이벤트 입력이 생김"}
+    {
+      "dataset": "features",
+      "op": "update",
+      "key": "eventhype",
+      "from": {
+        "status": "계획",
+        "detail": "Vision 이벤트 → compute_hype, 잔불 1~2라운드, (선택) 이벤트 뒤 캡처 주기 단축"
+      },
+      "set": {
+        "status": "일부",
+        "detail": "큰 장면만 등급(보스·사망·HP 위기·레벨업) → hype, 잔불 0.55배. 실제 보스전 효과 미실측, 캡처 주기 단축은 보류"
+      },
+      "why": "코드·리플레이는 됐지만 샘플 영상에 큰 장면이 없어 효과를 아직 못 봄"
+    },
+    {
+      "dataset": "features",
+      "op": "update",
+      "key": "hype",
+      "from": {
+        "detail": "발화·채팅 톤으로 빠르게·많이·mood_hint, 메아리 감쇠. Vision 이벤트는 아직 안 씀(→ eventhype)"
+      },
+      "set": {
+        "detail": "발화·채팅 톤·화면 이벤트 잔불로 빠르게·많이·mood_hint, 메아리 감쇠. 리플레이에도 반영"
+      },
+      "why": "화면 이벤트 입력이 생김"
+    }
   ],
   "tests": [
-    {"name": "지난 리플레이 재계산(이벤트 끔/켬)", "result": "통과", "detail": "11개 309라운드, 흥분 발동 79 → 79(새로 0·사라짐 0) — 사소한 이벤트로 안 터짐"},
-    {"name": "등급·잔불·방향 손 점검", "result": "통과", "detail": "획득·확인 창·'물리 공격' 0, 보스 처치 후 0.85→0.47→0.26, 사망+봇 ㅋㅋ 메아리·보스 등장은 '격하게 들썩', weight 0 이면 0"},
-    {"name": "리플레이 300~705초", "result": "통과", "command": "venv/Scripts/python tests/replay/run.py --start 300 --end 705 --tag event_hype_300_705", "detail": "45라운드 오류 0, 흥분 발동 7(전부 발화·채팅발). 화면 분석이 쓴 큰 장면 이벤트 0 — 효과는 이 샘플로 못 봄"},
-    {"name": "실제 보스전", "result": "건너뜀", "detail": "사용자가 run.bat 으로 보스전·사망 장면 확인 필요"}
+    {
+      "name": "지난 리플레이 재계산(이벤트 끔/켬)",
+      "result": "통과",
+      "detail": "11개 309라운드, 흥분 발동 79 → 79(새로 0·사라짐 0) — 사소한 이벤트로 안 터짐"
+    },
+    {
+      "name": "등급·잔불·방향 손 점검",
+      "result": "통과",
+      "detail": "획득·확인 창·'물리 공격' 0, 보스 처치 후 0.85→0.47→0.26, 사망+봇 ㅋㅋ 메아리·보스 등장은 '격하게 들썩', weight 0 이면 0"
+    },
+    {
+      "name": "리플레이 300~705초",
+      "result": "통과",
+      "command": "venv/Scripts/python tests/replay/run.py --start 300 --end 705 --tag event_hype_300_705",
+      "detail": "45라운드 오류 0, 흥분 발동 7(전부 발화·채팅발). 화면 분석이 쓴 큰 장면 이벤트 0 — 효과는 이 샘플로 못 봄"
+    },
+    {
+      "name": "실제 보스전",
+      "result": "건너뜀",
+      "detail": "사용자가 run.bat 으로 보스전·사망 장면 확인 필요"
+    }
   ],
   "screenshots": [],
-  "notes": "실제 앱에서 봐 줄 것: 보스전·사망 장면에서 로그(logs/session_*.log)에 '흥분 감지 … (화면 이벤트 0.xx)'가 찍히고 채팅이 몰리는지. 화면 분석이 보스 등장을 '이벤트:' 줄에 안 쓰면 이벤트 흥분은 걸리지 않는다 — 그럴 땐 Vision 프롬프트를 고쳐야 한다.\n확인되면 eventhype 을 '완료'로 다시 올린다."
+  "notes": "실제 앱에서 봐 줄 것: 보스전·사망 장면에서 로그(logs/session_*.log)에 '흥분 감지 … (화면 이벤트 0.xx)'가 찍히고 채팅이 몰리는지. 화면 분석이 보스 등장을 '이벤트:' 줄에 안 쓰면 이벤트 흥분은 걸리지 않는다 — 그럴 땐 Vision 프롬프트를 고쳐야 한다.\n확인되면 eventhype 을 '완료'로 다시 올린다.",
+  "id": "2026-10-26-event-hype",
+  "decision": {
+    "at": "2026-10-26T13:54:51.909763+00:00",
+    "comment": ""
+  }
 }

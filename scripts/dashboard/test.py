@@ -66,8 +66,11 @@ def main() -> int:
         (tmp / "proposals" / pid).mkdir(parents=True)
         (tmp / "proposals" / pid / "proposal.json").write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
 
+    # from 은 지금 데이터에서 읽는다 — 실제 승인으로 상태가 바뀌어도 시험이 깨지지 않게
+    features = json.loads((tmp / "data/features.json").read_text(encoding="utf-8"))
+    hype_status = next(x for x in features if x["id"] == "eventhype")["status"]
     put("2026-10-27-a", {"title": "이벤트 흥분도", "created": "2026-10-27T09:00:00+09:00", "status": "pending",
-                         "changes": [{"dataset": "features", "op": "update", "key": "eventhype", "from": {"status": "계획"}, "set": {"status": "완료"}}],
+                         "changes": [{"dataset": "features", "op": "update", "key": "eventhype", "from": {"status": hype_status}, "set": {"status": "완료"}}],
                          "tests": [{"name": "리플레이", "result": "통과"}]})
     put("2026-10-27-b", {"title": "충돌", "created": "2026-10-27T08:00:00+09:00", "status": "pending",
                          "changes": [{"dataset": "features", "op": "update", "key": "capture", "from": {"status": "일부"}, "set": {"status": "계획"}}]})

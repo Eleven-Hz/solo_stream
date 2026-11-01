@@ -1,32 +1,131 @@
 [
- {"id": "feature", "title": "기능 하나 만들기", "when": "현황판 기능 표의 다음 단계 일을 할 때(코드 작업 전반)", "doc": "AGENTS.md · docs/확장_로드맵.md",
-  "rules": ["새 외부 SDK 는 src/ai/model_client.py(음성은 src/stt/transcriber.py) 한 곳에만", "config.yaml 스키마를 바꾸면 src/main.py · src/ui/settings.py · 도메인 모듈을 같이", "로그·UI·페르소나·프롬프트 모두 한국어 톤", "봇 정확성은 목표가 아니다 — 방송 같은 느낌과 대화 구조를 늘린다"],
+ {
+  "id": "feature",
+  "title": "기능 하나 만들기",
+  "when": "현황판 기능 표의 다음 단계 일을 할 때(코드 작업 전반)",
+  "doc": "AGENTS.md · docs/확장_로드맵.md",
+  "rules": [
+   "새 외부 SDK 는 src/ai/model_client.py(음성은 src/stt/transcriber.py) 한 곳에만",
+   "config.yaml 스키마를 바꾸면 src/main.py · src/ui/settings.py · 도메인 모듈을 같이",
+   "로그·UI·페르소나·프롬프트 모두 한국어 톤",
+   "봇 정확성은 목표가 아니다 — 방송 같은 느낌과 대화 구조를 늘린다"
+  ],
   "steps": [
-   {"title": "현황 확인", "what": "현황판 기능 표(data/features.json)와 docs/확장_로드맵.md 의 해당 절", "gate": ""},
-   {"title": "계획서", "what": "새 기능이면 docs/ 에 짧은 한국어 계획서(또는 로드맵 절 보강) + 기획서 관련 절에 한 줄 링크", "gate": ""},
-   {"title": "구현", "what": "자식 프로세스는 import 를 함수 안에서, 프로세스 간 메시지는 broadcast_queue → settings_queue 분기", "gate": ""},
-   {"title": "평가 러너", "what": "프롬프트·후처리·모델·프로필 → tests/replay/run.py 전후 대화록 비교. UI → tests/ui/smoke_settings_tabs.py", "gate": ""},
-   {"title": "실제 앱 확인", "what": "run.bat(로그는 run_debug.bat)로 사용자가 직접 확인. API 비용 드는 호출은 실제 키로", "gate": "사용자 확인"},
-   {"title": "기록", "what": "실측·결정은 docs/wiki/, 문제 상태는 docs/KNOWN_ISSUES.md", "gate": ""},
-   {"title": "커밋", "what": "feat(영역): 한국어 요약 형식", "gate": ""},
-   {"title": "현황판 상신", "what": "상태가 바뀌면 scripts/dashboard/proposals/<날짜-이름>/proposal.json — 바뀌는 줄(from), 코드 변경, 시험 결과, 스크린샷", "gate": ""},
-   {"title": "승인", "what": "검토 요청 탭에서 승인하면 data/ 에 반영(코드는 이미 들어가 있다)", "gate": "사용자 승인"}
-  ]},
- {"id": "model", "title": "모델 바꾸기·새로 재기", "when": "Vision·채팅·STT 모델을 바꾸거나 새 모델을 비교할 때", "doc": "docs/wiki/models-and-providers.md · docs/wiki/evaluation.md",
-  "rules": ["모델 이름·호출은 model_client.py(STT 는 transcriber.py) 한 곳에서만 바꾼다", "실측 수치에는 날짜와 조건(모델 버전·샘플·라운드 수)을 같이"],
+   {
+    "title": "현황 확인",
+    "what": "현황판 기능 표(data/features.json), '내 확인'의 실패·보류 메모, docs/확장_로드맵.md 의 해당 절",
+    "gate": ""
+   },
+   {
+    "title": "계획서",
+    "what": "새 기능이면 docs/ 에 짧은 한국어 계획서(또는 로드맵 절 보강) + 기획서 관련 절에 한 줄 링크",
+    "gate": ""
+   },
+   {
+    "title": "구현",
+    "what": "자식 프로세스는 import 를 함수 안에서, 프로세스 간 메시지는 broadcast_queue → settings_queue 분기",
+    "gate": ""
+   },
+   {
+    "title": "평가 러너",
+    "what": "프롬프트·후처리·모델·프로필 → tests/replay/run.py 전후 대화록 비교. UI → tests/ui/smoke_settings_tabs.py",
+    "gate": ""
+   },
+   {
+    "title": "실제 앱 확인",
+    "what": "확인할 것을 상신의 checks(add)로 올리면 현황판 '내 확인' 탭에 뜬다. 사용자가 run.bat 으로 해 보고 통과·실패·보류 + 메모",
+    "gate": "사용자 확인"
+   },
+   {
+    "title": "기록",
+    "what": "실측·결정은 docs/wiki/, 문제 상태는 docs/KNOWN_ISSUES.md",
+    "gate": ""
+   },
+   {
+    "title": "커밋",
+    "what": "feat(영역): 한국어 요약 형식",
+    "gate": ""
+   },
+   {
+    "title": "현황판 상신",
+    "what": "상태가 바뀌면 scripts/dashboard/proposals/<날짜-이름>/proposal.json — 바뀌는 줄(from), 코드 변경, 시험 결과, 스크린샷",
+    "gate": ""
+   },
+   {
+    "title": "승인",
+    "what": "검토 요청 탭에서 승인하면 data/ 에 반영(코드는 이미 들어가 있다)",
+    "gate": "사용자 승인"
+   }
+  ]
+ },
+ {
+  "id": "model",
+  "title": "모델 바꾸기·새로 재기",
+  "when": "Vision·채팅·STT 모델을 바꾸거나 새 모델을 비교할 때",
+  "doc": "docs/wiki/models-and-providers.md · docs/wiki/evaluation.md",
+  "rules": [
+   "모델 이름·호출은 model_client.py(STT 는 transcriber.py) 한 곳에서만 바꾼다",
+   "실측 수치에는 날짜와 조건(모델 버전·샘플·라운드 수)을 같이"
+  ],
   "steps": [
-   {"title": "비교 실행", "what": "tests/replay/run.py(채팅) · tests/stt/run.py(STT) · tests/vision/run.py(화면)로 같은 샘플에서 비교", "gate": ""},
-   {"title": "결과 보고", "what": "품질·지연·토큰·비용 표와 대화록 예시", "gate": "사용자가 고름"},
-   {"title": "기본값 변경", "what": "config.yaml 기본 모델, 목록에서 빼는 모델은 model_migrations 에 한 줄", "gate": ""},
-   {"title": "위키 갱신", "what": "docs/wiki/models-and-providers.md 에 날짜와 함께", "gate": ""},
-   {"title": "실제 앱 확인", "what": "run.bat 으로 한 판", "gate": "사용자 확인"}
-  ]},
- {"id": "release", "title": "릴리스", "when": "새 버전을 배포할 때", "doc": "build.bat · solo_stream.spec",
-  "rules": ["버전은 src/__init__.py 의 __version__ 한 곳만 올린다", "BUILD_INFO 는 커밋된 깨끗한 트리에서 빌드해야 믿을 수 있다", "새 lazy SDK 는 spec 에서 collect_all 로 수집"],
+   {
+    "title": "비교 실행",
+    "what": "tests/replay/run.py(채팅) · tests/stt/run.py(STT) · tests/vision/run.py(화면)로 같은 샘플에서 비교",
+    "gate": ""
+   },
+   {
+    "title": "결과 보고",
+    "what": "품질·지연·토큰·비용 표와 대화록 예시",
+    "gate": "사용자가 고름"
+   },
+   {
+    "title": "기본값 변경",
+    "what": "config.yaml 기본 모델, 목록에서 빼는 모델은 model_migrations 에 한 줄",
+    "gate": ""
+   },
+   {
+    "title": "위키 갱신",
+    "what": "docs/wiki/models-and-providers.md 에 날짜와 함께",
+    "gate": ""
+   },
+   {
+    "title": "실제 앱 확인",
+    "what": "run.bat 으로 한 판",
+    "gate": "사용자 확인"
+   }
+  ]
+ },
+ {
+  "id": "release",
+  "title": "릴리스",
+  "when": "새 버전을 배포할 때",
+  "doc": "build.bat · solo_stream.spec",
+  "rules": [
+   "버전은 src/__init__.py 의 __version__ 한 곳만 올린다",
+   "BUILD_INFO 는 커밋된 깨끗한 트리에서 빌드해야 믿을 수 있다",
+   "새 lazy SDK 는 spec 에서 collect_all 로 수집"
+  ],
   "steps": [
-   {"title": "버전 올리기", "what": "src/__init__.py __version__, 사용설명.txt", "gate": ""},
-   {"title": "빌드", "what": "build.bat → dist/SoloStream + zip·sha256", "gate": ""},
-   {"title": "빌드본 확인", "what": "SOLO_STREAM_DEV 없이 exe 실행 — %APPDATA% 사용자 파일 보존 확인", "gate": "사용자 확인"},
-   {"title": "릴리스 브랜치·PR", "what": "release/vX.Y.Z → main 머지", "gate": "사용자 승인"}
-  ]}
+   {
+    "title": "버전 올리기",
+    "what": "src/__init__.py __version__, 사용설명.txt",
+    "gate": ""
+   },
+   {
+    "title": "빌드",
+    "what": "build.bat → dist/SoloStream + zip·sha256",
+    "gate": ""
+   },
+   {
+    "title": "빌드본 확인",
+    "what": "SOLO_STREAM_DEV 없이 exe 실행 — %APPDATA% 사용자 파일 보존 확인",
+    "gate": "사용자 확인"
+   },
+   {
+    "title": "릴리스 브랜치·PR",
+    "what": "release/vX.Y.Z → main 머지",
+    "gate": "사용자 승인"
+   }
+  ]
+ }
 ]
