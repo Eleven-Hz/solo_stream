@@ -22,6 +22,7 @@
 
 ### Working In This Directory
 - 페르소나 YAML에 `user_speech_weight: off` 같이 YAML 키워드와 충돌하는 값이 들어가도 `normalize_user_speech_weight`가 처리 — 새 weight 추가 시 `_VALID_WEIGHTS` 에 추가하고 `src/ai/model_client.py`의 채팅 프롬프트 설명에도 동일하게 적힘에 유의.
+- 프로필은 `validate_profile` 을 통과해야 쓴다(프롬프트 코드가 목록 항목을 글자로 믿음). `load_profile` 은 깨진 파일이면 예외 대신 번들 → 빈 프로필로 이어 가며 `_invalid` 를 붙이고 파일은 그대로 둔다. 새 목록 칸은 `PROFILE_LIST_FIELDS`·`PROFILE_LABELS` 에 추가한다.
 - 게임 프로필 자동 생성은 웹 검색이 되는 OpenAI·Gemini 만 지원한다 — `model_client.create_profile_client` 가 `ai.profile_model` 이름으로 고르고, 키가 없으면 다른 쪽으로 대체한다. 생성 결과는 내용이 있고 전 단계가 성공해야 기존 프로필을 바꾼다(`load_profile`, 있던 프로필이 없으면 부분 결과도 저장).
 - `_safe_filename`은 게임명을 소문자·언더스코어·64자로 만든다. 한글 게임명도 그대로 (예: `명조워더링_웨이브.yaml`).
 - `schedule_chats`는 daemon thread에서 돈다 — 라운드가 끝나기 전에 다음 라운드의 캡처/분석이 시작될 수 있다. `ui_queue`는 maxsize=100이고 채팅 한 라운드 5개 이하이므로 일반적으로 안전.

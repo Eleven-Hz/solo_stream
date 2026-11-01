@@ -134,6 +134,46 @@ def test_profile_safety():
         check("임시 파일 없음", not list(Path(d).glob("*.tmp")))
 
 
+def test_profile_validation():
+    v = gp.validate_profile
+    check("정상 프로필 통과", v({"name": "a", "description": "d", "locations": ["x"], "stt_terms": []}) == [])
+    check("칸이 없어도 통과", v({"name": "a"}) == [])
+    for label, bad in [("최상위 목록", ["a"]), ("문자열", "hello"), ("빈 값", None), ("제목 없음", {"description": "d"}),
+                       ("제목 숫자", {"name": 123}), ("설명 숫자", {"name": "a", "description": 5}),
+                       ("목록 자리 문자열", {"name": "a", "characters": "레아"}), ("목록 자리 숫자", {"name": "a", "locations": 3}),
+                       ("항목이 사전", {"name": "a", "locations": [{"이름": "마을"}]}), ("항목이 숫자", {"name": "a", "skills": [1]}),
+                       ("빈 항목", {"name": "a", "skills": ["  "]})]:
+        check(f"거부: {label}", bool(v(bad)))
+    for p in sorted((ROOT / "game_profiles").glob("*.yaml")):
+        check(f"저장소 프로필 통과: {p.name}", v(yaml.safe_load(p.read_text(encoding="utf-8"))) == [],
+              str(v(yaml.safe_load(p.read_text(encoding="utf-8")))))
+
+    with tempfile.TemporaryDirectory() as d:
+        gp._PROFILE_DIR = Path(d)
+        for label, text in [("문법 오류", "name: a\nlocations: [1"), ("최상위 목록", "- a\n"), ("빈 파일", ""),
+                            ("목록 자리 숫자", "name: a\nlocations: 3\n"), ("항목이 사전", "name: a\nlocations:\n- x: y\n"),
+                            ("글자 깨짐", None)]:
+            path = Path(d) / "broken.yaml"
+            if text is None:
+                path.write_bytes(b"name: \xff\xfe\x00")
+            else:
+                path.write_text(text, encoding="utf-8")
+            before = path.read_bytes()
+            try:
+                p = gp.load_profile("broken")
+                ok = bool(p.get("_invalid")) and bool(gp.build_profile_context(p)) and bool(gp.build_vision_context(p))
+            except Exception as e:
+                ok, p = False, str(e)
+            check(f"깨진 파일에도 앱이 안 멈춤: {label}", ok, str(p)[:120])
+            check(f"깨진 파일을 지우지 않음: {label}", path.read_bytes() == before)
+        try:
+            gp.save_profile("g", {"name": "a", "locations": 3})
+            refused = False
+        except ValueError:
+            refused = True
+        check("잘못된 프로필은 저장 거부", refused and not (Path(d) / "g.yaml").exists())
+
+
 def test_api_errors():
     msg = "404 NOT_FOUND. This model is no longer available to new users."
     check("모델 없음은 치명 오류", is_fatal_api_error(msg) and "모델" in describe_api_error(msg))
@@ -191,7 +231,7 @@ def test_legacy_files():
 
 if __name__ == "__main__":
     for fn in (test_install_files, test_defaults, test_profile_client, test_change_detect,
-               test_profile_safety, test_api_errors, test_stt_reports_failure, test_legacy_files):
+               test_profile_safety, test_profile_validation, test_api_errors, test_stt_reports_failure, test_legacy_files):
         fn()
     failed = [r for r in results if not r[1]]
     for name, ok, detail in results:

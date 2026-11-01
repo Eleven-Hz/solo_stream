@@ -226,12 +226,70 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
+def validate_profile(data) -> list[str]:
+    """프로필 형태 검사. 문제를 사람이 읽을 문장 목록으로 돌려준다(없으면 빈 목록).
+
+    프롬프트를 만드는 코드는 목록 항목이 전부 글자라고 믿으므로, 여기를 통과한 것만 쓴다.
+    칸이 없거나 비어 있는 것은 괜찮다. 모르는 키는 건드리지 않는다."""
+    if not isinstance(data, dict):
+        return ["프로필은 '항목: 값' 형식이어야 해요"]
+    errors: list[str] = []
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        errors.append("제목(name)이 없거나 글자가 아니에요")
+    if data.get("description") is not None and not isinstance(data["description"], str):
+        errors.append("설명(description)은 글자여야 해요")
+    for field in PROFILE_LIST_FIELDS:
+        value = data.get(field)
+        if value is None:
+            continue
+        label = f"{PROFILE_LABELS[field]}({field})"
+        if not isinstance(value, list):
+            errors.append(f"{label}은(는) 목록이어야 해요")
+        elif any(not isinstance(item, str) or not item.strip() for item in value):
+            errors.append(f"{label}의 항목은 모두 한 줄 글자여야 해요")
+    return errors
+
+
+def _read_profile_file(path: Path) -> dict:
+    """프로필 파일을 읽고 검사한다. 못 쓰는 파일이면 ValueError(이유)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        raise ValueError(f"파일을 읽지 못했어요: {str(e).splitlines()[0][:100]}") from e
+    errors = validate_profile(data)
+    if errors:
+        raise ValueError(" / ".join(errors))
+    return data
+
+
+def _load_found_profile(game_name: str, found: Path) -> dict:
+    """찾은 파일을 읽는다. 깨졌으면 앱을 멈추지 않고 번들 → 빈 프로필로 진행하고 `_invalid` 로 표시한다.
+    깨진 파일은 사용자가 고칠 수 있게 그대로 둔다."""
+    try:
+        return _read_profile_file(found)
+    except ValueError as e:
+        logger.error(f"게임 프로필이 깨져 있음: {found} — {e}")
+        reason = str(e)
+    bundled = bundled_profile_path_for(game_name)
+    result = None
+    if bundled is not None and bundled != found:
+        try:
+            result = _read_profile_file(bundled)
+        except ValueError as e:
+            logger.error(f"번들 프로필도 읽지 못함: {bundled} — {e}")
+    if result is None:
+        result = _empty_profile(game_name)
+    result["_invalid"] = reason
+    return result
+
+
 def _existing_or_empty(game_name: str, profile_path: Path) -> dict:
     """자동 생성이 실패했을 때 쓸 프로필: 있던 것(사용자 → 번들), 없으면 빈 프로필."""
     found = profile_path if profile_path.exists() else bundled_profile_path_for(game_name)
     if found is not None:
-        with open(found, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or _empty_profile(game_name)
+        return _load_found_profile(game_name, found)
     return _empty_profile(game_name)
 
 
@@ -252,8 +310,7 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None,
     found = None if generating else (
         profile_path if profile_path.exists() else bundled_profile_path_for(game_name))
     if found is not None:
-        with open(found, "r", encoding="utf-8") as f:
-            profile = yaml.safe_load(f)
+        profile = _load_found_profile(game_name, found)
         src = "" if found == profile_path else " (번들)"
         logger.info(f"게임 프로필 로드{src}: {found.name}")
         return profile
@@ -291,6 +348,12 @@ def load_profile(game_name: str, ai_client=None, config: dict | None = None,
     # 생성 중 발생한 단계 오류는 UI 표시용이라 디스크에는 저장하지 않는다.
     # (오류가 박제되면 다음 실행 때 파일이 그대로 로드돼 재생성 기회를 놓친다)
     errors = profile.get("_generation_errors")
+    invalid = validate_profile({k: v for k, v in profile.items() if not k.startswith("_")})
+    if invalid:
+        logger.error(f"게임 프로필 생성 결과가 형식에 안 맞음, 저장 안 함: {invalid}")
+        result = _existing_or_empty(game_name, profile_path)
+        result["_generation_aborted"] = invalid[0]
+        return result
     # 일부 단계가 실패한 결과로 멀쩡한 프로필을 덮어쓰지 않는다. 있던 프로필이 없을 때만 부분 결과를 저장한다.
     if errors and (profile_path.exists() or bundled_profile_path_for(game_name) is not None):
         logger.error(f"게임 프로필 생성 일부 실패 — 기존 프로필 유지: {errors[:1]}")
@@ -559,6 +622,12 @@ def build_vision_context(profile: dict) -> str:
 # 검색보다 깊고, API 비용이 들지 않는다. 결과 형식은 자동 생성과 같은 프로필 스키마.
 
 PROFILE_SECTIONS = ("vision_focus", "characters", "systems", "locations", "enemies", "skills", "chat_tips")
+# 편집·검사 대상 목록 칸. stt_terms 는 사람이 넣는 받아쓰기 힌트라 생성 단계에는 없다.
+PROFILE_LIST_FIELDS = PROFILE_SECTIONS + ("stt_terms",)
+PROFILE_LABELS = {
+    "vision_focus": "화면에서 볼 것", "characters": "인물", "systems": "시스템", "locations": "장소",
+    "enemies": "몬스터·보스", "skills": "스킬", "chat_tips": "채팅 포인트", "stt_terms": "받아쓰기 고유명사",
+}
 
 _MANUAL_PROMPT = """게임 "{game_name}"의 정보를 웹에서 검색해, 이 게임을 실제로 아는 한국 시청자들이 방송 채팅에서 쓸 수 있는 '게임 프로필'을 만들어 주세요.
 (웹 검색 기능을 켜고 공식 사이트·스팀·나무위키·위키피디아·게임 위키·공략 사이트·커뮤니티(레딧, 디시 등)를 참고)
@@ -740,7 +809,12 @@ def save_profile(game_name: str, profile: dict) -> Path:
     _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     path = profile_path_for(game_name)
     to_save = {k: v for k, v in profile.items() if not k.startswith("_")}
-    with open(path, "w", encoding="utf-8") as f:
+    errors = validate_profile(to_save)
+    if errors:
+        raise ValueError(" / ".join(errors))
+    tmp_path = path.with_suffix(".yaml.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    tmp_path.replace(path)
     logger.info(f"게임 프로필 저장(수동): {path}")
     return path

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from multiprocessing import Queue
 from pathlib import Path
 
@@ -344,18 +345,104 @@ class _PromptDialog(QDialog):
         lay.addLayout(row)
 
 
-class _ProfileEditDialog(QDialog):
-    """게임 프로필 보기·수정. 이름은 칸으로, 나머지는 YAML 그대로 고친다.
+class _ProfileListSection(QWidget):
+    """프로필의 목록 칸 하나. 제목을 누르면 펼쳐지고, 줄마다 입력칸과 ×, 아래에 '+ 추가'."""
 
-    파일 이름은 바꾸지 않는다 — 창 이름으로 프로필을 찾는 기준이라 바꾸면 자동 연결이 끊긴다."""
-
-    def __init__(self, stem: str, profile: dict, is_bundled: bool, parent=None):
+    def __init__(self, title: str, items: list[str], placeholder: str, scroll: QScrollArea, parent=None):
         super().__init__(parent)
-        import yaml
+        self._title = title
+        self._placeholder = placeholder
+        self._scroll = scroll
+        self._rows: list[QWidget] = []
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self._header = T.button("")
+        self._header.setAutoDefault(False)
+        self._header.setAccessibleName(f"{title} 펼치기")
+        self._header.clicked.connect(lambda: self.set_open(self._body.isHidden()))
+        lay.addWidget(self._header)
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 4)
+        body.setSpacing(6)
+        self._rows_box = QVBoxLayout()
+        self._rows_box.setSpacing(6)
+        body.addLayout(self._rows_box)
+        add = T.button("+ 추가")
+        add.setAutoDefault(False)
+        add.setAccessibleName(f"{title} 항목 추가")
+        add.clicked.connect(lambda: self.add_row(focus=True))
+        body.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(self._body)
+        self._body.setVisible(False)
+        for item in items:
+            self.add_row(item)
+        self._update_header()
+
+    def set_open(self, on: bool):
+        self._body.setVisible(on)
+        self._update_header()
+
+    def _update_header(self):
+        arrow = "▾" if not self._body.isHidden() else "▸"
+        self._header.setText(f"{arrow}  {self._title}  ({len(self.values())})")
+
+    def add_row(self, text: str = "", focus: bool = False, after: QWidget | None = None) -> QLineEdit:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        edit = QLineEdit(" ".join(str(text).split()))
+        edit.setPlaceholderText(self._placeholder)
+        edit.setCursorPosition(0)
+        edit.setToolTip(edit.text())
+        edit.textChanged.connect(lambda _: self._update_header())
+        edit.returnPressed.connect(lambda: self.add_row(focus=True, after=row))
+        h.addWidget(edit, 1)
+        rm = T.button("×")
+        rm.setAutoDefault(False)
+        rm.setFixedWidth(34)
+        rm.setToolTip("이 항목 지우기")
+        rm.setAccessibleName(f"{self._title} 항목 지우기")
+        rm.clicked.connect(lambda: self._remove_row(row))
+        h.addWidget(rm)
+        index = self._rows.index(after) + 1 if after in self._rows else len(self._rows)
+        self._rows.insert(index, row)
+        self._rows_box.insertWidget(index, row)
+        row.edit = edit
+        if focus:
+            self.set_open(True)
+            edit.setFocus()
+            QTimer.singleShot(0, lambda: self._scroll.ensureWidgetVisible(row))
+        self._update_header()
+        return edit
+
+    def _remove_row(self, row: QWidget):
+        self._rows.remove(row)
+        self._rows_box.removeWidget(row)
+        row.deleteLater()
+        self._update_header()
+
+    def values(self) -> list[str]:
+        """빈 칸은 뺀다."""
+        return [t for t in (r.edit.text().strip() for r in self._rows) if t]
+
+
+class _ProfileEditDialog(QDialog):
+    """게임 프로필 보기·수정. 칸마다 입력하고 '+ 추가'로 늘린다 — 형식을 깨뜨릴 수 없게 한다.
+
+    파일 이름은 바꾸지 않는다 — 창 이름으로 프로필을 찾는 기준이라 바꾸면 자동 연결이 끊긴다.
+    편집 칸이 없는 키도 그대로 저장한다."""
+
+    def __init__(self, stem: str, profile: dict, is_bundled: bool, invalid: str = "", parent=None):
+        super().__init__(parent)
+        from src.chat.game_profile_loader import PROFILE_LABELS, PROFILE_LIST_FIELDS
         self.profile: dict | None = None
+        self._source = {k: v for k, v in profile.items() if not k.startswith("_")}
         self.setWindowTitle("게임 프로필 보기 · 수정")
         self.setModal(True)
-        self.resize(680, 620)
+        self.resize(720, 680)
         self.setStyleSheet(f"QDialog {{ background: {T.BG}; }}" + T.settings_qss())
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
@@ -364,51 +451,79 @@ class _ProfileEditDialog(QDialog):
         if is_bundled:
             note += " · 앱 기본 제공 프로필이에요. 저장하면 내 폴더에 복사본이 생기고 그걸 쓰게 됩니다."
         lay.addWidget(T.label(note, "sub", wrap=True))
-        lay.addWidget(T.label("프로필 제목", "lbl"))
+        if invalid:
+            warn = T.label(f"⚠ 이 프로필 파일이 깨져 있어 대신 불러온 내용을 보여 드려요. "
+                           f"저장하면 깨진 파일은 {stem}.yaml.bak 으로 남겨 둡니다. — {invalid}", "sub", wrap=True)
+            warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+            lay.addWidget(warn)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        form = QVBoxLayout(inner)
+        form.setContentsMargins(0, 0, 8, 0)
+        form.setSpacing(8)
+        form.addWidget(T.label("프로필 제목", "lbl"))
         self.name_edit = QLineEdit(str(profile.get("name") or stem))
         self.name_edit.textChanged.connect(self._validate)
-        lay.addWidget(self.name_edit)
-        lay.addWidget(T.label("내용", "lbl"))
-        self.editor = QPlainTextEdit()
-        body = {k: v for k, v in profile.items() if k != "name" and not k.startswith("_")}
-        self.editor.setPlainText(yaml.dump(body, allow_unicode=True, default_flow_style=False,
-                                           sort_keys=False, width=1000))
-        self.editor.textChanged.connect(self._validate)
-        lay.addWidget(self.editor, 1)
+        form.addWidget(self.name_edit)
+        form.addWidget(T.label("게임 설명", "lbl"))
+        self.desc_edit = QPlainTextEdit(str(profile.get("description") or ""))
+        self.desc_edit.setFixedHeight(92)
+        form.addWidget(self.desc_edit)
+        form.addSpacing(4)
+        form.addWidget(T.label("항목을 누르면 펼쳐져요. 입력 중 Enter 를 누르면 아래에 새 줄이 생겨요.", "sub", wrap=True))
+        hints = {"stt_terms": "자주 잘못 들리는 게임 고유명사", "chat_tips": "상황 → 채팅 반응",
+                 "vision_focus": "화면에서 주목할 것과 읽는 법"}
+        self.sections: dict[str, _ProfileListSection] = {}
+        for field in PROFILE_LIST_FIELDS:
+            items = profile.get(field) or []
+            section = _ProfileListSection(PROFILE_LABELS[field], items if isinstance(items, list) else [],
+                                          hints.get(field, "이름 (원어): 한 줄 설명"), self._scroll)
+            self.sections[field] = section
+            form.addWidget(section)
+        form.addStretch(1)
+        self._scroll.setWidget(inner)
+        lay.addWidget(self._scroll, 1)
+
         self._error = T.label("", "sub", wrap=True)
         self._error.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
         lay.addWidget(self._error)
         row = QHBoxLayout()
         row.addStretch(1)
         cancel = T.button("취소")
+        cancel.setAutoDefault(False)
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
         self._ok = T.button("저장하고 적용")
-        self._ok.clicked.connect(self.accept)
+        self._ok.setAutoDefault(False)  # 입력칸의 Enter 로 창이 닫히지 않게
+        self._ok.clicked.connect(self._save)
         row.addWidget(self._ok)
         lay.addLayout(row)
         self._validate()
 
-    def _validate(self):
-        import yaml
-        name = self.name_edit.text().strip()
-        try:
-            body = yaml.safe_load(self.editor.toPlainText()) or {}
-            if not isinstance(body, dict):
-                raise ValueError("'항목: 값' 형식이어야 해요")
-        except Exception as e:
-            self.profile = None
-            self._error.setText(f"내용을 읽지 못했어요: {str(e).splitlines()[0][:120]}")
-            self._ok.setEnabled(False)
-            return
-        if not name:
-            self.profile = None
-            self._error.setText("제목을 입력하세요.")
-            self._ok.setEnabled(False)
-            return
-        self.profile = {"name": name, **{k: v for k, v in body.items() if k != "name"}}
-        self._error.setText("")
-        self._ok.setEnabled(True)
+    def _build(self) -> dict:
+        data = dict(self._source)
+        data["name"] = self.name_edit.text().strip()
+        data["description"] = self.desc_edit.toPlainText().strip()
+        for field, section in self.sections.items():
+            values = section.values()
+            if values or field in data:
+                data[field] = values
+        return data
+
+    def _validate(self) -> bool:
+        from src.chat.game_profile_loader import validate_profile
+        errors = validate_profile(self._build())
+        self._error.setText(" / ".join(errors))
+        self._ok.setEnabled(not errors)
+        return not errors
+
+    def _save(self):
+        if self._validate():
+            self.profile = self._build()
+            self.accept()
 
 
 class _ProfilePasteDialog(QDialog):
@@ -744,13 +859,16 @@ class SettingsWindow(QWidget):
         self._start_btn.style().polish(self._start_btn)
 
     def set_profile_name(self, name: str, status: str = "ok", detail: str = ""):
-        """프로필 로드/생성 결과. status: ok | missing(파일 없음) | aborted(503 등으로 중단) | partial(일부 실패)."""
+        """프로필 로드/생성 결과. status: ok | missing(파일 없음) | invalid(파일 깨짐) | aborted(생성 실패) | partial(일부 실패)."""
         self._profile_state = (name, status, detail)
         if status == "missing":
             text = f"{name} · 프로필 없음 — '게임 · 프로필'에서 만들 수 있어요(화면만 보고 채팅 중)"
             badge, color = "warn", T.WARN
+        elif status == "invalid":
+            text = f"{name} · 프로필 파일이 깨져 있어요 — '보기 · 수정'으로 고칠 수 있어요"
+            badge, color = "error", T.ERROR
         elif status == "aborted":
-            text = f"{name} · 서버 혼잡으로 생성 중단됨 — 잠시 후 다시 만들기"
+            text = f"{name} · 자동 생성 실패 — 있던 프로필은 그대로예요"
             badge, color = "error", T.ERROR
         elif status == "partial":
             text = f"{name} · 일부 정보 누락 — 필요하면 다시 만들기"
@@ -1285,10 +1403,16 @@ class SettingsWindow(QWidget):
             self._game_profile_status.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
             return
         is_bundled = not profile_path_for(game_name).exists() and bundled_profile_path_for(game_name) is not None
-        dlg = _ProfileEditDialog(_safe_filename(game_name), profile, is_bundled, self)
+        invalid = str(profile.get("_invalid") or "")
+        if profile.get("_missing"):
+            profile = {"name": game_name}  # 빈 프로필의 안내 문구를 내용으로 저장하지 않는다
+        dlg = _ProfileEditDialog(_safe_filename(game_name), profile, is_bundled, invalid, self)
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.profile:
             return
         try:
+            path = profile_path_for(game_name)
+            if invalid and path.exists():
+                shutil.copy2(path, path.with_name(path.name + ".bak"))
             save_profile(game_name, dlg.profile)
         except Exception as e:
             self._game_profile_status.setText(f"저장 실패: {e}")
@@ -2219,7 +2343,7 @@ class SettingsWindow(QWidget):
                     display = (yaml.safe_load(f) or {}).get("name") or stem
             except Exception:
                 display = stem
-            c.addItem(display, userData=stem)
+            c.addItem(str(display), userData=stem)
         idx = c.findData(current) if current else 0
         c.setCurrentIndex(max(idx, 0))
         c.blockSignals(False)

@@ -316,7 +316,9 @@ def ai_process(
     )
     from src.chat.persona_loader import load_personas
     from src.chat.orchestrator import schedule_chats
-    from src.chat.game_profile_loader import load_profile, build_profile_context, build_vision_context
+    from src.chat.game_profile_loader import (
+        _empty_profile, load_profile, build_profile_context, build_vision_context,
+    )
     from src.chat.emotion import EmotionState, update_emotions
     from src.chat.hype import compute_hype, build_hype_profile, event_hype, next_event_glow
     from src.export.websocket import broadcast, start_broadcaster
@@ -396,6 +398,16 @@ def ai_process(
     # settings_queue 의 target_window 변경 시 갱신된다(아래 루프). 닫힘 변수로 공유.
     _current_window = {"title": config["capture"].get("target_window") or ""}
 
+    def _safe_load_profile(game: str, **kw) -> dict:
+        """프로필 문제로 AI 프로세스가 죽으면 채팅 전체가 조용히 멈춘다. 어떤 오류든 빈 프로필로 이어 간다."""
+        try:
+            return load_profile(game, **kw)
+        except Exception as e:
+            log.error(f"게임 프로필 로드 실패: {e}", exc_info=True)
+            result = _empty_profile(game)
+            result["_invalid"] = str(e)[:150]
+            return result
+
     def _notify_profile_loaded(profile: dict):
         """프로필 로드 완료를 UI에 통지. 생성 중 단계 실패가 있으면 채팅창에도 표시."""
         # 캡처 창 ↔ 적용 프로필 이름이 많이 다르면 경고 텍스트를 함께 실어 보낸다.
@@ -417,6 +429,8 @@ def ai_process(
         gen_errors = profile.get("_generation_errors") or []
         if profile.get("_missing"):
             status, detail = "missing", ""
+        elif profile.get("_invalid"):
+            status, detail = "invalid", str(profile["_invalid"])
         elif aborted:
             status, detail = "aborted", str(aborted)
         elif gen_errors:
@@ -441,6 +455,12 @@ def ai_process(
                     f"붙여넣으면 무료로 만들 수 있어요."
                 ),
             })
+        elif status == "invalid":
+            ui_queue.put({
+                "name": "시스템",
+                "message": (f"⚠ 게임 프로필 파일이 깨져 있어 대신 '{prof_name}'(으)로 진행해요. "
+                            f"설정 '게임 · 프로필'의 '보기 · 수정'으로 고칠 수 있어요. — {detail}"),
+            })
         elif status == "aborted":
             ui_queue.put({
                 "name": "시스템",
@@ -459,7 +479,7 @@ def ai_process(
                 ),
             })
 
-    game_profile = load_profile(game_name, config=config)  # 없으면 missing(자동 생성 안 함)
+    game_profile = _safe_load_profile(game_name, config=config)  # 없으면 missing(자동 생성 안 함)
     profile_context = build_profile_context(game_profile)
     vision_context = build_vision_context(game_profile)
     log.info(f"게임 프로필 로드: {game_profile.get('name', '?')}")
@@ -623,9 +643,9 @@ def ai_process(
                         "ℹ 프로필 자동 생성은 OpenAI나 Gemini 키가 있어야 해요(웹 검색 사용). "
                         "'프롬프트 복사'로 무료로 만들 수 있어요.")})
                 log.info(f"게임 프로필 변경 요청: {new_game}{' (자동 생성)' if auto_gen else ''}")
-                game_profile = load_profile(new_game, ai_client=profile_gen[0] if auto_gen else None,
-                                            config=config, auto_generate=auto_gen,
-                                            model=profile_gen[1] if auto_gen else None)
+                game_profile = _safe_load_profile(new_game, ai_client=profile_gen[0] if auto_gen else None,
+                                                  config=config, auto_generate=auto_gen,
+                                                  model=profile_gen[1] if auto_gen else None)
                 profile_context = build_profile_context(game_profile)
                 vision_context = build_vision_context(game_profile)
                 lookup_desk = LookupDesk()  # 찾아 둔 답은 게임마다
