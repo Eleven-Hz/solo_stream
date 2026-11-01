@@ -174,6 +174,25 @@ def test_profile_validation():
         check("잘못된 프로필은 저장 거부", refused and not (Path(d) / "g.yaml").exists())
 
 
+def test_profile_text_checker():
+    c = gp.check_profile_text
+    good, errs, warns = c("name: a\nlocations:\n- 마을\n- '레아 (Lea): 주인공'\n")
+    check("텍스트: 정상 통과", good and not errs and not warns and len(good["locations"]) == 2)
+    good, errs, _ = c("name: a\ncharacters:\n- 레아 (Lea): 주인공\n")
+    check("텍스트: '- 이름: 설명' 은 글자로 받음", good and good["characters"] == ["레아 (Lea): 주인공"], str(errs))
+    for label, text, word in [("빈 내용", "  ", "비어"), ("문법 오류+줄 번호", "name: a\nlocations: [1\n", "줄"),
+                              ("콜론 두 번", "name: a\nskills:\n- 차지: 예: 2단\n", "콜론"),
+                              ("중복 키", "name: a\nskills:\n- x\nskills:\n- y\n", "두 번"),
+                              ("제목 없음", "skills:\n- x\n", "제목"), ("목록 자리 숫자", "name: a\nskills: 3\n", "목록"),
+                              ("숫자 항목", "name: a\nskills:\n- abc\n- 3\n", "2번째"), ("최상위 목록", "- a\n", "형식")]:
+        data, errs, _ = c(text)
+        check(f"텍스트 거부: {label}", data is None and any(word in e for e in errs), str(errs))
+    data, errs, warns = c("name: a\nlocatons:\n- x\n")
+    check("텍스트: 모르는 항목은 경고만", data is not None and not errs and "locatons" in warns[0])
+    data, _, _ = c("name: a\n_x: 1\n")
+    check("텍스트: 내부용 키는 저장 안 함", data is not None and "_x" not in data)
+
+
 def test_api_errors():
     msg = "404 NOT_FOUND. This model is no longer available to new users."
     check("모델 없음은 치명 오류", is_fatal_api_error(msg) and "모델" in describe_api_error(msg))
@@ -231,7 +250,7 @@ def test_legacy_files():
 
 if __name__ == "__main__":
     for fn in (test_install_files, test_defaults, test_profile_client, test_change_detect,
-               test_profile_safety, test_profile_validation, test_api_errors, test_stt_reports_failure, test_legacy_files):
+               test_profile_safety, test_profile_validation, test_profile_text_checker, test_api_errors, test_stt_reports_failure, test_legacy_files):
         fn()
     failed = [r for r in results if not r[1]]
     for name, ok, detail in results:

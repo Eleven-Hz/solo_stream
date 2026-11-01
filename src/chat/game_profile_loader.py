@@ -246,9 +246,60 @@ def validate_profile(data) -> list[str]:
         label = f"{PROFILE_LABELS[field]}({field})"
         if not isinstance(value, list):
             errors.append(f"{label}은(는) 목록이어야 해요")
-        elif any(not isinstance(item, str) or not item.strip() for item in value):
-            errors.append(f"{label}의 항목은 모두 한 줄 글자여야 해요")
+        else:
+            bad = [i for i, item in enumerate(value, 1) if not isinstance(item, str) or not item.strip()]
+            if bad:
+                where = ", ".join(str(i) for i in bad[:5]) + (" 등" if len(bad) > 5 else "")
+                errors.append(f"{label}의 {where}번째 항목이 글자가 아니에요")
     return errors
+
+
+class _StrictProfileLoader(yaml.SafeLoader):
+    """같은 키가 두 번 나오면 오류로 본다. 기본 로더는 앞의 것을 조용히 버려 대량 편집 중 내용을 잃는다."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if isinstance(key, str) and key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"'{key}' 항목이 두 번 나와요", key_node.start_mark)
+            seen.add(key if isinstance(key, str) else id(key_node))
+        return super().construct_mapping(node, deep=deep)
+
+
+def _yaml_error_text(e: Exception) -> str:
+    mark = getattr(e, "problem_mark", None)
+    where = f"{mark.line + 1}번째 줄: " if mark is not None else ""
+    problem = str(getattr(e, "problem", "") or e).splitlines()[0]
+    if "mapping values" in problem:
+        problem = "콜론(:)이 또 나와요. 그 줄을 따옴표로 감싸세요"
+    elif "두 번" not in problem:
+        problem = "형식이 맞지 않아요. 들여쓰기·따옴표·괄호를 확인하세요"
+    return where + problem
+
+
+def check_profile_text(text: str) -> tuple[dict | None, list[str], list[str]]:
+    """텍스트 편집 칸의 내용을 검사한다. (프로필 | None, 오류 목록, 경고 목록).
+    오류가 하나라도 있으면 프로필은 None — 저장하면 안 된다. 경고는 저장을 막지 않는다."""
+    if not (text or "").strip():
+        return None, ["내용이 비어 있어요"], []
+    try:
+        data = yaml.load(text, Loader=_StrictProfileLoader)
+    except yaml.YAMLError as e:
+        return None, [_yaml_error_text(e)], []
+    if isinstance(data, dict):
+        # '- 이름: 설명' 은 YAML 에서 한 칸짜리 사전이 된다. 사람이 흔히 쓰는 형태라 글자로 되돌린다.
+        for field in PROFILE_LIST_FIELDS:
+            if isinstance(data.get(field), list):
+                data[field] = [_profile_item(x) if isinstance(x, dict) and len(x) == 1 else x for x in data[field]]
+    errors = validate_profile(data)
+    if errors:
+        return None, errors, []
+    known = set(_KNOWN_KEYS) | set(PROFILE_LIST_FIELDS)
+    unknown = [str(k) for k in data if k not in known and not str(k).startswith("_")]
+    warnings = [f"앱이 쓰지 않는 항목이에요(오타일 수 있어요): {', '.join(unknown)}"] if unknown else []
+    return {k: v for k, v in data.items() if not str(k).startswith("_")}, [], warnings
 
 
 def _read_profile_file(path: Path) -> dict:

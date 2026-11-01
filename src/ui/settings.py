@@ -39,7 +39,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QStackedWidget,
+    QStackedWidget, QSizePolicy,
     QVBoxLayout,
     QWidget,
     QWidgetItem,
@@ -418,6 +418,12 @@ class _ProfileListSection(QWidget):
         self._update_header()
         return edit
 
+    def set_items(self, items: list[str]):
+        for row in list(self._rows):
+            self._remove_row(row)
+        for item in items:
+            self.add_row(item)
+
     def _remove_row(self, row: QWidget):
         self._rows.remove(row)
         self._rows_box.removeWidget(row)
@@ -430,7 +436,8 @@ class _ProfileListSection(QWidget):
 
 
 class _ProfileEditDialog(QDialog):
-    """게임 프로필 보기·수정. 칸마다 입력하고 '+ 추가'로 늘린다 — 형식을 깨뜨릴 수 없게 한다.
+    """게임 프로필 보기·수정. 기본은 항목별 입력('+ 추가'), 대량 수정용으로 YAML 텍스트 모드가 있다.
+    텍스트 모드는 입력할 때마다 check_profile_text 로 검사하고, 오류가 있으면 저장·모드 전환을 막는다.
 
     파일 이름은 바꾸지 않는다 — 창 이름으로 프로필을 찾는 기준이라 바꾸면 자동 연결이 끊긴다.
     편집 칸이 없는 키도 그대로 저장한다."""
@@ -456,6 +463,10 @@ class _ProfileEditDialog(QDialog):
                            f"저장하면 깨진 파일은 {stem}.yaml.bak 으로 남겨 둡니다. — {invalid}", "sub", wrap=True)
             warn.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
             lay.addWidget(warn)
+        self._mode = T.Segmented([("form", "항목별"), ("text", "텍스트 (고급)")], "form")
+        self._mode.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._mode.changed.connect(self._on_mode)
+        lay.addWidget(self._mode, 0, Qt.AlignmentFlag.AlignLeft)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -485,11 +496,31 @@ class _ProfileEditDialog(QDialog):
             form.addWidget(section)
         form.addStretch(1)
         self._scroll.setWidget(inner)
-        lay.addWidget(self._scroll, 1)
+
+        text_page = QWidget()
+        tv = QVBoxLayout(text_page)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(6)
+        tv.addWidget(T.label("YAML 형식으로 한 번에 고칩니다. 오류가 있으면 저장할 수 없어요. "
+                             "콜론이 두 번 이상 든 줄은 따옴표로 감싸세요.", "sub", wrap=True))
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setFont(T.font(13, mono=True))
+        self.text_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.text_edit.textChanged.connect(self._validate)
+        tv.addWidget(self.text_edit, 1)
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._scroll)
+        self._stack.addWidget(text_page)
+        lay.addWidget(self._stack, 1)
 
         self._error = T.label("", "sub", wrap=True)
-        self._error.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+        self._error.setStyleSheet(f"color: {T.ERROR}; font-size: 12px; font-weight: 600;")
         lay.addWidget(self._error)
+        self._warning = T.label("", "sub", wrap=True)
+        self._warning.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
+        self._warning.setVisible(False)
+        lay.addWidget(self._warning)
         row = QHBoxLayout()
         row.addStretch(1)
         cancel = T.button("취소")
@@ -513,17 +544,54 @@ class _ProfileEditDialog(QDialog):
                 data[field] = values
         return data
 
+    def _is_text_mode(self) -> bool:
+        return self._mode.value() == "text"
+
+    def _on_mode(self, mode: str):
+        import yaml
+        from src.chat.game_profile_loader import PROFILE_LIST_FIELDS, check_profile_text
+        if mode == "text":
+            self.text_edit.setPlainText(yaml.dump(self._build(), allow_unicode=True, default_flow_style=False,
+                                                  sort_keys=False, width=1000))
+            self._stack.setCurrentIndex(1)
+            self._validate()
+            return
+        data, errors, _ = check_profile_text(self.text_edit.toPlainText())
+        if errors:
+            # 항목별로 돌아가면 고치던 내용을 잃는다. 텍스트 모드에 머물게 하고 경고한다.
+            self._mode.set_value("text")
+            self._show_errors(errors, prefix="오류를 고쳐야 항목별로 돌아갈 수 있어요")
+            return
+        self._source = data
+        self.name_edit.setText(data["name"])
+        self.desc_edit.setPlainText(str(data.get("description") or ""))
+        for field in PROFILE_LIST_FIELDS:
+            self.sections[field].set_items(data.get(field) or [])
+        self._stack.setCurrentIndex(0)
+        self._validate()
+
+    def _show_errors(self, errors: list[str], prefix: str = "저장할 수 없어요"):
+        self._error.setText(f"⚠ {prefix}: " + " / ".join(errors) if errors else "")
+
     def _validate(self) -> bool:
-        from src.chat.game_profile_loader import validate_profile
-        errors = validate_profile(self._build())
-        self._error.setText(" / ".join(errors))
+        from src.chat.game_profile_loader import check_profile_text, validate_profile
+        warnings: list[str] = []
+        if self._is_text_mode():
+            _, errors, warnings = check_profile_text(self.text_edit.toPlainText())
+        else:
+            errors = validate_profile(self._build())
+        self._show_errors(errors)
+        self._warning.setText("⚠ " + " / ".join(warnings) if warnings else "")
+        self._warning.setVisible(bool(warnings))
         self._ok.setEnabled(not errors)
         return not errors
 
     def _save(self):
-        if self._validate():
-            self.profile = self._build()
-            self.accept()
+        from src.chat.game_profile_loader import check_profile_text
+        if not self._validate():
+            return
+        self.profile = check_profile_text(self.text_edit.toPlainText())[0] if self._is_text_mode() else self._build()
+        self.accept()
 
 
 class _ProfilePasteDialog(QDialog):
