@@ -4,10 +4,10 @@
 # game_profiles
 
 ## Purpose
-게임별 자동 생성/수동 편집 프로필 YAML 캐시. `src/chat/game_profile_loader.load_profile(game_name)`이 `{slug}.yaml` 가 있으면 로드한다. 없으면 기본은 빈 프로필로 진행하고, 사용자가 설정 '게임 · 프로필'에서 프롬프트를 복사해 구독 채팅(ChatGPT/Claude/Gemini)에 붙여넣고 받은 답을 붙여넣어 저장한다(무료). '자동 생성' 버튼을 누를 때만 Gemini Google Search grounding으로 5단계 멀티턴 생성 후 이 디렉토리에 저장한다. 채팅 프롬프트와 Vision 프롬프트 양쪽에 컨텍스트로 주입된다 (`build_profile_context` / `build_vision_context`).
+게임별 자동 생성/수동 편집 프로필 YAML 캐시. `src/chat/game_profile_loader.load_profile(game_name)`이 `{slug}.yaml` 가 있으면 로드한다. 없으면 기본은 빈 프로필로 진행하고, 사용자가 설정 '게임 · 프로필'에서 프롬프트를 복사해 구독 채팅(ChatGPT/Claude/Gemini)에 붙여넣고 받은 답을 붙여넣어 저장한다(무료). '자동 생성' 버튼을 누를 때만 웹 검색(OpenAI web_search·Gemini grounding)으로 5단계 멀티턴 생성 후 사용자 폴더에 저장한다(실패하면 기존 프로필 유지). 채팅 프롬프트와 Vision 프롬프트 양쪽에 컨텍스트로 주입된다 (`build_profile_context` / `build_vision_context`).
 
 ## 배포·우선순위
-이 폴더의 `*.yaml` 은 배포본에 **읽기전용 기본 제공 프로필**로 들어간다(`solo_stream.spec`). 실행 시 `load_profile` 은 사용자 `%APPDATA%\SoloStream\game_profiles/` 를 먼저 보고, 같은 파일명이 없을 때만 여기 것을 쓴다. 저장·자동 생성은 항상 사용자 폴더에 쓴다. (DEV 모드에선 두 폴더가 같다.)
+이 폴더에서 `crosscode.yaml` 만 배포본에 **읽기전용 기본 제공 프로필**로 들어간다(`solo_stream.spec`). 나머지는 DEV 모드에서만 보인다. 실행 시 `load_profile` 은 사용자 `%APPDATA%\SoloStream\game_profiles/` 를 먼저 보고, 같은 파일명이 없을 때만 여기 것을 쓴다. 저장·자동 생성은 항상 사용자 폴더에 쓴다. (DEV 모드에선 두 폴더가 같다.)
 
 ## Key Files
 | File | Description |
@@ -41,7 +41,7 @@
 
 ### Common Patterns
 - 프로필 전체가 채팅 프롬프트에 **매 라운드** 들어간다 — 항목 수·설명 길이가 곧 런타임 비용. 생성 프롬프트는 섹션별 개수 상한(인물 5~8, 시스템·스킬 6~10, 지역·적·채팅 포인트 8~12)과 설명 30자 안팎을 요구하고, 개수를 채우려 지어내지 말라고 명시한다.
-- 자동 생성은 5번의 Gemini 호출 (Google Search grounding) — 첫 실행 시 십수 초 소요 + API 비용 약간 발생. 캐시되므로 1회로 끝남.
+- 자동 생성은 6번의 웹 검색 호출 — 첫 실행 시 십수 초 소요 + API 비용 약간 발생. 캐시되므로 1회로 끝남.
 - 수동 편집 후에도 키 구조만 유지하면 그대로 사용됨 — `vision_focus`를 직접 다듬는 것이 가장 큰 품질 개선 포인트.
 
 ## Dependencies

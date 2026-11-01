@@ -1,6 +1,6 @@
 @echo off
-rem 개발용 실행: 사용자 데이터를 %APPDATA% 대신 프로젝트 폴더에 둔다 (지금과 동일 경로).
-rem 배포 exe 동작(%APPDATA%)을 테스트하려면 이 줄을 주석 처리하고 빌드본을 실행.
+rem Dev launcher: keeps user data in the project folder instead of %APPDATA%.
+rem To test release behavior, run the built exe instead.
 set "SOLO_STREAM_DEV=1"
 rem Solo Stream launcher (no console window).
 rem Launches the console-less pythonw.exe in hidden mode.

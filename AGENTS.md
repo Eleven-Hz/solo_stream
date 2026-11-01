@@ -46,6 +46,7 @@
 ### Testing Requirements
 - 자동화된 pytest 스위트는 없다. `tests/<module>/run.py` 형식의 평가 러너를 직접 실행해 HTML/TXT 리포트를 생성하는 방식이다.
 - 프롬프트·후처리·모델·게임 프로필을 바꾸면 `tests/replay/run.py`(샘플 영상 리플레이)로 전후 대화록을 비교한다 — 방법은 `docs/wiki/evaluation.md`.
+- `tests/regression/run.py`(API 호출 없음)로 설치 파일 인코딩·기본 모델·프로필 보호·화면 변화 감지·STT 실패 알림을 확인한다.
 - UI 변경은 `tests/ui/smoke_settings_tabs.py`(화면 캡처 PNG)로 스모크 후 실제 `run.bat` 실행으로 확인.
 - API 비용이 드는 호출(Vision/Chat/STT)은 실제 키 + Free-tier 한도 안에서 수동 검증.
 

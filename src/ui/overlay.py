@@ -117,7 +117,7 @@ class ChatOverlay(QWidget):
         self._click_through = False
         self._transparency = transparency_from_config(self._config)
         self._fade = bool(self._config.get("fade_old", True))
-        self._show_stt = bool(self._config.get("show_stt_history", False))
+        self._show_stt = bool(self._config.get("show_stt_history", True))
         self._typing_on = bool(self._config.get("typing_indicator", True))
         self._typing_rounds: dict[int, float] = {}  # 채팅 생성 중인 라운드 → 시작 시각(monotonic)
         self._typing_tick = 0

@@ -107,6 +107,27 @@ def ensure_user_data() -> Path:
     return udir
 
 
+def legacy_user_files() -> list[Path]:
+    """예전 버전이 사용자 폴더에 복사해 둔, 지금은 읽지 않는 파일 목록.
+
+    옛 시딩의 ``config.yaml`` 과 ``game_profiles/default.yaml`` 이 해당한다.
+    DEV 모드에선 사용자 폴더가 곧 프로젝트 폴더라 ``config.yaml`` 이 진짜 설정이므로 빈 목록.
+    """
+    if is_dev():
+        return []
+    udir = user_data_dir()
+    return [p for p in (udir / "config.yaml", udir / "game_profiles" / "default.yaml") if p.exists()]
+
+
+def archive_legacy_files() -> int:
+    """예전 파일을 지우지 않고 ``.bak`` 을 붙여 치운다. 치운 개수를 반환."""
+    count = 0
+    for p in legacy_user_files():
+        p.replace(p.with_name(p.name + ".bak"))
+        count += 1
+    return count
+
+
 def user_config_path() -> Path:
     """사용자 설정 오버라이드 파일 경로 (``user_data_dir()/config.local.yaml``).
 

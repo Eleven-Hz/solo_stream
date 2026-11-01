@@ -2,15 +2,16 @@ ai:
   # provider: gemini | openai | claude. 모델 이름은 provider 별 키에 둔다
   # (gemini → vision_model/chat_model, openai → openai_*_model, claude → claude_*_model).
   # 고른 provider 의 키가 없으면 Gemini 로 대체된다.
-  vision_provider: gemini
-  vision_model: gemini-2.5-flash
-  # 채팅: 2026-10 샘플 영상 비교에서 gpt-6-luna 가 발화 반응·자연스러움 1위, 비용은 flash-lite 수준.
+  # 기본은 화면 분석·채팅 모두 gpt-6-luna. 아래 gemini 모델은 Gemini 키만 있을 때 쓰인다.
+  vision_provider: openai
+  vision_model: gemini-3.8-flash
   chat_provider: openai
-  chat_model: gemini-2.5-flash-lite
+  chat_model: gemini-3.8-flash
   openai_vision_model: gpt-6-luna
   openai_chat_model: gpt-6-luna
   api_key_env: GEMINI_API_KEY
-  profile_model: gemini-2.5-flash
+  # 프로필 자동 생성(웹 검색). 고른 쪽 키가 없으면 있는 쪽(OpenAI ↔ Gemini)으로 대체된다.
+  profile_model: gpt-6-luna
   claude_api_key_env: CLAUDE_API_KEY
   claude_vision_model: claude-haiku-5-5
   claude_chat_model: claude-haiku-5-5
@@ -20,13 +21,22 @@ ai:
 # 서비스가 끝난 모델 이름 → 바꿀 이름. 사용자가 저장한 선택(config.local.yaml 의 ai/stt *model)에만
 # 적용되고, 바뀐 값은 config.local.yaml 에 다시 저장된다. 값이 null 이면 사용자 선택을 지워 위 기본값을 따른다.
 # 모델을 목록에서 뺄 때 여기에 한 줄 추가한다. 예) gemini-2.0-flash: gemini-2.5-flash
-model_migrations: {}
+model_migrations:
+  # 2026-09 구글이 2.5 접근을 최근 사용자로 제한 — 새 키에서 404.
+  gemini-2.5-flash: gemini-3.8-flash
+  gemini-2.5-flash-lite: gemini-3.8-flash
+  gemini-2.5-pro: gemini-3.8-flash
+  gemini-2.0-flash: gemini-3.8-flash
 capture:
   # 분석 주기(초, 5~60). 설정 'AI 모델' 탭에서 바꾸면 바로 적용된다. 채팅 간격(chat.delay_*)과
   # 소재 윈도우(chat.topic_window_rounds)는 15초 기준값이라 주기에 비례해 자동 조정된다(main._paced).
   interval_seconds: 15
   ssim_threshold: 0.92
-  target_window: CrossCode Min v1.4.2-4
+  # 화면을 6×4 칸으로 나눠 가장 많이 바뀐 칸이 이 값 미만이어도 변화로 본다(대화창·퍼즐처럼 작은 변화용).
+  block_ssim_threshold: 0.95
+  # 화면이 그대로여도 이 초가 지나면 한 번은 분석에 보낸다. 0 = 끔.
+  max_skip_seconds: 60
+  target_window: ""
   resize_width: 1024
 chat:
   batch_size: 5
@@ -65,7 +75,7 @@ ui:
   font_size: 14
   # STT 받아쓰기를 채팅창에 회색 인라인으로 항상 표시(불안정한 STT 확인용).
   # 설정 '오버레이' 페이지 또는 채팅창 우클릭 메뉴로 토글.
-  show_stt_history: false
+  show_stt_history: true
   # AI 가 화면을 보고 채팅을 만드는 동안 채팅창 아래에 '시청자들이 채팅 입력 중' 표시(기록엔 안 남음).
   # 설정 '오버레이' 페이지에서 토글.
   typing_indicator: true
@@ -100,12 +110,12 @@ stt:
   min_silence_ms: 500
   speech_pad_ms: 200
   max_utterance_seconds: 30.0
-  # 기본은 OpenAI gpt-transcribe (2026-10 실측 정확도 91%, gemini-2.5-flash 65%·환각).
+  # 기본은 OpenAI gpt-transcribe (2026-10 실측 정확도 91%).
   # OpenAI 키가 없으면 Gemini(stt.fallback_model)로 자동 대체된다.
   provider: openai
   openai_api_key_env: OPENAI_API_KEY
   model: gpt-transcribe
-  fallback_model: gemini-2.5-flash
+  fallback_model: gemini-3.8-flash
   language: ko
   transcribe_prompt: 사용자가 게임을 플레이하며 한국어로 혼잣말/감상을 말합니다. 짧은 감탄사도 그대로 옮겨 적으세요.
   lookback_seconds: 20.0

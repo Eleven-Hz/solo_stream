@@ -10,7 +10,7 @@
 | File | Description |
 |------|-------------|
 | `screen.py` | `capture_screen(target_window, resize_width)` — mss로 캡처해 JPEG bytes + 캡처 대상 설명 반환. `get_window_rect`는 win32gui로 창 좌표 조회, 창이 주 모니터를 완전히 덮으면 fullscreen으로 간주해 모니터 전체 캡처. `list_windows`로 enumeration. |
-| `change_detect.py` | `has_significant_change(prev, curr, threshold)` — 두 JPEG를 grayscale로 변환 후 SSIM 계산, threshold 미만이면 True (변화 있음). 해상도가 다르면 작은 쪽에 맞춰 crop. |
+| `change_detect.py` | `has_significant_change(prev, curr, threshold, block_threshold)` — 두 JPEG를 grayscale SSIM 으로 비교. 전체가 threshold 미만이거나 6×4 칸 중 가장 많이 바뀐 칸이 block_threshold 미만이면 True (대화창·퍼즐 같은 작은 변화용). `capture_process` 는 변화가 없어도 `capture.max_skip_seconds` 가 지나면 한 번 보낸다. 해상도가 다르면 작은 쪽에 맞춰 crop. |
 | `__init__.py` | 패키지 마커 |
 
 ## For AI Agents

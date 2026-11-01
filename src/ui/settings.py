@@ -62,28 +62,25 @@ logger = logging.getLogger("solo_stream.ui")
 
 # ── 모델 후보 ────────────────────────────────────────────────────────────────
 _VISION_MODELS = [
-    ("gemini", "gemini-2.5-flash"), ("gemini", "gemini-2.5-flash-lite"),
-    ("gemini", "gemini-2.5-pro"), ("gemini", "gemini-2.0-flash"),
     ("openai", "gpt-6-luna"), ("openai", "gpt-5-mini"),
+    ("gemini", "gemini-3.8-flash"),
     ("claude", "claude-haiku-5-5"), ("claude", "claude-sonnet-4-6"), ("claude", "claude-opus-4-7"),
 ]
-_VISION_RECOMMENDED = "gemini-2.5-flash"
+_VISION_RECOMMENDED = "gpt-6-luna"
 _CHAT_MODELS = [
     ("openai", "gpt-6-luna"), ("openai", "gpt-5-nano"), ("openai", "gpt-5-mini"), ("openai", "gpt-4.1-nano"),
-    ("gemini", "gemini-2.5-flash-lite"), ("gemini", "gemini-2.5-flash"),
-    ("gemini", "gemini-2.5-pro"), ("gemini", "gemini-2.0-flash"),
+    ("gemini", "gemini-3.8-flash"),
     ("claude", "claude-haiku-5-5"), ("claude", "claude-haiku-4-5-20251001"), ("claude", "claude-sonnet-4-6"),
 ]
-# 2026-10 샘플 영상 20라운드 비교에서 발화 반응·자연스러움 1위(비용은 flash-lite 와 비슷).
+# 2026-10 샘플 영상 20라운드 비교에서 발화 반응·자연스러움 1위.
 _CHAT_RECOMMENDED = "gpt-6-luna"
-# 게임 프로필 생성은 Google Search 그라운딩이 필요해 Gemini 전용.
-_PROFILE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"]
+# 게임 프로필 생성은 웹 검색이 필요해 OpenAI·Gemini 만.
+_PROFILE_MODELS = [("openai", "gpt-6-luna"), ("gemini", "gemini-3.8-flash")]
 # STT: gemini 는 generate_content(오디오 이해)로 받아쓰기가 되는 모델만.
 _STT_MODELS = [
     ("openai", "gpt-transcribe"), ("openai", "gpt-4o-transcribe"),
     ("openai", "gpt-4o-mini-transcribe"), ("openai", "whisper-1"),
-    ("gemini", "gemini-2.5-flash"), ("gemini", "gemini-2.5-flash-lite"), ("gemini", "gemini-2.5-pro"),
-    ("gemini", "gemini-3-flash-preview"), ("gemini", "gemini-3.1-flash-lite"), ("gemini", "gemini-3.5-flash"),
+    ("gemini", "gemini-3.8-flash"),
 ]
 _STT_RECOMMENDED = "gpt-transcribe"
 # 게임 혼잣말 40문장 실측(2026-10, tests/stt groundtruth): (정확도 %, 응답 초)
@@ -91,7 +88,6 @@ _STT_MEASURED = {
     "gpt-transcribe": (91, 0.7),
     "gpt-4o-transcribe": (87, 0.9),
     "gpt-4o-mini-transcribe": (83, 0.9),
-    "gemini-2.5-flash": (65, 2.5),
 }
 _PROVIDER_LABEL = {"gemini": "Gemini", "claude": "Claude", "openai": "OpenAI"}
 _KEY_ENV = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY", "claude": "CLAUDE_API_KEY"}
@@ -346,6 +342,73 @@ class _PromptDialog(QDialog):
         ok.clicked.connect(self.accept)
         row.addWidget(ok)
         lay.addLayout(row)
+
+
+class _ProfileEditDialog(QDialog):
+    """게임 프로필 보기·수정. 이름은 칸으로, 나머지는 YAML 그대로 고친다.
+
+    파일 이름은 바꾸지 않는다 — 창 이름으로 프로필을 찾는 기준이라 바꾸면 자동 연결이 끊긴다."""
+
+    def __init__(self, stem: str, profile: dict, is_bundled: bool, parent=None):
+        super().__init__(parent)
+        import yaml
+        self.profile: dict | None = None
+        self.setWindowTitle("게임 프로필 보기 · 수정")
+        self.setModal(True)
+        self.resize(680, 620)
+        self.setStyleSheet(f"QDialog {{ background: {T.BG}; }}" + T.settings_qss())
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        note = f"파일: {stem}.yaml"
+        if is_bundled:
+            note += " · 앱 기본 제공 프로필이에요. 저장하면 내 폴더에 복사본이 생기고 그걸 쓰게 됩니다."
+        lay.addWidget(T.label(note, "sub", wrap=True))
+        lay.addWidget(T.label("프로필 제목", "lbl"))
+        self.name_edit = QLineEdit(str(profile.get("name") or stem))
+        self.name_edit.textChanged.connect(self._validate)
+        lay.addWidget(self.name_edit)
+        lay.addWidget(T.label("내용", "lbl"))
+        self.editor = QPlainTextEdit()
+        body = {k: v for k, v in profile.items() if k != "name" and not k.startswith("_")}
+        self.editor.setPlainText(yaml.dump(body, allow_unicode=True, default_flow_style=False,
+                                           sort_keys=False, width=1000))
+        self.editor.textChanged.connect(self._validate)
+        lay.addWidget(self.editor, 1)
+        self._error = T.label("", "sub", wrap=True)
+        self._error.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+        lay.addWidget(self._error)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = T.button("취소")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        self._ok = T.button("저장하고 적용")
+        self._ok.clicked.connect(self.accept)
+        row.addWidget(self._ok)
+        lay.addLayout(row)
+        self._validate()
+
+    def _validate(self):
+        import yaml
+        name = self.name_edit.text().strip()
+        try:
+            body = yaml.safe_load(self.editor.toPlainText()) or {}
+            if not isinstance(body, dict):
+                raise ValueError("'항목: 값' 형식이어야 해요")
+        except Exception as e:
+            self.profile = None
+            self._error.setText(f"내용을 읽지 못했어요: {str(e).splitlines()[0][:120]}")
+            self._ok.setEnabled(False)
+            return
+        if not name:
+            self.profile = None
+            self._error.setText("제목을 입력하세요.")
+            self._ok.setEnabled(False)
+            return
+        self.profile = {"name": name, **{k: v for k, v in body.items() if k != "name"}}
+        self._error.setText("")
+        self._ok.setEnabled(True)
 
 
 class _ProfilePasteDialog(QDialog):
@@ -1150,28 +1213,26 @@ class SettingsWindow(QWidget):
         self._refresh_ready()
 
     def _regenerate_profile(self):
-        """Gemini 검색으로 자동 생성(API 비용, 수십 초). 기존 프로필을 지우고 다시 만든다."""
+        """웹 검색으로 자동 생성(API 비용, 수십 초). 성공해야 기존 프로필을 바꾼다(load_profile)."""
         game_name = self._profile_target_game()
         if not game_name:
             self._game_profile_status.setText("먼저 게임 창을 고르세요")
             return
-        if not _read_env_keys()["gemini"]:
-            self._game_profile_status.setText("자동 생성은 Gemini 키가 있어야 해요(구글 검색 사용) — "
+        keys = _read_env_keys()
+        if not (keys["openai"] or keys["gemini"]):
+            self._game_profile_status.setText("자동 생성은 OpenAI나 Gemini 키가 있어야 해요(웹 검색 사용) — "
                                               "'프롬프트 복사'로 무료로 만들 수 있어요.")
             self._game_profile_status.setStyleSheet(f"color: {T.WARN}; font-size: 12px;")
             return
         from src.chat.game_profile_loader import bundled_profile_path_for
         profile_path = paths.user_data_dir() / "game_profiles" / f"{profile_filename(game_name)}.yaml"
-        msg = f"'{game_name}' 프로필을 Gemini 검색으로 자동 생성할까요?\n검색 6번 — API 비용이 들고 수십 초 걸려요."
+        msg = f"'{game_name}' 프로필을 웹 검색으로 자동 생성할까요?\n검색 6번 — API 비용이 들고 수십 초 걸려요."
         if profile_path.exists():
-            msg += "\n\n지금 있는 프로필은 지워지고 새로 만든 것으로 바뀝니다."
+            msg += "\n\n성공하면 지금 있는 프로필을 새로 만든 것으로 바꿉니다. 실패하면 그대로 둡니다."
         elif bundled_profile_path_for(game_name):
             msg += "\n\n앱 기본 제공 프로필 대신 새로 만든 것을 쓰게 됩니다(기본 제공 파일은 그대로)."
         if QMessageBox.question(self, "자동 생성", msg) != QMessageBox.StandardButton.Yes:
             return
-        if profile_path.exists():
-            profile_path.unlink()
-            logger.info(f"기존 프로필 삭제: {profile_path.name}")
         self._queue.put({"game_name": game_name, "generate": True})
         paths.save_last_session(game_name=game_name)
         self._set_profile_pending(game_name, "자동 생성 중… (수십 초)")
@@ -1196,6 +1257,35 @@ class SettingsWindow(QWidget):
             self._game_profile_status.setText("먼저 게임 창을 고르세요")
             return
         dlg = _ProfilePasteDialog(game_name, text, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.profile:
+            return
+        try:
+            save_profile(game_name, dlg.profile)
+        except Exception as e:
+            self._game_profile_status.setText(f"저장 실패: {e}")
+            self._game_profile_status.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            return
+        self._refresh_profiles()
+        self._queue.put({"game_name": game_name})
+        paths.save_last_session(game_name=game_name)
+        self._set_profile_pending(game_name, "저장됨 · 불러오는 중…")
+
+    def _edit_profile(self):
+        from src.chat.game_profile_loader import (
+            _safe_filename, bundled_profile_path_for, load_profile, profile_path_for, save_profile,
+        )
+        game_name = self._profile_target_game()
+        if not game_name:
+            self._game_profile_status.setText("먼저 게임 창을 고르세요")
+            return
+        try:
+            profile = load_profile(game_name)
+        except Exception as e:
+            self._game_profile_status.setText(f"프로필을 읽지 못했어요: {e}")
+            self._game_profile_status.setStyleSheet(f"color: {T.ERROR}; font-size: 12px;")
+            return
+        is_bundled = not profile_path_for(game_name).exists() and bundled_profile_path_for(game_name) is not None
+        dlg = _ProfileEditDialog(_safe_filename(game_name), profile, is_bundled, self)
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.profile:
             return
         try:
@@ -1287,10 +1377,10 @@ class SettingsWindow(QWidget):
         fade.toggled.connect(self._on_fade)
         card.add_row(title="오래된 메시지 흐리게", sub="새 채팅이 눈에 먼저 들어오게 합니다.", right=fade)
 
-        self._show_stt_switch = T.Switch(bool(ui.get("show_stt_history", False)))
+        self._show_stt_switch = T.Switch(bool(ui.get("show_stt_history", True)))
         self._show_stt_switch.setAccessibleName("내 말 표시")
         self._show_stt_switch.toggled.connect(self._on_show_stt)
-        card.add_row(title="내 말(받아쓰기) 표시", sub="음성 인식 결과를 채팅 사이에 회색으로 보여줘요. 잘못 들렸는지 확인할 때 켜세요.",
+        card.add_row(title="내 말(받아쓰기) 표시", sub="음성 인식 결과를 채팅 사이에 회색으로 보여줘요. 잘못 들렸는지 바로 확인할 수 있어요.",
                      right=self._show_stt_switch)
 
         typing = T.Switch(bool(ui.get("typing_indicator", True)))
@@ -1453,7 +1543,7 @@ class SettingsWindow(QWidget):
 
         # 인식 모델
         card = T.Card("인식 모델")
-        cur_pm = _pm(str(stt.get("provider", "gemini")), str(stt.get("model", "gemini-2.5-flash")))
+        cur_pm = _pm(str(stt.get("provider", "gemini")), str(stt.get("model", "gemini-3.8-flash")))
         self._stt_model_combo = T.combo(
             [(_model_text(p, m, _STT_RECOMMENDED), _pm(p, m)) for p, m in _STT_MODELS], width=320)
         T.select_data(self._stt_model_combo, cur_pm, fallback_text=_model_text(*cur_pm.split("|", 1)))
@@ -1693,7 +1783,7 @@ class SettingsWindow(QWidget):
     def _start_stt_test(self):
         if self._stt_test_running:
             return
-        data = self._stt_model_combo.currentData() or "gemini|gemini-2.5-flash"
+        data = self._stt_model_combo.currentData() or "gemini|gemini-3.8-flash"
         provider, _, model = data.partition("|")
         keys = _read_env_keys()
         if provider == "openai" and not keys["openai"]:
@@ -1826,12 +1916,13 @@ class SettingsWindow(QWidget):
                          "검색 호출은 일반 채팅보다 비싸요.",
                      right=ws)
 
-        pmodel = str(ai.get("profile_model", _PROFILE_MODELS[0]))
-        self._profile_model_combo = T.combo([(_model_text("gemini", m), m) for m in _PROFILE_MODELS], width=300)
-        T.select_data(self._profile_model_combo, pmodel, fallback_text=_model_text("gemini", pmodel))
+        pmodel = str(ai.get("profile_model", _PROFILE_MODELS[0][1]))
+        self._profile_model_combo = T.combo([(_model_text(p, m), m) for p, m in _PROFILE_MODELS], width=300)
+        T.select_data(self._profile_model_combo, pmodel,
+                      fallback_text=_model_text("gemini" if pmodel.startswith("gemini") else "openai", pmodel))
         self._profile_model_combo.currentIndexChanged.connect(self._on_profile_model)
         row_p = card.add_row(title="게임 프로필 자동 생성",
-                             sub="구글 검색으로 게임 정보를 모아요(Gemini 전용) · 다음 생성부터 적용",
+                             sub="웹 검색으로 게임 정보를 모아요(OpenAI·Gemini) · 다음 생성부터 적용",
                              right=self._profile_model_combo)
         # 행마다 '키 없음' 경고(제목/설명 아래). 고른 모델의 키가 없으면 무엇으로 대체되는지 알려준다.
         self._model_warns: dict[str, QLabel] = {}
@@ -1904,8 +1995,8 @@ class SettingsWindow(QWidget):
             warn.setText(f"⚠ {label} 키가 없어요 — {tail}")
             warn.setVisible(True)
         pw = self._model_warns["profile"]
-        pw.setText("⚠ Gemini 키가 없어 자동 생성은 못 써요 — '게임 · 프로필'의 '프롬프트 복사'로 무료로 만들 수 있어요.")
-        pw.setVisible(not keys["gemini"])
+        pw.setText("⚠ OpenAI·Gemini 키가 없어 자동 생성은 못 써요 — '게임 · 프로필'의 '프롬프트 복사'로 무료로 만들 수 있어요.")
+        pw.setVisible(not (keys["openai"] or keys["gemini"]))
 
     def _check_key(self, provider: str):
         key = _read_env_keys()[provider]
@@ -2032,6 +2123,9 @@ class SettingsWindow(QWidget):
         apply_p = T.button("이 프로필 쓰기")
         apply_p.clicked.connect(self._apply_profile)
         h.addWidget(apply_p)
+        edit_p = T.button("보기 · 수정…")
+        edit_p.clicked.connect(self._edit_profile)
+        h.addWidget(edit_p)
         card.add_row(w)
         w, h = T.row_box()
         self._game_profile_status = T.label("불러오는 중…", "sub", wrap=True)
@@ -2062,7 +2156,7 @@ class SettingsWindow(QWidget):
         card.add_row(w)
         regen = T.button("자동 생성…")
         regen.clicked.connect(self._regenerate_profile)
-        card.add_row(title="자동 생성 (API 비용)", sub="Gemini 구글 검색 6번으로 만들어요 · Gemini 키 필요 · 수십 초",
+        card.add_row(title="자동 생성 (API 비용)", sub="웹 검색 6번으로 만들어요 · OpenAI나 Gemini 키 필요 · 수십 초",
                      right=regen)
         lay.addWidget(card)
 
@@ -2093,6 +2187,14 @@ class SettingsWindow(QWidget):
         open_btn = T.button("폴더 열기")
         open_btn.clicked.connect(self._open_user_data_dir)
         card.add_row(title="데이터 폴더", sub=str(paths.user_data_dir()), right=open_btn)
+        legacy = paths.legacy_user_files()
+        if legacy:
+            self._legacy_btn = T.button("정리")
+            self._legacy_btn.clicked.connect(self._archive_legacy)
+            self._legacy_row = card.add_row(
+                title=f"예전 버전 파일 {len(legacy)}개",
+                sub=f"지금은 읽지 않는 파일이에요: {', '.join(p.name for p in legacy)} · 정리하면 .bak 으로 이름만 바꿔요",
+                right=self._legacy_btn)
         lay.addWidget(card)
 
         info = T.label(f"Solo Stream v{APP_VERSION}  ·  문의 contact.team8889@gmail.com", "sub")
@@ -2104,7 +2206,7 @@ class SettingsWindow(QWidget):
     def _refresh_profiles(self):
         import yaml
         c = self._profile_combo
-        current = c.currentText()
+        current = c.currentData()  # 제목은 바뀔 수 있어 파일 이름으로 선택을 유지한다
         c.blockSignals(True)
         c.clear()
         c.addItem("자동 (창 이름에서 찾기)", userData=None)
@@ -2118,7 +2220,7 @@ class SettingsWindow(QWidget):
             except Exception:
                 display = stem
             c.addItem(display, userData=stem)
-        idx = c.findText(current)
+        idx = c.findData(current) if current else 0
         c.setCurrentIndex(max(idx, 0))
         c.blockSignals(False)
 
@@ -2170,6 +2272,14 @@ class SettingsWindow(QWidget):
             self._save("ui", {"window_excludes": self._excludes})
             self._render_excludes()
             self._refresh_windows()
+
+    def _archive_legacy(self):
+        try:
+            paths.archive_legacy_files()
+        except Exception as e:
+            self._game_profile_status.setText(f"정리 실패: {e}")
+            return
+        self._legacy_row.setVisible(False)
 
     def _open_user_data_dir(self):
         import os
